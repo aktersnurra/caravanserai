@@ -1,0 +1,5 @@
+{
+    email ops@__BASE_DOMAIN__
+}
+
+import conf.d/*.caddy

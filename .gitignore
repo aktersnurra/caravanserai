@@ -1,0 +1,9 @@
+# Claude Code session artifacts
+.claude/
+
+# OCaml build artifacts
+infra/_build/
+
+# Local runtime secrets. Commit env.template, never .env.
+**/.env
+**/.env.*

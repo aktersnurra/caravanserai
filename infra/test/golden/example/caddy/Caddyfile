@@ -1,0 +1,5 @@
+{
+    email ops@example.org
+}
+
+import conf.d/*.caddy

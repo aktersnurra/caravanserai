@@ -1,0 +1,158 @@
+#!/bin/sh
+# compute/01-base
+# Run after edge/00-headscale and edge/02-caddy
+# Requires: HEADSCALE_URL, PREAUTH_KEY, SSH_PUBKEY, ADMIN_USER, LAN_NET, and
+# this host's network from serai.sexp: JAIL_SUBNET (its subnet) and
+# JAIL_GATEWAY (its gateway)
+# Prints: compute host Tailscale IP for use in edge/02-caddy
+set -e
+
+HEADSCALE_URL="${HEADSCALE_URL:?set HEADSCALE_URL, e.g. https://hs.example.org}"
+PREAUTH_KEY="${PREAUTH_KEY:?set PREAUTH_KEY}"
+SSH_PUBKEY="${SSH_PUBKEY:?set SSH_PUBKEY}"
+ADMIN_USER="${ADMIN_USER:?set ADMIN_USER, the wheel user SSH logs in as}"
+LAN_NET="${LAN_NET:?set LAN_NET, the LAN SSH is allowed from, e.g. 192.168.1.0/24}"
+JAIL_SUBNET="${JAIL_SUBNET:?set JAIL_SUBNET to the host network subnet in serai.sexp}"
+JAIL_GATEWAY="${JAIL_GATEWAY:?set JAIL_GATEWAY to the host network gateway in serai.sexp}"
+JAIL_PREFIX="${JAIL_SUBNET#*/}"
+
+log() { echo "==> $*"; }
+
+log "Bootstrapping pkg"
+ASSUME_ALWAYS_YES=yes pkg bootstrap
+pkg update
+
+log "Installing base packages"
+pkg install -y doas curl rsync htop tailscale
+
+log "Configuring doas"
+cat >/usr/local/etc/doas.conf <<'EOF'
+permit persist :wheel
+EOF
+chmod 600 /usr/local/etc/doas.conf
+
+log "Creating admin user ${ADMIN_USER} (wheel)"
+id -u "$ADMIN_USER" >/dev/null 2>&1 ||
+  pw useradd -n "$ADMIN_USER" -G wheel -m -s /bin/sh
+ADMIN_HOME="$(pw usershow "$ADMIN_USER" | cut -d: -f9)"
+
+log "Installing SSH key for ${ADMIN_USER}"
+mkdir -p "${ADMIN_HOME}/.ssh"
+echo "$SSH_PUBKEY" >>"${ADMIN_HOME}/.ssh/authorized_keys"
+sort -u "${ADMIN_HOME}/.ssh/authorized_keys" >"${ADMIN_HOME}/.ssh/authorized_keys.tmp" &&
+  mv "${ADMIN_HOME}/.ssh/authorized_keys.tmp" "${ADMIN_HOME}/.ssh/authorized_keys"
+chown -R "${ADMIN_USER}:${ADMIN_USER}" "${ADMIN_HOME}/.ssh"
+chmod 700 "${ADMIN_HOME}/.ssh"
+chmod 600 "${ADMIN_HOME}/.ssh/authorized_keys"
+
+sed -i '' 's/#\?PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
+sed -i '' 's/#\?ChallengeResponseAuthentication.*/ChallengeResponseAuthentication no/' /etc/ssh/sshd_config
+sed -i '' 's/#\?PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config
+service sshd restart
+
+log "Setting up lo1 for jails"
+sysrc cloned_interfaces="lo1"
+sysrc ifconfig_lo1="inet ${JAIL_GATEWAY}/${JAIL_PREFIX}"
+service netif cloneup 2>/dev/null || true
+ifconfig lo1 inet "${JAIL_GATEWAY}/${JAIL_PREFIX}" up 2>/dev/null || true
+
+log "Enabling IP forwarding (required for Tailscale subnet routing)"
+sysrc gateway_enable="YES"
+sysctl net.inet.ip.forwarding=1
+
+log "Configuring pf"
+EXT_IF="$(netstat -rn | awk '/^default/{print $NF}' | head -1)"
+log "Detected external interface: ${EXT_IF}"
+
+cat >/etc/pf.conf <<EOF
+ext_if="${EXT_IF}"
+lan_if="${EXT_IF}"
+ts_if="tailscale0"
+lan_net="${LAN_NET}"
+JAILS="${JAIL_SUBNET}"
+guest_if="vm-guests"
+guest_net="${JAIL_SUBNET}"
+
+set skip on lo0
+set skip on lo1
+scrub in all
+
+# NAT for jail outbound traffic (must come before filter rules)
+nat on \$ext_if from \$JAILS to any -> (\$ext_if)
+
+block in all
+block out all
+
+pass out on \$ext_if all keep state
+pass out on \$ts_if all keep state
+
+# Tailscale UDP handshake
+pass in on \$ext_if proto udp to port 41641 keep state
+
+# SSH: LAN (key-only) and Tailscale only. No public-internet SSH.
+pass in on \$lan_if proto tcp from \$lan_net to port 22 keep state
+pass in on \$ts_if proto tcp to port 22 keep state
+
+# bhyve guests on the vm-guests bridge. The jails above need no rules at all
+# because pf skips lo1 entirely, but a guest runs its own network stack: its
+# traffic genuinely traverses this ruleset, and without these two rules it
+# cannot even ARP its way to the gateway. Note the gateway for guests is the
+# bridge's own address (the network's guest_bridge), not the gateway the
+# jails use, which lives on lo1 where nothing on the bridge can answer for it.
+pass in on \$guest_if from \$guest_net to any keep state
+pass out on \$guest_if to \$guest_net keep state
+
+# edge host -> service ports via Tailscale are rendered by infra from each
+# service's app.sexp/guest.sexp tailnet_ports, and compute/01-pf-rules splices
+# them in between its own anchors below.
+# They are not listed here: a commented rule per service is a step that gets
+# skipped, which is how a guest's port was never opened at all, and <EDGE_TS_IP>
+# was a placeholder every one of them needed substituted by hand.
+EOF
+
+sysrc pf_enable="YES"
+sysrc pflog_enable="YES"
+pfctl -f /etc/pf.conf 2>/dev/null || true
+pfctl -e 2>/dev/null || true
+
+log "Enabling NTP"
+sysrc ntpd_enable="YES"
+sysrc ntpd_sync_on_start="YES"
+service ntpd onerestart
+
+log "Starting Tailscale"
+sysrc tailscaled_enable="YES"
+service tailscaled onerestart
+
+sleep 2
+
+log "Joining Headscale (advertising jail subnet ${JAIL_SUBNET})"
+# --accept-dns=false: the host resolves through the LAN, not MagicDNS. Nothing
+# here uses tailnet names, and MagicDNS drops UDP answers too big for the
+# 1280-byte tunnel instead of truncating them, so local_unbound cannot
+# validate DNSSEC through it (org. DNSKEY) and every .org lookup SERVFAILs.
+tailscale up \
+  --login-server "$HEADSCALE_URL" \
+  --authkey "$PREAUTH_KEY" \
+  --hostname "nuc" \
+  --advertise-tags=tag:nuc \
+  --advertise-routes="${JAIL_SUBNET}" \
+  --accept-routes \
+  --accept-dns=false
+
+NUC_TS_IP="$(tailscale ip -4)"
+
+log ""
+log "==> compute host base setup complete."
+log ""
+log "compute host Tailscale IP: ${NUC_TS_IP}"
+log ""
+log "Next:"
+log "  1. On edge host: approve the jail subnet route:"
+log "       sudo headscale nodes list                              # find compute host node id"
+log "       sudo headscale nodes approve-routes -i <ID> -r ${JAIL_SUBNET}"
+log "  2. From the workstation: infra edge   # open the edge host -> service ports in pf"
+log "  3. Verify SSH over Tailscale, then tighten pf SSH rules"
+log "  4. From the workstation: infra bootstrap <app>  # per app; infra apps lists them"
+log ""
+log "Then from the workstation: infra rollout <app> --edge"

@@ -1,0 +1,18 @@
+(
+(name hello)
+(ip 10.20.0.2)
+(hostname hello.example.org)
+(tailnet_ports ((http 4000)))
+(operator_ports ())
+(strategy freebsd_native_elixir)
+(hooks (bootstrap check))
+(extra_steps ())
+(strategy_config (
+  (packages (erlang-runtime28 elixir-devel sqlite3 gmake git curl node24 npm-node24))
+  (repo_path /home/ops/src/hello)
+  (source (git https://git.example.org/hello.git))
+  (release_name hello)
+  (migrate (release_eval Hello.Release.migrate))
+  (check_path /)
+))
+)

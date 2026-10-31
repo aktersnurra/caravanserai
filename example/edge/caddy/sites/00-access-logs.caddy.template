@@ -1,0 +1,11 @@
+# Retain path/status/timing without logging query credentials or arbitrary headers.
+(access_log) {
+    log {
+        output stdout
+        format filter {
+            request>uri regexp `\?.*$` ""
+            request>headers delete
+            resp_headers delete
+        }
+    }
+}

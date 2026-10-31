@@ -1,0 +1,20 @@
+[Unit]
+Description=Forward ledger service journal logs to the private compute host bridge relay
+After=network-online.target systemd-journald.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/sbin/rsyslogd -n -f /etc/rsyslog-victoria.conf -i /run/rsyslog-victoria/rsyslogd.pid
+Restart=on-failure
+RestartSec=10
+RuntimeDirectory=rsyslog-victoria
+StateDirectory=rsyslog-victoria
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

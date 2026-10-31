@@ -1,0 +1,9 @@
+# Read by the guest's own scripts; the network facts match guest.sexp.
+GUEST="ledger"
+GUEST_IP="10.20.0.10"
+GUEST_USER="ledger"
+GUEST_GATEWAY="10.20.0.254"
+GUEST_NETMASK="255.255.255.0"
+PORT="4020"
+SOURCE_CHECKOUT="${SOURCE_CHECKOUT:-../src/ledger}"
+PUBLIC_HOST="ledger.example.org"

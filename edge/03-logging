@@ -1,0 +1,95 @@
+#!/usr/bin/env bash
+# Run on the edge host only after the logs jail accepts private TCP syslog.
+# This is a separate journal reader; it never replaces the edge host's local logger.
+set -euo pipefail
+
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+CONFIG_DIR=/etc/syslog-ng
+CONFIG_FILE="$CONFIG_DIR/victoria-logs.conf"
+UNIT_FILE=/etc/systemd/system/syslog-ng-victoria.service
+
+[ "$(id -u)" -eq 0 ] || { echo 'logging: run as root' >&2; exit 1; }
+case "${1-}" in
+  '') [[ $# -eq 0 ]] || exit 1 ;;
+  --recover-check|--recover|--recover-health) [[ $# -eq 1 ]] || exit 1 ;;
+  *) echo 'logging: unknown mode' >&2; exit 1 ;;
+esac
+mode=${1-}
+# The logs jail's address and syslog port, rendered by infra beside this script.
+read -r receiver_ip receiver_port <"$SCRIPT_DIR/logging-receiver" || true
+[[ "$receiver_ip" =~ ^[0-9]+(\.[0-9]+){3}$ && "$receiver_port" =~ ^[0-9]+$ ]] || {
+  echo 'logging: generated receiver missing or invalid' >&2
+  exit 1
+}
+# Reject any route that would send plain TCP syslog outside the tailnet.
+ip -4 route get "$receiver_ip" | grep -Eq ' dev tailscale[0-9]+([[:space:]]|$)' || {
+  echo 'logging: no tailnet route to logs jail; refusing to install sender' >&2
+  exit 1
+}
+# Fail rather than starting a sender whose bounded queue immediately fills.
+if ! timeout 5 bash -c "exec 3<>/dev/tcp/$receiver_ip/$receiver_port"; then
+  echo 'logging: private syslog receiver is unavailable; deploy the logs jail first' >&2
+  exit 1
+fi
+if systemctl is-active --quiet syslog-ng-victoria.service; then
+  if [ ! -L "$CONFIG_FILE" ] && [ ! -L "$UNIT_FILE" ] &&
+     cmp -s "$SCRIPT_DIR/syslog-ng-victoria.conf" "$CONFIG_FILE" &&
+     cmp -s "$SCRIPT_DIR/syslog-ng-victoria.service" "$UNIT_FILE" &&
+     systemctl is-enabled --quiet syslog-ng-victoria.service; then
+    echo 'logging: matching active sender preserved'
+    exit 0
+  fi
+  echo 'logging: active sender differs; refusing overwrite' >&2
+  exit 1
+fi
+if systemctl is-enabled --quiet syslog-ng-victoria.service; then
+  [[ "$mode" != --recover-health ]] || {
+    echo 'logging: sender inactive after recovery' >&2
+    exit 1
+  }
+  [[ -n "$mode" ]] || {
+    echo 'logging: enabled but inactive sender requires operator action' >&2
+    exit 1
+  }
+  # Keep the existing Caddy queue identity: only the second destination gains
+  # a persist-name. The installed candidate must match either exact version.
+  [[ ! -L "$CONFIG_FILE" && ! -L "$UNIT_FILE" ]] &&
+    cmp -s "$SCRIPT_DIR/syslog-ng-victoria.service" "$UNIT_FILE" &&
+    (cmp -s "$SCRIPT_DIR/syslog-ng-victoria.conf" "$CONFIG_FILE" ||
+      sed '/^[[:space:]]*persist-name("vps-oauth-safe-event")$/d' \
+        "$SCRIPT_DIR/syslog-ng-victoria.conf" | cmp -s - "$CONFIG_FILE") || {
+    echo 'logging: installed configuration differs; refusing recovery' >&2
+    exit 1
+  }
+  /usr/bin/syslog-ng --syntax-only --cfgfile="$SCRIPT_DIR/syslog-ng-victoria.conf" || {
+    echo 'logging: invalid recovery candidate; existing configuration unchanged' >&2
+    exit 1
+  }
+  [[ "$mode" != --recover-check ]] || exit 0
+  install -o root -g root -m 0644 "$SCRIPT_DIR/syslog-ng-victoria.conf" "$CONFIG_FILE"
+  systemctl start syslog-ng-victoria.service
+  sleep 2
+  systemctl is-active --quiet syslog-ng-victoria.service || {
+    echo 'logging: sender did not remain active after recovery' >&2
+    exit 1
+  }
+  exit 0
+fi
+[[ -z "$mode" ]] || { echo 'logging: expected an enabled stopped sender' >&2; exit 1; }
+# rsyslog is AUR-only on Arch. syslog-ng is in the official Extra repository.
+# Avoid pacman -Sy: syncing without a full system upgrade risks partial upgrades.
+pacman -S --needed --noconfirm syslog-ng
+install -d -o root -g root -m 0755 "$CONFIG_DIR"
+install -d -o root -g root -m 0700 /var/lib/syslog-ng-victoria
+candidate=$(mktemp "$CONFIG_DIR/victoria-logs.XXXXXX")
+trap 'rm -f "$candidate"' EXIT
+install -o root -g root -m 0600 "$SCRIPT_DIR/syslog-ng-victoria.conf" "$candidate"
+/usr/bin/syslog-ng --syntax-only --cfgfile="$candidate" || {
+  echo 'logging: invalid syslog-ng candidate; existing configuration unchanged' >&2
+  exit 1
+}
+install -o root -g root -m 0644 "$candidate" "$CONFIG_FILE"
+install -o root -g root -m 0644 "$SCRIPT_DIR/syslog-ng-victoria.service" "$UNIT_FILE"
+systemctl daemon-reload
+systemctl enable syslog-ng-victoria.service
+systemctl start syslog-ng-victoria.service

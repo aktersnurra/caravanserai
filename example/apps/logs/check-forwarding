@@ -1,0 +1,31 @@
+#!/bin/sh
+# apps/logs/check-forwarding <compute ssh target>
+# The senders' side of central logging, from the compute host: the installed target
+# list is valid, and the host relay and every listed jail's sender run.
+# infra check logs covers the receiver itself. Prints no log contents.
+set -eu
+
+COMPUTE_TARGET=${1:?usage: $0 <compute ssh target>}
+SSH_BIN=${SSH_BIN:-ssh}
+"$SSH_BIN" "$COMPUTE_TARGET" 'doas sh -s' <<'REMOTE_LOG_CHECK'
+set -eu
+targets=/usr/local/etc/central-logging/targets
+[ -s "$targets" ] && [ ! -L "$targets" ] || exit 1
+service central_logging onestatus
+names=' '
+count=0
+while IFS=' ' read -r jail source extra || [ -n "$jail$source$extra" ]; do
+  case "$jail" in ''|*[!a-z0-9]*|logs) exit 1 ;; esac
+  [ -z "$extra" ] || exit 1
+  case "$source" in
+    # local_only, or a reviewed sender the jail's app ships; infra's typed
+    # policy decides which, this checks only the shape.
+    ''|[!a-z]*|*[!a-z0-9_]*) exit 1 ;;
+  esac
+  case "$names" in *" $jail "*) exit 1 ;; esac
+  names="$names$jail "
+  count=$((count + 1))
+  jexec "$jail" service central_logging onestatus
+done < "$targets"
+[ "$count" -gt 0 ] || exit 1
+REMOTE_LOG_CHECK

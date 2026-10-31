@@ -1,0 +1,6 @@
+__DEMO_HOSTNAME__ {
+    reverse_proxy __DEMO_IP__:__DEMO_HTTP_PORT__ {
+        header_up Host {host}
+    }
+    reverse_proxy /video/* __DEMO_IP__:__DEMO_VIDEO_PORT__
+}

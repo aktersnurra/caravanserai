@@ -1,0 +1,6 @@
+# Network parity with app.sexp; no public syslog route.
+JAIL="logs"
+JAIL_IP="10.20.0.20"
+PORT="9428"
+SYSLOG_PORT="29514"
+PUBLIC_HOST="logs.example.org"

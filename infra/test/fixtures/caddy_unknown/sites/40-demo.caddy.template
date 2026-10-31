@@ -1,0 +1,3 @@
+__DEMO_HOSTNAME__ {
+    reverse_proxy __DEMO_JAIL_IP__:__DEMO_HTTP_PORT__
+}

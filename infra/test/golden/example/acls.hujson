@@ -1,0 +1,51 @@
+{
+  // GENERATED from each service's declared tailnet ports (apps/*,
+  // guests/*). Do not edit here: the next deploy overwrites it. To
+  // publish a port, declare it for that service and re-run.
+  //
+  // Default-deny. Only the flows listed below are allowed.
+  "tagOwners": {
+    "tag:vps":   ["ops@"],
+    "tag:nuc":   ["ops@"],
+    "tag:jails": ["ops@"]
+  },
+  "acls": [
+    // edge host -> the services that declared themselves reachable. A port missing
+    // here fails silently: Caddy reports a gateway timeout and the compute host logs
+    // nothing, because the packets never leave the edge host.
+    {
+      "action": "accept",
+      "src":    ["tag:vps"],
+      "dst":    ["10.20.0.3:4010",
+                 "10.20.0.2:4000",
+                 "10.20.0.20:9428",
+                 "10.20.0.20:29514",
+                 "10.20.0.10:4020"]
+    },
+    // Operator -> SSH to either host over Tailscale.
+    {
+      "action": "accept",
+      "src":    ["ops@"],
+      "dst":    ["tag:vps:22", "tag:nuc:22"]
+    },
+    // Operator -> the ports services declared for operator access, which in
+    // practice means sshd on a bhyve guest: a jail is administered from the
+    // compute host, but a guest runs its own kernel.
+    {
+      "action": "accept",
+      "src":    ["ops@"],
+      "dst":    ["10.20.0.10:22"]
+    },
+    // Nodes to themselves.
+    {
+      "action": "accept",
+      "src":    ["tag:vps"],
+      "dst":    ["tag:vps:*"]
+    },
+    {
+      "action": "accept",
+      "src":    ["tag:nuc"],
+      "dst":    ["tag:nuc:*"]
+    }
+  ]
+}

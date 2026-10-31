@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# edge/01-tailscale
+# Joins the edge host to Headscale as a node so it can reach compute host jails over Tailscale.
+# Run after edge/00-headscale and edge/02-caddy.
+# Requires: HEADSCALE_URL, PREAUTH_KEY
+set -euo pipefail
+
+HEADSCALE_URL="${HEADSCALE_URL:?set HEADSCALE_URL, e.g. https://hs.example.org}"
+PREAUTH_KEY="${PREAUTH_KEY:?set PREAUTH_KEY (generate with: headscale preauthkeys create --user <ID> --expiration 1h)}"
+
+log() { echo "==> $*"; }
+
+log "Installing Tailscale"
+pacman -Sy --noconfirm tailscale
+
+log "Enabling tailscaled"
+systemctl enable --now tailscaled
+
+log "Waiting for tailscaled to be ready"
+for _ in $(seq 1 20); do
+  tailscale status >/dev/null 2>&1 && break
+  sleep 2
+done
+
+log "Joining Headscale"
+tailscale up \
+  --login-server "$HEADSCALE_URL" \
+  --authkey "$PREAUTH_KEY" \
+  --hostname "vps" \
+  --advertise-tags=tag:vps \
+  --accept-routes
+
+EDGE_TS_IP="$(tailscale ip -4)"
+
+log ""
+log "==> edge host joined Headscale."
+log ""
+log "edge host Tailscale IP: ${EDGE_TS_IP}"
+log ""
+log "Next, from the workstation: infra edge"
+log ""
+log "It runs infra edge, which renders the pf rules and the Headscale ACL"
+log "from each service's app.sexp/guest.sexp and applies both. The address"
+log "above is resolved on the compute host from the tailnet itself, so there is no"
+log "placeholder to substitute."

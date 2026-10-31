@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+# Install the pinned auth proxy. Secrets must be entered separately by hand.
+set -euo pipefail
+
+VERSION=v7.15.3
+ARCHIVE="oauth2-proxy-${VERSION}.linux-amd64.tar.gz"
+SHA256=0ae5a43adde4d6c5081ba018e70a76041f496377b12a173da36b419082dd1ab6
+SECRETS=/etc/oauth2-proxy/secrets.env
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+
+[ "$(id -u)" -eq 0 ] || { echo 'oauth2-proxy: run as root' >&2; exit 1; }
+case "${1-}" in
+  '') [[ $# -eq 0 ]] || exit 1 ;;
+  --recover-check|--recover|--recover-health) [[ $# -eq 1 ]] || exit 1 ;;
+  *) echo 'oauth2-proxy: unknown mode' >&2; exit 1 ;;
+esac
+mode=${1-}
+if [ ! -f "$SECRETS" ] || [ -L "$SECRETS" ] || \
+   [ "$(stat -c %u "$SECRETS")" != 0 ] || [ "$(stat -c %a "$SECRETS")" != 600 ]; then
+  echo 'oauth2-proxy: install a root-owned mode-0600 /etc/oauth2-proxy/secrets.env manually first' >&2
+  exit 1
+fi
+# Never source, echo, generate or overwrite the runtime values.
+for variable in OAUTH2_PROXY_CLIENT_ID OAUTH2_PROXY_CLIENT_SECRET OAUTH2_PROXY_COOKIE_SECRET; do
+  grep -Eq "^${variable}=" "$SECRETS" || {
+    echo "oauth2-proxy: missing $variable in protected runtime file" >&2
+    exit 1
+  }
+done
+
+if systemctl is-active --quiet oauth2-proxy; then
+  if [ ! -L /etc/oauth2-proxy/oauth2-proxy.cfg ] &&
+     [ ! -L /etc/systemd/system/oauth2-proxy.service ] &&
+     cmp -s "$SCRIPT_DIR/oauth2-proxy/oauth2-proxy.cfg" /etc/oauth2-proxy/oauth2-proxy.cfg &&
+     cmp -s "$SCRIPT_DIR/oauth2-proxy/oauth2-proxy.service" /etc/systemd/system/oauth2-proxy.service &&
+     /usr/local/bin/oauth2-proxy --version 2>&1 | grep -Fq "$VERSION" &&
+     systemctl is-enabled --quiet oauth2-proxy; then
+    echo 'oauth2-proxy: matching active instance preserved'
+    exit 0
+  fi
+  echo 'oauth2-proxy: active instance differs; refusing overwrite' >&2
+  exit 1
+fi
+if systemctl is-enabled --quiet oauth2-proxy; then
+  [[ "$mode" != --recover-health ]] || {
+    echo 'oauth2-proxy: inactive after recovery' >&2
+    exit 1
+  }
+  [[ -n "$mode" ]] || {
+    echo 'oauth2-proxy: enabled but inactive instance requires operator action' >&2
+    exit 1
+  }
+  [[ ! -L /etc/oauth2-proxy/oauth2-proxy.cfg &&
+     ! -L /etc/systemd/system/oauth2-proxy.service ]] &&
+    cmp -s "$SCRIPT_DIR/oauth2-proxy/oauth2-proxy.cfg" /etc/oauth2-proxy/oauth2-proxy.cfg &&
+    cmp -s "$SCRIPT_DIR/oauth2-proxy/oauth2-proxy.service" /etc/systemd/system/oauth2-proxy.service &&
+    /usr/local/bin/oauth2-proxy --version 2>&1 | grep -Fq "$VERSION" || {
+    echo 'oauth2-proxy: installed files differ; refusing recovery' >&2
+    exit 1
+  }
+  [[ "$mode" != --recover-check ]] || exit 0
+  systemctl start oauth2-proxy
+  sleep 2
+  systemctl is-active --quiet oauth2-proxy || {
+    echo 'oauth2-proxy: did not remain active after recovery' >&2
+    exit 1
+  }
+  exit 0
+fi
+[[ -z "$mode" ]] || { echo 'oauth2-proxy: expected an enabled stopped instance' >&2; exit 1; }
+
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+curl --fail --silent --show-error --location \
+  "https://github.com/oauth2-proxy/oauth2-proxy/releases/download/${VERSION}/${ARCHIVE}" \
+  --output "$tmp/$ARCHIVE"
+printf '%s  %s\n' "$SHA256" "$tmp/$ARCHIVE" | sha256sum --check --status || {
+  echo 'oauth2-proxy: release checksum mismatch; refusing installation' >&2
+  exit 1
+}
+tar -xOzf "$tmp/$ARCHIVE" "oauth2-proxy-${VERSION}.linux-amd64/oauth2-proxy" >"$tmp/oauth2-proxy"
+install -o root -g root -m 0755 "$tmp/oauth2-proxy" /usr/local/bin/oauth2-proxy
+id -u oauth2-proxy >/dev/null 2>&1 || \
+  useradd --system --no-create-home --shell /usr/bin/nologin oauth2-proxy
+install -o root -g root -m 0755 -d /etc/oauth2-proxy
+install -o root -g root -m 0644 \
+  "$SCRIPT_DIR/oauth2-proxy/oauth2-proxy.cfg" /etc/oauth2-proxy/oauth2-proxy.cfg
+install -o root -g root -m 0644 \
+  "$SCRIPT_DIR/oauth2-proxy/oauth2-proxy.service" /etc/systemd/system/oauth2-proxy.service
+systemctl daemon-reload
+systemctl enable oauth2-proxy
+systemctl start oauth2-proxy

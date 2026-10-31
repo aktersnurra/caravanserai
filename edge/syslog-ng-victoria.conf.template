@@ -1,0 +1,82 @@
+@version: 4.0
+
+# A dedicated read-only journal consumer; it neither owns /dev/log nor
+# changes the edge host's existing system logger. No network source is configured.
+source s_vps_journal { systemd-journal(read-old-records(no)); };
+filter f_caddy_unit { "${.journald._SYSTEMD_UNIT}" eq "caddy.service"; };
+parser p_caddy_json { json-parser(prefix(".caddy.")); };
+filter f_caddy_access { match("^http[.]log[.]access[.]" value(".caddy.logger")); };
+# Defense in depth: only Caddy's structured access logger is selected, and
+# any raw URI/query accidentally reintroduced into a record is discarded.
+filter f_no_queries { not match("[?]" value("MESSAGE")); };
+# An earlier Caddy configuration may have emitted headers. Do not forward
+# header-bearing records even if they predate rollout or survive a restart.
+# False positives (for example a path containing "headers") are acceptable.
+filter f_no_headers { not match("headers" value("MESSAGE")); };
+# v7.15.3 oauthproxy.go emits this startup message. Its Client ID is
+# dynamic, so even a match is NEVER forwarded verbatim. All request/auth,
+# callback, failure and unknown records are discarded centrally.
+filter f_oauth_unit { "${.journald._SYSTEMD_UNIT}" eq "oauth2-proxy.service"; };
+filter f_oauth_configured {
+    match("OAuthProxy configured for OpenID Connect Client ID:" value("MESSAGE"));
+};
+rewrite r_oauth_program { set("oauth2-proxy" value("PROGRAM")); };
+
+destination d_victoria_logs {
+    network(
+        "__LOGS_IP__"
+        port(__LOGS_SYSLOG_PORT__)
+        transport("tcp")
+        # network() with this flag uses RFC5424 without an octet frame header;
+        # VictoriaLogs expects LF-delimited TCP messages, not syslog().
+        # https://syslog-ng.github.io/admin-guide/070_Destinations/150_Network/000_Network_destination_options.html
+        flags(syslog-protocol)
+        time-reopen(10)
+        disk-buffer(
+            reliable(yes)
+            capacity-bytes(134217728)
+            flow-control-window-bytes(1048576)
+            dir("/var/lib/syslog-ng-victoria")
+        )
+    );
+};
+
+# Separate destination: a fixed message template ensures no oauth2-proxy
+# journal content (including an unexpected client ID) can reach VictoriaLogs.
+destination d_oauth_safe_event {
+    network(
+        "__LOGS_IP__"
+        port(__LOGS_SYSLOG_PORT__)
+        transport("tcp")
+        flags(syslog-protocol)
+        template("OIDC configured")
+        persist-name("vps-oauth-safe-event")
+        time-reopen(10)
+        disk-buffer(
+            reliable(yes)
+            capacity-bytes(16777216)
+            flow-control-window-bytes(1048576)
+            dir("/var/lib/syslog-ng-victoria")
+        )
+    );
+};
+
+log {
+    source(s_vps_journal);
+    filter(f_oauth_unit);
+    filter(f_oauth_configured);
+    rewrite(r_oauth_program);
+    destination(d_oauth_safe_event);
+    flags(flow-control);
+};
+
+log {
+    source(s_vps_journal);
+    filter(f_caddy_unit);
+    parser(p_caddy_json);
+    filter(f_caddy_access);
+    filter(f_no_queries);
+    filter(f_no_headers);
+    destination(d_victoria_logs);
+    flags(flow-control);
+};

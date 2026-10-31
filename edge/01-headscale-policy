@@ -1,0 +1,117 @@
+#!/usr/bin/env bash
+# edge/01-headscale-policy
+# Installs a Headscale ACL rendered elsewhere. Run as root on the edge host.
+#
+# infra renders the policy from each service's declared ports
+# (apps/*/app.sexp, guests/*/guest.sexp) on the operator's machine,
+# which the edge host has no copy of and should not be given one of, and stages it
+# as POLICY_SOURCE. infra edge runs this script with POLICY_DIFF_ONLY=1 to
+# show the change, then again to install it.
+#
+# Split out of edge/00-headscale because that script is a first-run installer:
+# re-running it to publish one new port would also reinstall the binary,
+# rewrite config.yaml and reissue pre-auth keys. Nobody re-runs it, so the
+# live policy drifted from the repo and a guest's port went missing — the
+# edge host could not reach the guest and failed silently.
+#
+#   POLICY_SOURCE=<file>   the rendered policy to install (required)
+#   POLICY_DIFF_ONLY=1     validate and diff against the live policy; exit 10
+#                          when it differs, change nothing
+#
+# Idempotent: safe to run on every deploy.
+set -euo pipefail
+
+POLICY_FILE="${POLICY_FILE:-/etc/headscale/acls.yaml}"
+
+log() { echo "==> $*" >&2; }
+
+CANDIDATE=""
+cleanup() { [ -z "$CANDIDATE" ] || rm -f "$CANDIDATE"; }
+trap cleanup EXIT
+
+# ---------------------------------------------------------------------------
+# Validate before touching the live policy.
+# ---------------------------------------------------------------------------
+validate_and_install() {
+# An invalid policy is rejected at load while Headscale keeps serving the
+# previous one, so a bad write goes unnoticed until the next restart — by
+# which time the cause is far away. Fail here instead.
+if headscale policy check --file "$CANDIDATE" >/dev/null 2>&1; then
+  [ "${POLICY_DIFF_ONLY:-0}" = 1 ] || log "Policy validated by headscale policy check"
+elif command -v headscale >/dev/null && headscale policy check --help >/dev/null 2>&1; then
+  log "ERROR: headscale rejected the candidate policy"
+  headscale policy check --file "$CANDIDATE" || true
+  exit 1
+else
+  # Older Headscale has no policy check subcommand, and a machine without
+  # headscale (the tests') has none at all. Comments are stripped rather
+  # than parsed: this is a syntax gate, not a schema check.
+  log "headscale policy check unavailable — falling back to JSON syntax check"
+  sed -e 's://.*::' "$CANDIDATE" |
+    python3 -c 'import sys,json; json.load(sys.stdin)' || {
+      log "ERROR: generated policy is not valid JSON"
+      exit 1
+    }
+fi
+
+# POLICY_DIFF_ONLY=1: show what an install would change, change nothing.
+# Exit 10 is "changes pending" so a caller can tell it from success/error.
+if [ "${POLICY_DIFF_ONLY:-0}" = 1 ]; then
+  live="$POLICY_FILE"
+  [ -e "$live" ] || live=/dev/null
+  if cmp -s "$CANDIDATE" "$live"; then
+    log "Policy already current at ${POLICY_FILE}"
+    exit 0
+  fi
+  diff -u "$live" "$CANDIDATE" || true
+  exit 10
+fi
+
+# ---------------------------------------------------------------------------
+# Install and reload.
+# ---------------------------------------------------------------------------
+if [ -e "$POLICY_FILE" ] && cmp -s "$CANDIDATE" "$POLICY_FILE"; then
+  log "Policy already current at ${POLICY_FILE}"
+  exit 0
+fi
+
+if [ -e "$POLICY_FILE" ]; then
+  backup="${POLICY_FILE}.backup.$(date +%Y%m%d%H%M%S)"
+  cp -a "$POLICY_FILE" "$backup"
+  log "Backed up existing policy to ${backup}"
+fi
+
+install -o root -g root -m 644 "$CANDIDATE" "$POLICY_FILE"
+log "Installed policy to ${POLICY_FILE}"
+
+# Headscale reloads the file policy on SIGHUP, which systemctl reload maps to
+# where the unit defines it; restart is the fallback. A restart drops node
+# connections briefly but they reconnect on their own.
+if systemctl reload headscale 2>/dev/null; then
+  log "Reloaded headscale"
+else
+  systemctl restart headscale
+  log "Restarted headscale"
+fi
+
+log ""
+log "Verify:"
+log "  journalctl -u headscale -n 20 --no-pager"
+log "  headscale nodes list"
+}
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+[ -n "${POLICY_SOURCE:-}" ] || {
+  log "ERROR: POLICY_SOURCE is required; run infra edge, which renders and stages the policy"
+  exit 1
+}
+[ -f "$POLICY_SOURCE" ] || {
+  log "ERROR: POLICY_SOURCE=$POLICY_SOURCE does not exist"
+  exit 1
+}
+CANDIDATE="$(mktemp /var/tmp/headscale-policy.XXXXXX)"
+cp "$POLICY_SOURCE" "$CANDIDATE"
+[ "${POLICY_DIFF_ONLY:-0}" = 1 ] || log "Installing policy rendered by the caller (${POLICY_SOURCE})"
+validate_and_install

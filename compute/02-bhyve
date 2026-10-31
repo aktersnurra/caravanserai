@@ -1,0 +1,85 @@
+#!/bin/sh
+# compute/02-bhyve
+# Host-side bhyve setup: kernel modules, a private bridge for guest VMs, and
+# vm-bhyve with its ZFS dataset. Run after compute/01-base.
+#
+# Guests run their own kernel, so unlike a jail they cannot sit on an lo1
+# alias — they need a tap device on a bridge. The bridge here has no physical
+# member: it is a private virtual switch on the same subnet the jails use,
+# so guests reach the outside through the pf NAT rule 01-base already
+# installs and the edge host reaches them over the Tailscale route it already
+# advertises. Nothing is bridged onto the LAN.
+set -e
+
+# This host's network from serai.sexp: its subnet and guest_bridge.
+JAIL_SUBNET="${JAIL_SUBNET:?set JAIL_SUBNET to the host network subnet in serai.sexp}"
+GUEST_BRIDGE="${GUEST_BRIDGE:?set GUEST_BRIDGE to the host network guest_bridge in serai.sexp}"
+ZPOOL="${ZPOOL:-zroot}"
+VM_DATASET="${VM_DATASET:-${ZPOOL}/vm}"
+
+log() { echo "==> $*"; }
+
+log "Installing vm-bhyve and guest tooling"
+# bhyve-firmware provides the UEFI loader the guests use. grub2-bhyve is not
+# installed: it is only needed for guests booted via the grub loader, and the
+# Debian netinst image boots under UEFI directly.
+pkg install -y vm-bhyve bhyve-firmware
+
+log "Loading kernel modules"
+for module in vmm nmdm if_bridge if_tap; do
+  kldstat -q -m "$module" || kldload "$module" 2>/dev/null || true
+done
+
+# vmm cannot be unloaded while a guest is running, so load it at boot rather
+# than relying on vm-bhyve to load it on demand.
+sysrc kld_list+="vmm"
+sysrc kld_list+="nmdm"
+sysrc kld_list+="if_bridge"
+sysrc kld_list+="if_tap"
+
+log "Allowing tap devices to attach to a bridge while the guest is running"
+sysctl net.link.tap.up_on_open=1
+grep -q '^net.link.tap.up_on_open' /etc/sysctl.conf 2>/dev/null ||
+  echo 'net.link.tap.up_on_open=1' >>/etc/sysctl.conf
+
+log "Creating ZFS dataset ${VM_DATASET}"
+zfs list "$VM_DATASET" >/dev/null 2>&1 ||
+  zfs create -o mountpoint=/vm "$VM_DATASET"
+
+log "Enabling vm-bhyve"
+sysrc vm_enable="YES"
+sysrc vm_dir="zfs:${VM_DATASET}"
+# vm_list (guests started at boot) is not set here: infra provision adds each
+# guest once it is installed, and rerunning this script must not drop them.
+
+log "Initialising vm-bhyve"
+vm init
+
+log "Creating the private guest switch"
+# No physical interface is added: this is a virtual switch, not a LAN bridge.
+vm switch list 2>/dev/null | grep -q '^guests' || vm switch create guests
+
+log "Addressing the guest bridge"
+# The bridge needs an address of its own to be a gateway. A guest cannot use
+# the gateway the jails use: that lives on lo1, and nothing on the bridge
+# can answer ARP for it, so the guest fails at layer 2 with "Destination Host
+# Unreachable" before pf or routing ever sees a packet. The guest bridge is in
+# the same advertised subnet, so nothing else has to change. vm-bhyve stores it
+# with the switch and sets it whenever it creates the bridge, at boot too; an
+# rc.conf ifconfig_ alias would not survive a reboot, since the bridge does
+# not exist yet when rc configures interfaces. Guests' gateway and the
+# logging relay both live on it.
+vm switch address guests "${GUEST_BRIDGE}/${JAIL_SUBNET#*/}"
+
+log "Fetching guest installer images list"
+vm iso 2>/dev/null || true
+
+log ""
+log "==> bhyve host setup complete."
+log ""
+log "ZFS dataset : ${VM_DATASET} (mounted at /vm)"
+log "Switch      : guests (private, no physical member)"
+log ""
+log "Next:"
+log "  1. sh guests/<guest>/guest   # create and install a declared guest"
+log "  2. From the workstation: infra edge   # open its tailnet_ports in pf and the ACL"

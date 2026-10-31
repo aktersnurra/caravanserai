@@ -1,0 +1,20 @@
+#!/bin/sh
+# PROVIDE: central_logging
+# __RCORDER__
+# KEYWORD: shutdown
+. /etc/rc.subr
+
+name=central_logging
+# rc.subr consumes these variables when run_rc_command is invoked.
+# shellcheck disable=SC2034
+rcvar=central_logging_enable
+# shellcheck disable=SC2034
+command=/usr/local/sbin/syslog-ng
+pidfile=/var/run/central-logging.pid
+required_files=/usr/local/etc/central-logging/syslog-ng.conf
+# shellcheck disable=SC2034
+command_args="--cfgfile=${required_files} --pidfile=${pidfile} --persist-file=/var/db/central-logging/persist --control=/var/run/central-logging.ctl"
+
+load_rc_config "$name"
+: "${central_logging_enable:=NO}"
+run_rc_command "$1"

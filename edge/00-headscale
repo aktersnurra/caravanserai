@@ -1,0 +1,140 @@
+#!/usr/bin/env bash
+# infra/edge/00_headscale.sh
+# Run first, on the edge host
+# Requires: HEADSCALE_DOMAIN, and from edge/edge.sexp BASE_DOMAIN (its
+# base_domain) and HEADSCALE_USER (its operator)
+# Prints: pre-auth key for compute host
+set -euo pipefail
+
+HEADSCALE_VERSION="0.28.0"
+HEADSCALE_DOMAIN="${HEADSCALE_DOMAIN:?set HEADSCALE_DOMAIN, e.g. hs.example.org}"
+BASE_DOMAIN="${BASE_DOMAIN:?set BASE_DOMAIN to base_domain in edge/edge.sexp}"
+HEADSCALE_USER="${HEADSCALE_USER:?set HEADSCALE_USER to operator in edge/edge.sexp}"
+# It is written into the placeholder policy's JSON below.
+case "$HEADSCALE_USER" in
+  '' | *[!a-z0-9_-]*) echo 'HEADSCALE_USER: lowercase letters, digits, _ and - only' >&2; exit 1 ;;
+esac
+
+log() { echo "==> $*"; }
+
+log "Installing Headscale ${HEADSCALE_VERSION}"
+curl -fsSL \
+  "https://github.com/juanfont/headscale/releases/download/v${HEADSCALE_VERSION}/headscale_${HEADSCALE_VERSION}_linux_amd64" \
+  -o /usr/local/bin/headscale
+chmod +x /usr/local/bin/headscale
+
+id -u headscale &>/dev/null ||
+  useradd -r -s /sbin/nologin -d /var/lib/headscale headscale
+mkdir -p /var/lib/headscale /etc/headscale /var/run/headscale
+chown headscale:headscale /var/lib/headscale /var/run/headscale
+
+cat >/etc/headscale/config.yaml <<EOF
+server_url: https://${HEADSCALE_DOMAIN}
+listen_addr: 127.0.0.1:8080
+metrics_listen_addr: 127.0.0.1:9090
+unix_socket: /var/run/headscale/headscale.sock
+
+private_key_path: /var/lib/headscale/private.key
+noise:
+  private_key_path: /var/lib/headscale/noise_private.key
+
+prefixes:
+  v4: 100.64.0.0/10
+
+derp:
+  server:
+    enabled: false
+  urls:
+    - https://controlplane.tailscale.com/derpmap/default
+
+database:
+  type: sqlite3
+  sqlite:
+    path: /var/lib/headscale/db.sqlite
+
+log:
+  level: info
+
+policy:
+  mode: file
+  path: /etc/headscale/acls.yaml
+
+dns:
+  magic_dns: true
+  base_domain: tail.${BASE_DOMAIN}
+  nameservers:
+    global:
+      - 1.1.1.1
+      - 9.9.9.9
+EOF
+
+# The ACL policy is installed by edge/01-headscale-policy, from a policy infra
+# renders from each service's app.sexp/guest.sexp tailnet_ports and
+# operator_ports. It is not written here: this script is a first-run
+# installer, so a policy living in it can only be changed by a run
+# that would also reinstall the binary and reissue pre-auth keys. Nobody does
+# that to publish a port, which is how the live policy came to be missing
+# a guest's port while the repo and the server silently diverged.
+#
+# Headscale will not start without the file config.yaml points at, so write a
+# deny-all placeholder and let 01-headscale-policy replace it.
+if [ ! -e /etc/headscale/acls.yaml ]; then
+  cat >/etc/headscale/acls.yaml <<EOF
+{
+  // PLACEHOLDER written by edge/00-headscale. Deny-all until
+  // edge/01-headscale-policy installs the generated policy.
+  "tagOwners": {
+    "tag:vps":   ["${HEADSCALE_USER}@"],
+    "tag:nuc":   ["${HEADSCALE_USER}@"],
+    "tag:jails": ["${HEADSCALE_USER}@"]
+  },
+  "acls": []
+}
+EOF
+fi
+
+cat >/etc/systemd/system/headscale.service <<'EOF'
+[Unit]
+Description=Headscale VPN control plane
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=headscale
+RuntimeDirectory=headscale
+ExecStart=/usr/local/bin/headscale serve
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable --now headscale
+
+log "Waiting for Headscale to be ready"
+for _ in $(seq 1 20); do
+  headscale users list >/dev/null 2>&1 && break
+  sleep 2
+done
+headscale users list >/dev/null 2>&1 || { log "Headscale did not start in time"; exit 1; }
+
+headscale users create "$HEADSCALE_USER" 2>/dev/null || true
+USER_ID="$(headscale users list -o json | grep -m1 '"id"' | grep -oP '\d+')"
+
+log "Next: from the workstation, run infra caddy-install"
+log "      (Caddy will proxy hs.${BASE_DOMAIN} → Headscale). Once the compute host is"
+log "      reachable, run infra edge from the workstation to install the ACL."
+log "      The placeholder policy denies everything and stays until the first"
+log "      edge run."
+log ""
+log "Pre-auth keys (use after Caddy is running):"
+log "  compute host:"
+headscale preauthkeys create --user "${USER_ID}" --expiration 1h --tags tag:nuc
+log "  edge host:"
+headscale preauthkeys create --user "${USER_ID}" --expiration 1h --tags tag:vps
+log ""
+log "Then: PREAUTH_KEY=<key above> sh compute/01-base"

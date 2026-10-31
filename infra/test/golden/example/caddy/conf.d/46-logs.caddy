@@ -1,0 +1,21 @@
+# VMUI is never reachable publicly without a valid oauth2-proxy session.
+logs.example.org {
+    import access_log
+    header Strict-Transport-Security "max-age=31536000; includeSubDomains"
+
+    handle /oauth2/* {
+        reverse_proxy 127.0.0.1:4180
+    }
+
+    handle {
+        forward_auth 127.0.0.1:4180 {
+            uri /oauth2/auth
+            @unauthenticated status 401
+            handle_response @unauthenticated {
+                # Return to the path only: queries can carry OAuth credentials.
+                redir * /oauth2/start?rd={scheme}://{host}{path}
+            }
+        }
+        reverse_proxy 10.20.0.20:9428
+    }
+}

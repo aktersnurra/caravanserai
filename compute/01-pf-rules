@@ -1,0 +1,163 @@
+#!/bin/sh
+# compute/01-pf-rules
+# Installs the edge host -> service filter rules rendered elsewhere, spliced into
+# /etc/pf.conf between their own anchors. Run as root on the compute host.
+#
+# infra renders the rules from each service's declared tailnet ports
+# (apps/*/app.sexp, guests/*/guest.sexp), the same declaration the
+# Headscale ACL is rendered from: the ACL decides whether a packet may leave
+# the edge host, pf decides whether it is accepted here, and declaring the port
+# once means the two cannot disagree. infra stages the rules as PF_SOURCE
+# and runs this script with PF_DIFF_ONLY=1 to show the change, then again to
+# install it. The rules carry __EDGE__ in place of the edge host's Tailscale
+# address, which is resolved here: only this host can see the tailnet.
+#
+# Split out of compute/01-base for the same reason edge/01-headscale-policy was
+# split out of edge/00-headscale: 01-base is a first-run installer that writes
+# the whole of /etc/pf.conf, so a rule living in it can only be changed by a
+# run that also rewrites the interface macros, the NAT rule and the SSH
+# policy. Nobody does that to publish a port, so the rules stayed commented
+# out and each service was opened by hand — or, for one guest, not at all.
+#
+#   PF_SOURCE=<file>   the rendered rules to install (required)
+#   PF_DIFF_ONLY=1     validate and diff against pf.conf; exit 10 when it
+#                      differs, change nothing
+#
+# Idempotent: safe to run on every deploy.
+set -eu
+
+PF_CONF="${PF_CONF:-/etc/pf.conf}"
+# The tailnet peer name, not the public hostname: headscale names peers after
+# the machine, so this is "vps" rather than the edge host's domain. Anchored so a
+# future peer whose name merely contains "vps" cannot shadow it.
+EDGE_PEER_MATCH="${EDGE_PEER_MATCH:-^vps$}"
+# Matched in the installed pf.conf: changing it would leave the old block
+# behind and append a second one.
+ANCHOR_BEGIN="# BEGIN generated service rules (nuc/01-pf-rules)"
+ANCHOR_END="# END generated service rules"
+
+log() { echo "==> $*" >&2; }
+
+# ---------------------------------------------------------------------------
+# The edge host's Tailscale address
+# ---------------------------------------------------------------------------
+# Read from Tailscale rather than pasted in: the <EDGE_TS_IP> placeholder in
+# 01-base had to be substituted by hand, which is a step that gets skipped and
+# a value that goes stale when the node is re-registered.
+vps_tailscale_address() {
+  [ -z "${EDGE_TS_IP:-}" ] || { printf '%s\n' "$EDGE_TS_IP"; return 0; }
+  # "tailscale status" prints one peer per line as: address hostname os ...
+  # Parsed rather than the JSON because the plain output is a stable two-column
+  # shape, while matching JSON with awk depends on field order within an object.
+  tailscale status 2>/dev/null |
+    awk -v match_name="$EDGE_PEER_MATCH" '
+      $1 ~ /^100\./ && $2 ~ match_name { print $1; exit }
+    '
+}
+
+# ---------------------------------------------------------------------------
+# Splice into pf.conf between the anchors, validate, install, reload
+# ---------------------------------------------------------------------------
+install_rules() {
+  # Rewriting only the anchored block leaves the rest of /etc/pf.conf alone:
+  # the interface macros, the NAT rule and the SSH policy belong to 01-base,
+  # and a generator that owned the whole file would silently revert a rule an
+  # operator had good reason to add by hand.
+  [ -f "$PF_CONF" ] || {
+    log "ERROR: ${PF_CONF} does not exist — run compute/01-base first"
+    exit 1
+  }
+
+  # The address is resolved here, not at render time: only this host can see
+  # the tailnet, and a rule carrying a stale address fails silently — pf keeps
+  # blocking and nothing logs why.
+  edge_address="$(vps_tailscale_address || true)"
+  [ -n "$edge_address" ] || {
+    log "ERROR: could not determine the edge host Tailscale address."
+    log "Set it explicitly: EDGE_TS_IP=100.x.y.z"
+    exit 1
+  }
+  [ "${PF_DIFF_ONLY:-0}" = 1 ] || log "edge host Tailscale address: ${edge_address}"
+  RULES="$(printf '%s\n' "$RULES" | sed "s|__EDGE__|${edge_address}|g")"
+
+  candidate="$(mktemp /var/tmp/pf.conf.XXXXXX)"
+  rules_file="$(mktemp /var/tmp/pf-rules.XXXXXX)"
+  # shellcheck disable=SC2064
+  trap "rm -f '$candidate' '$rules_file'" EXIT
+  printf '%s\n' "$RULES" >"$rules_file"
+
+  if grep -Fq "$ANCHOR_BEGIN" "$PF_CONF"; then
+    # The rules go to awk as a file, not -v: FreeBSD's awk rejects a -v
+    # value containing a newline, so any multi-rule block failed here.
+    awk -v begin="$ANCHOR_BEGIN" -v end="$ANCHOR_END" -v rules_file="$rules_file" '
+      $0 == begin {
+        print
+        while ((getline line < rules_file) > 0) print line
+        close(rules_file)
+        skip = 1
+        next
+      }
+      $0 == end   { print; skip = 0; next }
+      !skip       { print }
+    ' "$PF_CONF" >"$candidate"
+  else
+    # First run: append. pf evaluates the last matching rule, so appending
+    # after the block/pass rules above is what makes these effective.
+    cp "$PF_CONF" "$candidate"
+    {
+      printf '\n%s\n' "$ANCHOR_BEGIN"
+      printf '%s\n' "$RULES"
+      printf '%s\n' "$ANCHOR_END"
+    } >>"$candidate"
+  fi
+
+  # pfctl -n parses without loading. A ruleset that fails to parse would
+  # otherwise leave pf running the previous one with no sign anything is
+  # wrong until the next boot, when it fails closed and takes the estate
+  # with it.
+  if ! pfctl -nf "$candidate"; then
+    log "ERROR: generated ruleset is invalid — ${PF_CONF} was not changed"
+    exit 1
+  fi
+
+  if cmp -s "$candidate" "$PF_CONF"; then
+    log "Rules already current in ${PF_CONF}"
+    [ "${PF_DIFF_ONLY:-0}" != 1 ] || exit 0
+    return 0
+  fi
+
+  # PF_DIFF_ONLY=1: show what an install would change, change nothing. Exit
+  # 10 is "changes pending" so a caller can tell it from success and error.
+  if [ "${PF_DIFF_ONLY:-0}" = 1 ]; then
+    diff -u "$PF_CONF" "$candidate" || true
+    exit 10
+  fi
+
+  backup="${PF_CONF}.backup.$(date +%Y%m%d%H%M%S)"
+  cp -p "$PF_CONF" "$backup"
+  log "Backed up ${PF_CONF} to ${backup}"
+
+  install -o root -g wheel -m 0600 "$candidate" "$PF_CONF"
+  pfctl -f "$PF_CONF"
+  log "Installed and loaded ${PF_CONF}"
+}
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+[ -n "${PF_SOURCE:-}" ] || {
+  log "ERROR: PF_SOURCE is required; run infra edge, which renders and stages the rules"
+  exit 1
+}
+[ -f "$PF_SOURCE" ] || {
+  log "ERROR: PF_SOURCE=$PF_SOURCE does not exist"
+  exit 1
+}
+RULES="$(cat "$PF_SOURCE")"
+[ -n "$RULES" ] || {
+  log "ERROR: PF_SOURCE=$PF_SOURCE is empty"
+  exit 1
+}
+# PF_DIFF_ONLY=1 prints only the diff or "already current"; no chatter.
+[ "${PF_DIFF_ONLY:-0}" = 1 ] || log "Installing rules rendered by the caller (${PF_SOURCE})"
+install_rules

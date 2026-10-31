@@ -1,0 +1,20 @@
+[Unit]
+Description=Forward Caddy access logs to the private VictoriaLogs jail
+After=network-online.target systemd-journald.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/syslog-ng --foreground --cfgfile=/etc/syslog-ng/victoria-logs.conf --control=/run/syslog-ng-victoria/control --persist-file=/var/lib/syslog-ng-victoria/persist --pidfile=/run/syslog-ng-victoria/pid
+Restart=on-failure
+RestartSec=10
+RuntimeDirectory=syslog-ng-victoria
+StateDirectory=syslog-ng-victoria
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

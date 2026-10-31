@@ -1,0 +1,13 @@
+# ---------------------------------------------------------------------------
+# counter (OCaml, native FreeBSD jail)
+# ---------------------------------------------------------------------------
+__COUNTER_HOSTNAME__ {
+    import access_log
+    header Strict-Transport-Security "max-age=31536000; includeSubDomains"
+    reverse_proxy __COUNTER_IP__:__COUNTER_HTTP_PORT__ {
+        # Wait out a restart rather than answer 502.
+        lb_try_duration 30s
+        header_up Host {host}
+        header_up X-Real-IP {remote_host}
+    }
+}

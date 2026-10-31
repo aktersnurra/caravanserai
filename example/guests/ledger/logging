@@ -1,0 +1,77 @@
+#!/bin/sh
+# Run as root inside the Debian ledger guest only after the compute host bridge relay
+# accepts private TCP syslog. Never used by normal ledger provisioning.
+set -eu
+
+SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+CONFIG_FILE=/etc/rsyslog-victoria.conf
+UNIT_FILE=/etc/systemd/system/rsyslog-victoria.service
+
+[ "$(id -u)" -eq 0 ] || { echo 'ledger logging: run as root' >&2; exit 1; }
+case "${1-}" in
+  '') [ "$#" -eq 0 ] || exit 1 ;;
+  --recover-check|--recover|--recover-health) [ "$#" -eq 1 ] || exit 1 ;;
+  *) echo 'ledger logging: unknown mode' >&2; exit 1 ;;
+esac
+mode=${1-}
+# No install or service change if the separate compute host relay is unavailable.
+if ! timeout 5 bash -c 'exec 3<>/dev/tcp/10.20.0.254/29514'; then
+  echo 'ledger logging: compute host bridge relay unavailable; sender remains disabled' >&2
+  exit 1
+fi
+if systemctl is-active --quiet rsyslog-victoria.service; then
+  if [ ! -L "$CONFIG_FILE" ] && [ ! -L "$UNIT_FILE" ] &&
+     cmp -s "$SCRIPT_DIR/rsyslog-victoria.conf" "$CONFIG_FILE" &&
+     cmp -s "$SCRIPT_DIR/rsyslog-victoria.service" "$UNIT_FILE" &&
+     systemctl is-enabled --quiet rsyslog-victoria.service; then
+    echo 'ledger logging: matching active sender preserved'
+    exit 0
+  fi
+  echo 'ledger logging: active sender differs; refusing overwrite' >&2
+  exit 1
+fi
+if systemctl is-enabled --quiet rsyslog-victoria.service; then
+  [ "$mode" != --recover-health ] || {
+    echo 'ledger logging: sender inactive after recovery' >&2
+    exit 1
+  }
+  [ -n "$mode" ] || {
+    echo 'ledger logging: enabled but inactive sender requires operator action' >&2
+    exit 1
+  }
+  # The only allowed prior unit differs by the known read-only PID path.
+  [ ! -L "$CONFIG_FILE" ] && [ ! -L "$UNIT_FILE" ] &&
+    cmp -s "$SCRIPT_DIR/rsyslog-victoria.conf" "$CONFIG_FILE" &&
+    (cmp -s "$SCRIPT_DIR/rsyslog-victoria.service" "$UNIT_FILE" ||
+      sed 's@-i /run/rsyslog-victoria/rsyslogd.pid$@-i /run/rsyslog-victoria.pid@' \
+        "$SCRIPT_DIR/rsyslog-victoria.service" | cmp -s - "$UNIT_FILE") || {
+    echo 'ledger logging: installed configuration differs; refusing recovery' >&2
+    exit 1
+  }
+  [ "$mode" != --recover-check ] || exit 0
+  install -o root -g root -m 0644 "$SCRIPT_DIR/rsyslog-victoria.service" "$UNIT_FILE"
+  systemctl daemon-reload
+  systemctl start rsyslog-victoria.service
+  sleep 2
+  systemctl is-active --quiet rsyslog-victoria.service || {
+    echo 'ledger logging: sender did not remain active after recovery' >&2
+    exit 1
+  }
+  exit 0
+fi
+[ -z "$mode" ] || { echo 'ledger logging: expected an enabled stopped sender' >&2; exit 1; }
+apt-get update
+DEBIAN_FRONTEND=noninteractive apt-get install -y rsyslog
+install -d -o root -g root -m 0700 /var/lib/rsyslog-victoria
+candidate=$(mktemp /etc/rsyslog-victoria.XXXXXX)
+trap 'rm -f "$candidate"' EXIT
+install -o root -g root -m 0600 "$SCRIPT_DIR/rsyslog-victoria.conf" "$candidate"
+/usr/sbin/rsyslogd -N1 -f "$candidate" || {
+  echo 'ledger logging: invalid rsyslog candidate; previous configuration unchanged' >&2
+  exit 1
+}
+install -o root -g root -m 0644 "$candidate" "$CONFIG_FILE"
+install -o root -g root -m 0644 "$SCRIPT_DIR/rsyslog-victoria.service" "$UNIT_FILE"
+systemctl daemon-reload
+systemctl enable rsyslog-victoria.service
+systemctl start rsyslog-victoria.service

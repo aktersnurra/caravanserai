@@ -1,0 +1,3 @@
+__LOGS_HOSTNAME__ {
+    reverse_proxy __LOGS_IP__:__LOGS_HTTP_PORT__
+}

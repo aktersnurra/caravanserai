@@ -1,0 +1,252 @@
+#!/usr/bin/env bash
+# edge/02-caddy
+# Builds Caddy with xcaddy + caddy-ratelimit and installs a Caddy config tree
+# rendered elsewhere: infra renders edge/caddy/'s templates from
+# apps/*/app.sexp and guests/*/guest.sexp and stages the result as
+# CADDY_SOURCE. Run through infra edge (a config change: CADDY_DIFF_ONLY=1
+# first, then the install) or infra caddy-install (build if needed, unit,
+# first install).
+# Upstreams reach jail IPs over the Tailscale subnet route advertised by
+# the compute host (see compute/01-base) and approved in Headscale.
+set -euo pipefail
+
+CADDY_USER="caddy"
+CADDY_DIR="${CADDY_DIR:-/etc/caddy}"
+SECRETS_FILE="${SECRETS_FILE:-${CADDY_DIR}/secrets.env}"
+CADDY_UNIT_FILE="${CADDY_UNIT_FILE:-/etc/systemd/system/caddy.service}"
+
+log() { echo "==> $*"; }
+
+# Nothing here renders the templates any more, so without a rendered tree
+# there is nothing to install. Checked first, before secrets, build or setup.
+[ -n "${CADDY_SOURCE:-}" ] || {
+  log "ERROR: CADDY_SOURCE is required; run infra edge (config) or infra caddy-install (build/unit/first install)"
+  exit 1
+}
+
+# Caddy expands {$VIDEO_SECRET} from this file at runtime. Source it only for
+# candidate validation; it is neither printed nor copied into a Caddyfile.
+[ -r "$SECRETS_FILE" ] || {
+  log "ERROR: missing or unreadable $SECRETS_FILE"
+  exit 1
+}
+# Never allow an inherited environment value to mask a missing/empty file value.
+unset VIDEO_SECRET
+set -a
+# shellcheck source=/etc/caddy/secrets.env
+. "$SECRETS_FILE"
+set +a
+: "${VIDEO_SECRET:?$SECRETS_FILE must define a nonempty VIDEO_SECRET}"
+
+# ---------------------------------------------------------------------------
+# Build Caddy with xcaddy so we get caddy-ratelimit
+# ---------------------------------------------------------------------------
+# Building is the slow path: it installs Go and compiles Caddy from source,
+# which is minutes of work that an ordinary config update does not need. The
+# installed binary is rebuilt only when it is missing or does not carry the
+# modules this Caddyfile requires — the config is what usually changed, not
+# the server. CADDY_FORCE_BUILD=1 rebuilds anyway, to pick up a new upstream
+# release; CADDY_SKIP_BUILD=1 still skips unconditionally, for tests.
+caddy_has_required_modules() {
+  local modules
+  [ -x /usr/local/bin/caddy ] || return 1
+  modules="$(/usr/local/bin/caddy list-modules 2>/dev/null)" || return 1
+  # http.handlers.rate_limit is the one non-standard module (verified against
+  # mholt/caddy-ratelimit handler.go); the Caddyfile fails to load without it,
+  # so its presence distinguishes an xcaddy build from a distribution binary.
+  # Matched as a whole line-or-word rather than with -x: list-modules is
+  # documented only as "prints the modules that are installed", so indentation
+  # or annotation would silently turn every run back into a rebuild.
+  printf '%s\n' "$modules" | grep -qw 'http\.handlers\.rate_limit'
+}
+
+caddy_build_needed=1
+if [ "${CADDY_SKIP_BUILD:-0}" = 1 ] || [ "${CADDY_DIFF_ONLY:-0}" = 1 ]; then
+  caddy_build_needed=0
+  [ "${CADDY_DIFF_ONLY:-0}" = 1 ] ||
+    log "CADDY_SKIP_BUILD=1 — keeping the installed Caddy binary"
+elif [ "${CADDY_FORCE_BUILD:-0}" = 1 ]; then
+  log "CADDY_FORCE_BUILD=1 — rebuilding Caddy"
+elif caddy_has_required_modules; then
+  caddy_build_needed=0
+  log "Caddy already built with caddy-ratelimit ($(/usr/local/bin/caddy version 2>/dev/null | head -1))"
+else
+  log "Caddy missing or lacks caddy-ratelimit — building"
+fi
+
+if [ "$caddy_build_needed" = 1 ]; then
+  log "Installing xcaddy build deps"
+  pacman -Sy --noconfirm go
+  if ! command -v xcaddy &>/dev/null; then
+    GOPATH=/usr/local go install github.com/caddyserver/xcaddy/cmd/xcaddy@latest
+  fi
+
+  log "Building Caddy with caddy-ratelimit"
+  mkdir -p /var/tmp/caddy-build /var/tmp/caddy-tmp
+  GOPATH=/var/tmp/caddy-build GOTMPDIR=/var/tmp/caddy-tmp xcaddy build \
+    --with github.com/mholt/caddy-ratelimit \
+    --output /usr/local/bin/caddy
+  chmod +x /usr/local/bin/caddy
+  rm -rf /var/tmp/caddy-build /var/tmp/caddy-tmp
+fi
+
+if [ "${CADDY_SKIP_SETUP:-0}" != 1 ] && [ "${CADDY_DIFF_ONLY:-0}" != 1 ]; then
+  id -u "$CADDY_USER" &>/dev/null ||
+    useradd -r -s /sbin/nologin -d /var/lib/caddy "$CADDY_USER"
+  mkdir -p /var/lib/caddy "$CADDY_DIR"
+  chown "$CADDY_USER:$CADDY_USER" /var/lib/caddy
+fi
+
+# ---------------------------------------------------------------------------
+# Caddyfile — copy the rendered tree to a temporary candidate, validate that
+# candidate with the secret environment, then install it.
+# ---------------------------------------------------------------------------
+CANDIDATE_DIR="$(mktemp -d /var/tmp/caddy-config.XXXXXX)"
+trap 'rm -rf "$CANDIDATE_DIR"' EXIT
+mkdir -p "$CANDIDATE_DIR/conf.d"
+
+[ -f "$CADDY_SOURCE/Caddyfile" ] || {
+  log "ERROR: CADDY_SOURCE=$CADDY_SOURCE has no Caddyfile"
+  exit 1
+}
+shopt -s nullglob
+sourced_fragments=("$CADDY_SOURCE"/conf.d/*.caddy)
+shopt -u nullglob
+[ "${#sourced_fragments[@]}" -gt 0 ] || {
+  log "ERROR: CADDY_SOURCE=$CADDY_SOURCE has no conf.d/*.caddy"
+  exit 1
+}
+[ "${CADDY_DIFF_ONLY:-0}" = 1 ] ||
+  log "Installing Caddy config rendered by the caller ($CADDY_SOURCE)"
+cp "$CADDY_SOURCE/Caddyfile" "$CANDIDATE_DIR/Caddyfile"
+cp "${sourced_fragments[@]}" "$CANDIDATE_DIR/conf.d/"
+
+if grep -R -q '__[A-Z0-9_]\+__' "$CANDIDATE_DIR"; then
+  log "ERROR: unsubstituted placeholders in Caddy candidate:"
+  grep -R '__[A-Z0-9_]\+__' "$CANDIDATE_DIR" >&2
+  exit 1
+fi
+
+# caddy validate logs a page of JSON even on success; keep it for failures.
+if ! caddy validate --config "$CANDIDATE_DIR/Caddyfile" >"$CANDIDATE_DIR/validate.log" 2>&1; then
+  cat "$CANDIDATE_DIR/validate.log" >&2
+  rm -f "$CANDIDATE_DIR/validate.log"
+  log "Caddy candidate invalid — existing configuration was not changed"
+  exit 1
+fi
+rm -f "$CANDIDATE_DIR/validate.log"
+[ "${CADDY_DIFF_ONLY:-0}" = 1 ] || log "Caddy candidate validated"
+
+# CADDY_DIFF_ONLY=1: show what an install would change, change nothing --
+# no backup, no unit, no reload. Exit 10 is "changes pending" so a caller
+# can tell it from success and error.
+if [ "${CADDY_DIFF_ONLY:-0}" = 1 ]; then
+  live_root="$CADDY_DIR/Caddyfile"
+  [ -e "$live_root" ] || live_root=/dev/null
+  live_fragments="$CADDY_DIR/conf.d"
+  # an empty stand-in inside the candidate dir, so the EXIT trap removes it
+  [ -d "$live_fragments" ] || { live_fragments="$CANDIDATE_DIR/empty"; mkdir "$live_fragments"; }
+  changed=0
+  diff -u "$live_root" "$CANDIDATE_DIR/Caddyfile" || changed=1
+  diff -ruN "$live_fragments" "$CANDIDATE_DIR/conf.d" || changed=1
+  if [ "$changed" = 0 ]; then
+    log "Caddy config already current in $CADDY_DIR"
+    exit 0
+  fi
+  exit 10
+fi
+
+# Arm rollback before the first managed-config or unit mutation. This preserves
+# the complete prior root, fragment directory, and systemd unit on every error.
+backup_dir="${CADDY_DIR}.backup.$(date +%Y%m%d%H%M%S)"
+mkdir -p "$backup_dir"
+had_caddyfile=0
+had_fragments=0
+had_unit=0
+[ ! -e "$CADDY_DIR/Caddyfile" ] || { cp -a "$CADDY_DIR/Caddyfile" "$backup_dir/Caddyfile"; had_caddyfile=1; }
+[ ! -d "$CADDY_DIR/conf.d" ] || { cp -a "$CADDY_DIR/conf.d" "$backup_dir/conf.d"; had_fragments=1; }
+[ ! -e "$CADDY_UNIT_FILE" ] || { cp -a "$CADDY_UNIT_FILE" "$backup_dir/caddy.service"; had_unit=1; }
+rollback_armed=1
+
+restore_caddy_config() {
+  rm -f "$CADDY_DIR/Caddyfile" "$CADDY_UNIT_FILE"
+  rm -rf "$CADDY_DIR/conf.d"
+  [ "$had_caddyfile" -eq 0 ] || cp -a "$backup_dir/Caddyfile" "$CADDY_DIR/Caddyfile"
+  [ "$had_fragments" -eq 0 ] || cp -a "$backup_dir/conf.d" "$CADDY_DIR/conf.d"
+  [ "$had_unit" -eq 0 ] || cp -a "$backup_dir/caddy.service" "$CADDY_UNIT_FILE"
+}
+rollback_on_error() {
+  status=$?
+  [ "$rollback_armed" -eq 1 ] || exit "$status"
+  log "Caddy installation failed — restoring $backup_dir"
+  restore_caddy_config
+  systemctl daemon-reload || true
+  systemctl is-active --quiet caddy && systemctl reload caddy || true
+  exit "$status"
+}
+trap rollback_on_error ERR
+
+install -o root -g "$CADDY_USER" -m 640 "$CANDIDATE_DIR/Caddyfile" "$CADDY_DIR/Caddyfile"
+rm -rf "$CADDY_DIR/conf.d"
+install -d -o root -g "$CADDY_USER" -m 750 "$CADDY_DIR/conf.d"
+install -o root -g "$CADDY_USER" -m 640 "$CANDIDATE_DIR/conf.d"/*.caddy "$CADDY_DIR/conf.d/"
+
+# ---------------------------------------------------------------------------
+# systemd unit
+# ---------------------------------------------------------------------------
+cat >"$CADDY_UNIT_FILE" <<'EOF'
+[Unit]
+Description=Caddy
+Documentation=https://caddyserver.com/docs/
+After=network.target network-online.target
+Requires=network-online.target
+
+[Service]
+Type=notify
+User=caddy
+Group=caddy
+EnvironmentFile=/etc/caddy/secrets.env
+ExecStart=/usr/local/bin/caddy run --config /etc/caddy/Caddyfile
+ExecReload=/usr/local/bin/caddy reload --config /etc/caddy/Caddyfile --force
+TimeoutStopSec=5s
+LimitNOFILE=1048576
+PrivateTmp=true
+ProtectSystem=full
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+# Enable independently: an already-active but disabled unit must become enabled.
+systemctl enable caddy
+if systemctl is-active --quiet caddy; then
+  systemctl reload caddy
+else
+  systemctl start caddy
+fi
+rollback_armed=0
+trap - ERR
+
+log ""
+log "==> Caddy running."
+
+# Bootstrap instructions belong to a first run only. Printed on every config
+# update they read as work still outstanding, which is how an ordinary
+# infra edge came to look like a fresh install. $had_caddyfile is the test:
+# it is 0 only when this host had no managed Caddyfile before this run.
+if [ "$had_caddyfile" -eq 0 ]; then
+  log ""
+  log "This host had no Caddy configuration before now, so the estate still"
+  log "needs bringing up. On the compute host:"
+  log ""
+  log "  1. sh compute/01-base"
+  log "  2. sudo headscale nodes approve-routes -i <compute-node-id> -r <jail subnet>"
+  log "  3. From the workstation: infra bootstrap <app>   # per app"
+  log "  4. Open the pf rules in /etc/pf.conf (set EDGE_TS_IP) and pfctl -f"
+  log ""
+  log "Then from your workstation, per app:"
+  log ""
+  log "  infra rollout <app>        # infra apps lists them"
+fi
