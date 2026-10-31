@@ -113,11 +113,57 @@ order, each `done`, `skipped`, `not_run` or `failed` with a `message`.
 | `stopped_for_operator` | `succeeded` | The jail was created; `next` says how to write its env, then run `up` again. Nothing is deployed yet. |
 | `failed` | `failed`, code `step_failed` | The failed step's message is the error; earlier steps stay done and later ones did not run. `next` is the command to run next. Nothing is undone automatically. |
 
+## Updating
+
+```sh
+serai update --plan --json
+serai update --json
+```
+
+These are operations `update.plan` and `update`. `update` applies without
+`--yes`: its approval is the operator's signature on each commit it
+deploys, checked against `update.sexp`, never the caller's. Everything a
+run prints goes to stderr, and stdout holds the one result. If the settings
+can't be read, the result is `not_applied` with null data.
+
+`data.configuration` is one of:
+
+- `{status: verified, commit}`
+- `{status: refused, commit, message}`
+- `{status: unavailable, message}`
+
+Only `verified` examines apps. `data.apps` lists each source-built app as
+`{app, outcome, ...}`:
+
+| `outcome` | Fields | Meaning |
+| --- | --- | --- |
+| `not_enrolled` | | No `deploy` bookmark, or no declared source. |
+| `already_handled` | `commit` | This `deploy` commit's outcome was final. Not looked at again. |
+| `current` | `commit` | The host already runs it. |
+| `would_deploy` | `commit` | `update.plan` only. |
+| `deployed` | `commit`, `identity` | Active and the public check passed. |
+| `refused` | `commit`, `message` | Signature, key, missing host record or not newer. Final. |
+| `failed` | `commit`, `step`, `message`, `revert` | `revert.outcome` is `reverted`, `failed` or `not_attempted`, with a `message` for the last two. Final. |
+| `not_applied` | `commit` (may be null), `message` | Nothing changed on the host. Tried again next run. |
+
+`update.plan` adds `applied: false`; it takes no lock and writes no state.
+`update` adds `ran` and `reported`:
+
+- `ran` is false when another run held the lock, and the data then holds
+  nothing else.
+- `reported` holds the lines this run reported for the first time.
+
+The status is `failed` with code `step_failed` when one of those lines is
+a refusal or failure. `update.plan` fails the same way when the
+configuration isn't verified.
+
 ## Mutation boundary remains explicit
 
 JSON result mode refuses every other operation, including an `up` without
-`--yes`, **before repository loading or remote work**. `--yes`, extra arguments and duplicate `--json` are not silently
-accepted by the supported read-only requests. Do not automatically remove a
+`--yes`, **before repository loading or remote work**. `update` is the one
+exception, because its authority is the signed commit, as above. `--yes`,
+extra arguments and duplicate `--json` are not silently accepted by the
+supported read-only requests. Do not automatically remove a
 rejected flag and retry a mutating command.
 
 This read-only request contract is **not a security sandbox**: it does not revoke

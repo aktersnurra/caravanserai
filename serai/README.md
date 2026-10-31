@@ -109,6 +109,148 @@ nothing until the jail and its env are in place:
 
 Destroy it when done: `serai jail-test <app> --destroy`.
 
+## Unattended updates: `serai update`
+
+```sh
+serai update            # from cron, every minute
+serai update --plan     # every app's status; changes nothing
+```
+
+`serai update` deploys a newer version of an app that is already running,
+once CI says so, and nothing else. It never creates a jail, writes an env
+file, touches the edge host or handles package, binary or guest workloads.
+It runs on the compute host itself, so no deploy key exists anywhere else,
+and it pulls: nothing can reach the host to start it.
+
+An app is enrolled when its repository has a `deploy` bookmark. CI moves
+it to a commit after that commit's tests pass. A run deploys that commit
+only if all three hold:
+
+| Gate | Question |
+| --- | --- |
+| CI moved `deploy` to it | Do the tests pass? |
+| It carries a good signature by a key in `signers` | Did the operator write it? |
+| It descends from the commit the host records for the live release | Is it newer? |
+
+Without the signature, whoever controls the remote ref would decide what
+runs on the host. The ancestry check stops a replay of an old signed commit.
+Commits the forge writes itself (web merges, bots) are refused, so merge
+locally and push signed commits.
+
+The configuration is read the same way: the updater fetches its remote,
+requires the bookmark's commit to be signed by a key in `signers`, stages
+that commit locally and runs it on the installed engine. If it isn't signed,
+no app is examined.
+
+Each enrolled source-built app is then:
+
+1. **Skipped** when its `deploy` commit was already handled. No host
+   contact: a quiet run is one fetch per repository.
+2. **Examined:** the signature, the host's source record for the live
+   release (`.infra-source`, written on every install) and ancestry.
+3. **Deployed** through `serai up`'s update target: build or reuse, release,
+   no edge step, and the public check.
+
+| Outcome | Handled (not retried until the ref moves)? |
+| --- | --- |
+| Deployed, or already current | yes |
+| Refused: signature, key, no host record, not newer | yes |
+| Build failed | yes |
+| Release failed after the pointer switch | yes, reverted in place if the app declares no `migrate` |
+| Public check failed after a healthy release | yes, reported, not reverted |
+| Not applied: missing jail or env, fetch error, host lock held, release failed before the switch | no, tried again next run |
+
+A revert reactivates the release kept in `.previous` where it is installed,
+so it works whatever built that release. An app that declares `migrate` is
+never reverted: a migrated database may not be readable by the previous
+release. Its report says to run `serai artifact rollback`. The updater never
+runs `serai unlock`.
+
+A run prints only lines it hasn't printed before: one per deploy, refusal
+or failure, until that app's result changes. When it prints, the log of
+everything the run printed, subprocesses included, follows. A run with
+nothing new prints nothing and exits 0, so cron mails only when something
+happened. The exit status is 1 when a printed line is a refusal or failure.
+A run that starts while another is still deploying exits silently.
+`--json` answers in the agent envelope (see `docs/AGENT-INTERFACE.md`).
+
+### Settings and state
+
+`~/.config/serai/update.sexp` (`XDG_CONFIG_HOME`):
+
+```
+((config (git git@example.org:ops/configuration.git) (bookmark master))
+ (signers (0123456789ABCDEF))
+ (gnupghome /home/serai-update/.gnupg-signers))
+```
+
+- `signers` are key IDs as jj reports them: a gpg long key ID, or an ssh
+  key's `SHA256:` fingerprint.
+- `gnupghome` holds only the signers' public keys.
+
+The state lives in `~/.local/state/serai/update` (`XDG_STATE_HOME`): which
+commit each app last handled and the last line reported, plus the run lock.
+An unreadable state file stops the run instead of being treated as empty.
+Mirrors, snapshots and the store are `serai up`'s (`SERAI_CACHE`,
+`SERAI_STORE`).
+
+### Setting it up on a compute host
+
+Once, by the operator:
+
+1. Install `serai` (`./scripts/install.sh`), `jj`, `gnupg`, `rsync` and
+   `curl`.
+2. Create a local user for the updater. It owns its own cache, store and
+   state.
+3. Give that user ssh access to the compute host as the operator's own
+   account, so updater runs and operator runs share one stage and one host
+   lock:
+   - In the user's `~/.ssh/config`, point the compute host's alias (its
+     `ssh` in `serai.sexp`) at `127.0.0.1`.
+   - Add the user's key to the operator account's `authorized_keys` with
+     `from="127.0.0.1,::1"`.
+
+   This user is root-equivalent on the host: the engine drives the host
+   with `doas sh -c`. Its key works only from the host itself.
+4. Add read-only deploy keys for the app repositories and the
+   configuration's.
+5. Import the signers' public keys into the dedicated `GNUPGHOME`, then
+   write `update.sexp`.
+6. Mail: point `dma` at a mailbox that can only send, in
+   `/etc/dma/dma.conf`:
+
+   ```
+   SMARTHOST mail.example.org
+   PORT 587
+   AUTHPATH /etc/dma/auth.conf
+   SECURETRANSFER
+   STARTTLS
+   MASQUERADE serai-update@example.org
+   ```
+
+   Write `/etc/dma/auth.conf` by hand, then check it with
+   `echo test | mail -s test <operator>`.
+7. Add the cron entry:
+
+   ```
+   MAILTO=<operator>
+   * * * * * serai update
+   ```
+
+8. Deploy each enrolled app once with `serai up`, so its live release has a
+   source record. Until then the updater refuses it with
+   "deploy it once with serai up".
+
+In each app repository, after the tests pass, CI pushes the tested commit
+without force:
+
+```sh
+git push origin HEAD:refs/heads/deploy
+```
+
+The remote then accepts only forward moves. Protecting `deploy` against
+force-pushes adds a layer under the ancestry check.
+
 ## Native OCaml and guest artifacts
 
 An OCaml app uses its declared compiler in the disposable FreeBSD builder.
@@ -918,3 +1060,5 @@ stderr.
   which doesn't exist until it actually runs — `(script typo-name ...)` in
   `pipelines.sexp` only surfaces as an `ENOENT` when that pipeline executes,
   not at load time the way an unknown hook name does.
+- `serai update` is tested against the process mock and fixtures only. It
+  has not yet been built or run on FreeBSD, where it is meant to run.

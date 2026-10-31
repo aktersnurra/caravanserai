@@ -1,5 +1,29 @@
 # Changelog
 
+## 2026-10-31: Unattended updates, `serai update`
+
+- `serai update` deploys a newer version of a source-built app that is
+  already running, once CI has moved its repository's `deploy` bookmark.
+  The commit must be signed by a key in `~/.config/serai/update.sexp` and
+  newer than the live release. It runs from cron on the compute host,
+  reads the configuration from a signed commit of its own remote, and
+  never creates a jail, writes an env or touches the edge. A run with
+  nothing new prints nothing, so cron mails only news. `--plan` and
+  `--json` are supported. Setup is in `serai/README.md`.
+- BREAKING for host helpers: `artifact_install.sh` takes a 6th argument,
+  `artifact_apply.sh` a 12th: the source commit, or `-`. Install records it
+  beside the release as `.infra-source`, so the host can tell which commit
+  is live whoever deployed it. Releases installed before this have no
+  record until their next `serai up`.
+- `artifact_apply.sh revert` and `Dispatcher.revert` reactivate the release
+  kept in `.previous` where it is installed, without its archive, for apps
+  that declare no `migrate`.
+- `serai up` has an update target (used by `serai update`) that refuses a
+  missing jail or env and skips the edge.
+- `Source_mirror` reports a commit's signature verdict, ancestry and remote
+  bookmarks. `Release_probe` reads a jail's live release, its source record
+  and the retained previous release.
+
 ## 2026-10-31 — One name: serai
 
 - BREAKING: the CLI is only `serai`; `scripts/install.sh` (was
