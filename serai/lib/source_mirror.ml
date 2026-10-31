@@ -69,3 +69,51 @@ let resolve ~jj_bin mirror ~revision =
   | Ok commit when is_full_commit commit -> Ok commit
   | Ok "" -> Error (Printf.sprintf "source mirror: %s is not on the remote; push it first" revision)
   | Ok _ | Error _ -> Error ("source mirror: cannot resolve " ^ revision ^ " on the remote")
+
+type signature_status = Good | Bad | Unknown_key | Invalid
+type signature = Unsigned | Signed of { status : signature_status; key : string }
+
+let signature_template = {|if(signature, signature.status() ++ " " ++ signature.key(), "unsigned")|}
+
+let parse_signature output =
+  let status = function
+    | "good" -> Ok Good | "bad" -> Ok Bad | "unknown" -> Ok Unknown_key | "invalid" -> Ok Invalid
+    | other -> Error (Printf.sprintf "source mirror: unknown signature status %S" other) in
+  let output = String.trim output in
+  if String.contains output '\n' then Error "source mirror: expected one signature verdict"
+  else
+    match String.split_on_char ' ' output with
+    | [ "unsigned" ] -> Ok Unsigned
+    | [ word ] when word <> "" -> Result.map (fun status -> Signed { status; key = "" }) (status word)
+    | [ word; key ] when key <> "" -> Result.map (fun status -> Signed { status; key }) (status word)
+    | _ -> Error (Printf.sprintf "source mirror: unreadable signature verdict %S" output)
+
+let full_commit ~what commit =
+  if is_full_commit commit then Ok commit
+  else Error (Printf.sprintf "source mirror: %s must be a full commit id, got %s" what commit)
+
+let signature ~jj_bin ?extra_env mirror ~commit =
+  let* commit = full_commit ~what:"a signed commit" commit in
+  let* output = jj ?extra_env jj_bin mirror [ "log"; "--no-graph"; "-r"; commit; "-T"; signature_template ] in
+  parse_signature output
+
+let is_ancestor ~jj_bin mirror ~ancestor ~descendant =
+  let* ancestor = full_commit ~what:"an ancestor" ancestor in
+  let* descendant = full_commit ~what:"a descendant" descendant in
+  let revset = Printf.sprintf "%s & ::%s" ancestor descendant in
+  match jj jj_bin mirror [ "log"; "--no-graph"; "-r"; revset; "-T"; "commit_id ++ \"\\n\"" ] with
+  | Ok "" -> Ok false
+  | Ok commit when commit = ancestor -> Ok true
+  | Ok _ -> Error "source mirror: unexpected ancestry answer"
+  | Error _ as error -> error
+
+(* remote_bookmarks() is empty, not an error, when the bookmark is absent. *)
+let remote_bookmark ~jj_bin mirror name =
+  if not (is_bookmark name) then Error ("source mirror: expected a bookmark name, got " ^ name)
+  else
+    let revset = Printf.sprintf {|remote_bookmarks(exact:"%s", exact:"origin")|} name in
+    match jj jj_bin mirror [ "log"; "--no-graph"; "-r"; revset; "-T"; "commit_id ++ \"\\n\"" ] with
+    | Ok "" -> Ok None
+    | Ok commit when is_full_commit commit -> Ok (Some commit)
+    | Ok _ -> Error (Printf.sprintf "source mirror: %s@origin does not name one commit" name)
+    | Error _ as error -> error

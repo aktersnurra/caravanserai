@@ -64,6 +64,76 @@ let () = Proc.live @@ fun () ->
     check "an unreachable remote fails"
       (Result.is_error (Source_mirror.sync ~jj_bin:"jj" ~cache ~name:"other"
          ~url:("file://" ^ Filename.concat fixture "missing")));
+    (* Signatures: jj's verdict, with the verification setup the caller
+       passes in its environment. The fixture signs with a throwaway ssh
+       key; production verifies gpg the same way, through jj. *)
+    let key = Filename.concat fixture "signing-key" in
+    Proc.run_checked "ssh-keygen" [ "-q"; "-t"; "ed25519"; "-N"; ""; "-f"; key; "-C"; "fixture" ];
+    let public_key = String.trim (In_channel.with_open_bin (key ^ ".pub") In_channel.input_all) in
+    let fingerprint =
+      match Proc.capture "ssh-keygen" [ "-lf"; key ^ ".pub" ] with
+      | 0, output -> List.nth (String.split_on_char ' ' (String.trim output)) 1
+      | _ -> failwith "ssh-keygen -l failed" in
+    let allowed = Filename.concat fixture "allowed-signers" in
+    write allowed (Printf.sprintf "fixture@example.org namespaces=\"git\" %s\n"
+      (String.concat " " (List.filteri (fun i _ -> i < 2) (String.split_on_char ' ' public_key))));
+    let trusting = Filename.concat fixture "trusting.toml" in
+    write trusting (Printf.sprintf "[signing.backends.ssh]\nallowed-signers = %S\n" allowed);
+    let trusting_nothing = Filename.concat fixture "trusting-nothing.toml" in
+    write trusting_nothing "";
+    let commit_signed ~signing text =
+      write (Filename.concat origin "file.txt") text;
+      jj ([ "-R"; origin ] @ signing @ [ "commit"; "-m"; text ]);
+      jj [ "-R"; origin; "bookmark"; "set"; "main"; "-r"; "@-"; "--allow-backwards" ];
+      jj_output [ "-R"; origin; "log"; "--no-graph"; "-r"; "@-"; "-T"; "commit_id" ] in
+    let unsigned = commit_signed ~signing:[ "--config"; "signing.behavior=drop" ] "unsigned" in
+    let signed = commit_signed "signed" ~signing:
+      [ "--config"; "signing.behavior=force"; "--config"; "signing.backend=ssh";
+        "--config"; "signing.key=" ^ key ] in
+    let mirror = match sync () with Ok m -> m | Error e -> failwith e in
+    let signature ~trust commit =
+      Source_mirror.signature ~jj_bin:"jj" ~extra_env:[ ("JJ_CONFIG", trust) ] mirror ~commit in
+    check "an unsigned commit is reported unsigned"
+      (signature ~trust:trusting unsigned = Ok Source_mirror.Unsigned);
+    check "a commit signed by a trusted key is good, by that key"
+      (signature ~trust:trusting signed
+       = Ok (Source_mirror.Signed { status = Good; key = fingerprint }));
+    check "the same commit without its key trusted is not good"
+      (match signature ~trust:trusting_nothing signed with
+       | Ok (Source_mirror.Signed { status = Good; _ }) -> false
+       | Ok (Source_mirror.Signed _) -> true
+       | Ok Source_mirror.Unsigned | Error _ -> false);
+    check "a signature is only looked up by full commit id"
+      (Result.is_error (signature ~trust:trusting "main"));
+
+    (* Ancestry, by full commit ids only. *)
+    let ancestor a d = Source_mirror.is_ancestor ~jj_bin:"jj" mirror ~ancestor:a ~descendant:d in
+    check "an older commit is an ancestor of a newer one" (ancestor first signed = Ok true);
+    check "a newer commit is not an ancestor of an older one" (ancestor signed first = Ok false);
+    check "a commit is its own ancestor" (ancestor signed signed = Ok true);
+    check "ancestry refuses anything but full commit ids" (Result.is_error (ancestor "main" signed));
+
+    (* Remote bookmarks: absent is an answer, not an error. *)
+    let bookmark name = Source_mirror.remote_bookmark ~jj_bin:"jj" mirror name in
+    check "a remote bookmark resolves to its commit" (bookmark "main" = Ok (Some signed));
+    check "an absent remote bookmark is None" (bookmark "deploy" = Ok None);
+    check "a bookmark expression is refused" (Result.is_error (bookmark "main | root()"));
+
+    (* The verdict parser accepts exactly what the template prints. *)
+    let parse = Source_mirror.parse_signature in
+    check "parse: unsigned" (parse "unsigned" = Ok Source_mirror.Unsigned);
+    check "parse: a gpg verdict"
+      (parse "good 2921DF701EE03394" = Ok (Source_mirror.Signed { status = Good; key = "2921DF701EE03394" }));
+    check "parse: an unknown key with no id"
+      (parse "unknown" = Ok (Source_mirror.Signed { status = Unknown_key; key = "" }));
+    check "parse: bad and invalid"
+      (parse "bad K" = Ok (Source_mirror.Signed { status = Bad; key = "K" })
+       && parse "invalid K" = Ok (Source_mirror.Signed { status = Invalid; key = "K" }));
+    check "parse: an unknown status is refused" (Result.is_error (parse "trusted K"));
+    check "parse: extra words are refused" (Result.is_error (parse "good K extra"));
+    check "parse: several lines are refused" (Result.is_error (parse "good K\ngood L"));
+    check "parse: empty output is refused" (Result.is_error (parse ""));
+
     (* A git insteadOf rule (the operator's rewrites https://github.com/ to
        ssh) changes the URL jj reports, not the one the mirror recorded. The
        rule maps the declared URL to the same origin by plain path. Last,
