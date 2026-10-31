@@ -46,7 +46,7 @@ cat >"$TMP/bin/mv" <<'EOF'
 #!/bin/sh
 [ "$1" = -fh ] || exit 99
 shift
-exec mv -fT "$@"
+if mv --version >/dev/null 2>&1; then exec mv -fT "$@"; fi; exec mv -fh "$@"
 EOF
 chmod +x "$TMP/bin/"*
 export EVENTS="$TMP/events"

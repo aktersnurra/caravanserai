@@ -4,6 +4,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TMP="$(mktemp -d)"
 trap 'chmod -R u+rwx "$TMP"; rm -rf "$TMP"' EXIT
 mkdir -p "$TMP/source" "$TMP/bin"
+cp "$ROOT/tests/stat-field" "$TMP/bin/"
 chmod 700 "$TMP/source"
 printf 'source fixture\n' >"$TMP/source/a.txt"
 printf '#!/bin/sh\n' >"$TMP/source/z.sh"
@@ -22,8 +23,8 @@ cat >"$TMP/bin/stat" <<'EOF'
 if [ "${MODE_FAULT:-}" = fail ]; then exit 1; fi
 if [ "${MODE_FAULT+x}" = x ]; then printf '%s\n' "$MODE_FAULT"; exit 0; fi
 case $2 in
- %Lp) printf '%o\n' "$((0x$(/usr/bin/stat -c %f "$3") & 0777))" ;;
- %p) printf '%o\n' "0x$(/usr/bin/stat -c %f "$3")" ;;
+ %Lp) printf '%o\n' "$((0$("${0%/*}/stat-field" perm "$3") & 0777))" ;;
+ %p) "${0%/*}/stat-field" mode "$3" ;;
  *) exit 99 ;;
 esac
 EOF
@@ -52,18 +53,28 @@ fail() {
 if ! verify; then
  echo 'FAIL - source verification must authenticate literal opam prerelease paths' >&2; exit 1
 fi
-if ! SHA256_KIND=linux SHA256_BIN=sha256sum STAT_KIND=linux STAT_BIN=stat \
+# The same inventory verifies with this system's own sha256 and stat.
+if [ "$(uname -s)" = Linux ]; then native="SHA256_KIND=linux SHA256_BIN=sha256sum STAT_KIND=linux"
+else native="SHA256_KIND=freebsd SHA256_BIN=sha256 STAT_KIND=freebsd"; fi
+if ! env $native STAT_BIN=stat \
  sh "$ROOT/compute/apps/_lib/artifact_verify_source.sh" \
- "$TMP/source" "$TMP/inventory" "$inventory_sha" >"$TMP/linux-result" 2>&1; then
- echo 'FAIL - native Linux source verification must accept the same verified inventory' >&2; exit 1
+ "$TMP/source" "$TMP/inventory" "$inventory_sha" >"$TMP/native-result" 2>&1; then
+ echo "FAIL - native $(uname -s) source verification must accept the same verified inventory" >&2; exit 1
 fi
 for malformed in '' 8 41778 -1 000000040700 '1+1' fail; do
     MODE_FAULT="$malformed" fail "malformed/failed metadata $malformed"
 done
+# BSD gives new files their directory's group (wheel under /tmp) and refuses
+# setgid on a file whose group the user is not in: give them the user's own.
+chgrp "$(id -g)" "$TMP/source" "$TMP/source/a.txt" "$TMP/source/z.sh"
 for entry in "$TMP/source" "$TMP/source/a.txt" "$TMP/source/z.sh"; do
-    original=$(stat -c %a "$entry")
+    original=$("$ROOT/tests/stat-field" perm "$entry")
     for special in 1 2 4; do
-        chmod "0$special$original" "$entry"
+        if ! chmod "0$special$original" "$entry" 2>/dev/null; then
+            # Only root may set the sticky bit on a file on FreeBSD.
+            [ "$special" = 1 ] && [ ! -d "$entry" ] && continue
+            echo "FAIL - could not set special permission $special on $entry" >&2; exit 1
+        fi
         fail "special permission $special$original $entry"
     done
     chmod "00$original" "$entry"

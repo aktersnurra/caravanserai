@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-11-01: Tests run on FreeBSD too
+
+- The shell and unit tests pass on FreeBSD 15.1 as well as Linux.
+  `tests/stat-field` reads one file attribute from GNU or BSD `stat`, and
+  the tests and their fakes use it instead of `stat -c`. The `mv` fakes use
+  `-fh` or `-fT`, whichever the system's `mv` has. Native source
+  verification uses each system's own `sha256` and `stat`.
+- Tests that run a script found only in the Linux guest (guest build,
+  install, activation, logging) report `skip` off Linux.
+- Test dependencies, on either system: `python3`, `caddy`, `elixir` with
+  Erlang, `node` and `jj`.
+
 ## 2026-10-31: Unattended updates, `serai update`
 
 - `serai update` deploys a newer version of a source-built app that is

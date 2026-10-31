@@ -25,5 +25,5 @@ grep -Fq 'hello: declare (source (git <url>)) in its app.sexp to use serai up' "
 if run logs --revision main; then echo 'FAIL - up ran for a package app' >&2; exit 1; fi
 grep -Fq 'logs: serai up handles phoenix and ocaml apps only' "$TMP/output"
 test ! -e "$TMP/contacted"
-test "$(stat -c %a "$TMP/store")" = 700
+test "$("$ROOT/tests/stat-field" perm "$TMP/store")" = 700
 echo 'ok - serai up refuses incomplete requests before contacting anything'

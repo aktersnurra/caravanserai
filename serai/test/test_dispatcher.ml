@@ -1058,7 +1058,7 @@ let () =
   (* Reports another owner for FOREIGN_STAGE, else defers to the real stat. *)
   Out_channel.with_open_bin (Filename.concat fake_stat_dir "stat") (fun oc ->
       output_string oc
-        "#!/bin/sh\nif [ \"${FOREIGN_STAGE:-}\" = \"${3:-}\" ] && [ \"$1\" = -c ] && [ \"$2\" = %u ]; then echo 4242; else exec /usr/bin/stat \"$@\"; fi\n");
+        "#!/bin/sh\nif [ \"${FOREIGN_STAGE:-}\" = \"${3:-}\" ] && { [ \"$1\" = -c ] || [ \"$1\" = -f ]; } && [ \"$2\" = %u ]; then echo 4242; else exec /usr/bin/stat \"$@\"; fi\n");
   Unix.chmod (Filename.concat fake_stat_dir "stat") 0o755;
   let bootstrap_at ?(foreign = false) stage =
     let exit_codes (r : Proc.request) =
@@ -1342,11 +1342,14 @@ let () =
     write stat {|#!/bin/sh
 if [ "$*" = --version ]; then [ "$FAKE_STAT_KIND" = linux ]; exit; fi
 [ "$#" = 3 ] || exit 99
+# The real stat may be GNU or BSD: read the mode and owner either way.
+mode() { if m=$(/usr/bin/stat -c %f "$1" 2>/dev/null); then echo "$((0x$m))"; else echo "$((0$(/usr/bin/stat -f %p "$1")))"; fi; }
+owner() { /usr/bin/stat -c %u "$1" 2>/dev/null || /usr/bin/stat -f %u "$1"; }
 case "$1:$2" in
- -c:%u|-f:%u) exec /usr/bin/stat -c %u "$3" ;;
- -c:%a) exec /usr/bin/stat -c %a "$3" ;;
- -f:%p) printf '%o\n' "0x$(/usr/bin/stat -c %f "$3")" ;;
- -f:%Lp) printf '%o\n' "$((0x$(/usr/bin/stat -c %f "$3") & 0777))" ;;
+ -c:%u|-f:%u) owner "$3" ;;
+ -c:%a) printf '%o\n' "$(($(mode "$3") & 07777))" ;;
+ -f:%p) printf '%o\n' "$(mode "$3")" ;;
+ -f:%Lp) printf '%o\n' "$(($(mode "$3") & 0777))" ;;
  *) exit 99 ;;
 esac
 |};
@@ -1360,6 +1363,9 @@ esac
     List.iter (fun kind ->
       check ("staging " ^ kind ^ ": private 0700 accepted") (run kind = 0);
       Unix.rmdir leaf;
+      (* BSD gives a new directory its parent's group, and refuses setgid on
+         a directory whose group the user is not in; Linux drops the bit. *)
+      Unix.chown stage (-1) (Unix.getgid ());
       List.iter (fun mode ->
         Unix.chmod stage mode;
         check (Printf.sprintf "staging %s: special mode %o refused before mkdir" kind mode)

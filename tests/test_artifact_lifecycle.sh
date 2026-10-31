@@ -6,10 +6,13 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 mkdir -p "$TMP/bin" "$TMP/jail/opt" "$TMP/jail/var/db/demo" "$TMP/jail/usr/local/etc"
+cp "$ROOT/tests/stat-field" "$TMP/bin/"
 printf 'mutable database fixture\n' >"$TMP/jail/var/db/demo/state"
 printf 'synthetic external config fixture\n' >"$TMP/jail/usr/local/etc/demo.env"
 chmod 640 "$TMP/jail/usr/local/etc/demo.env"
-config_metadata=$(stat -c '%i:%s:%Y:%a' "$TMP/jail/usr/local/etc/demo.env")
+# The config's inode, size, mtime and mode: untouched by every step below.
+metadata() { for field in inode size mtime perm; do "$ROOT/tests/stat-field" "$field" "$1"; done | paste -sd: -; }
+config_metadata=$(metadata "$TMP/jail/usr/local/etc/demo.env")
 a=$(printf 'a%.0s' {1..64}); b=$(printf 'b%.0s' {1..64}); c=$(printf 'c%.0s' {1..64})
 for version in a b c; do
  mkdir -p "$TMP/$version/bin" "$TMP/$version/lib" "$TMP/$version/releases"
@@ -32,14 +35,14 @@ cat >"$TMP/bin/chown" <<'EOF'
 EOF
 cat >"$TMP/bin/mv" <<'EOF'
 #!/bin/sh
-if [ "$1" = -fh ]; then shift; exec mv -fT "$@"; fi
+if [ "$1" = -fh ]; then shift; if mv --version >/dev/null 2>&1; then exec mv -fT "$@"; fi; exec mv -fh "$@"; fi
 exec mv "$@"
 EOF
 cat >"$TMP/bin/stat" <<'EOF'
 #!/bin/sh
 [ "$1" != --version ] || exit 1
 case "$2" in
- '%u:%l') printf '0:%s\n' "$(/usr/bin/stat -c %h "$3")" ;;
+ '%u:%l') printf '0:%s\n' "$("${0%/*}/stat-field" links "$3")" ;;
  *) printf '0:700\n' ;;
 esac
 EOF
@@ -123,7 +126,7 @@ grep -Fq 'conversion is for executables only' "$TMP/error"
 test ! -s "$EVENTS"
 test "$(readlink "$TMP/jail/opt/demo")" = ".infra-releases/demo/$b"
 test "$(cat "$TMP/jail/var/db/demo/state")" = 'mutable database fixture'
-test "$(stat -c '%i:%s:%Y:%a' "$TMP/jail/usr/local/etc/demo.env")" = "$config_metadata"
+test "$(metadata "$TMP/jail/usr/local/etc/demo.env")" = "$config_metadata"
 test "$(find "$TMP/jail/opt" -name '.install.*' -o -name '.switch.*' | wc -l)" -eq 0
 # Binary archives use a stable rc/anchor name distinct from the launcher.
 mkdir -p "$TMP/jail/usr/local/bin" "$TMP/pocket-a/bin" "$TMP/pocket-b/bin"

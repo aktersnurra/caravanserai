@@ -64,6 +64,7 @@ SHELL_SCRIPTS=(
   tests/test_caddy_access_redaction.sh
   tests/test_vmui_auth_contract.sh
   tests/test_edge_logging_contract.sh
+  tests/stat-field
 )
 SHELL_LIBS=(
   compute/apps/_lib/check.sh

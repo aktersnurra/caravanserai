@@ -3,6 +3,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
+# These scripts run only inside the Linux guest, with its GNU tools.
+if [ "$(uname -s)" != Linux ]; then echo 'skip - guest activation runs only in the Linux guest'; exit 0; fi
 id_a="$(printf 'a%.0s' {1..64})"
 id_b="$(printf 'b%.0s' {1..64})"
 sha="$(printf 'c%.0s' {1..64})"

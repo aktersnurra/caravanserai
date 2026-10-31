@@ -22,8 +22,9 @@ for app in garage idp; do
  mkdir "$TMP/config/apps/$app"
  cp "$ROOT/serai/test/fixtures/executable_apps/$app/app.sexp" "$TMP/config/apps/$app/app.sexp"
 done
-sed -i -e 's/(logs worker)/(logs worker) (garage worker) (idp worker)/' \
- -e 's/(proxy (hello counter logs ledger))/(proxy (hello counter logs ledger garage idp))/' "$TMP/config/serai.sexp"
+sed -e 's/(logs worker)/(logs worker) (garage worker) (idp worker)/' \
+ -e 's/(proxy (hello counter logs ledger))/(proxy (hello counter logs ledger garage idp))/' \
+ "$ROOT/example/serai.sexp" >"$TMP/config/serai.sexp"
 cd "$TMP/config"
 if REMOTE_LOG="$TMP/remote" SSH_BIN="$TMP/ssh" "$CLI" \
  artifact build hello --revision invalid --ip 10.20.0.11 --base "$TMP/no-base" \

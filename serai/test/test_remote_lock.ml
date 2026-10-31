@@ -70,8 +70,8 @@ let () =
               (Filename.quote (acquire_waiting ~wait_seconds:10 "t3e")) (Filename.quote (release "t3c"))));
       check "acquire: a waiter whose caller is gone never takes the lock" (not (Sys.file_exists lock));
       ignore (acquire "t3f");
-      let old = int_of_float (Unix.time ()) - Remote_lock.stale_after_seconds - 60 in
-      ignore (Sys.command (Printf.sprintf "touch -d @%d %s" old lock));
+      let old = Unix.time () -. float_of_int (Remote_lock.stale_after_seconds + 60) in
+      Unix.utimes lock old old;
       check "acquire: an old lock is reported stale" (acquire "t4" = Remote_lock.stale_exit);
       check "unlock: removes any lock" (sh (Remote_lock.unlock_script ~stage) = 0 && not (Sys.file_exists lock));
       check "unlock: no lock is not an error" (sh (Remote_lock.unlock_script ~stage) = 0);

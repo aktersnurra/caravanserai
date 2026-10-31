@@ -3,6 +3,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
+# These scripts run only inside the Linux guest, with its GNU tools.
+if [ "$(uname -s)" != Linux ]; then echo 'skip - guest installation runs only in the Linux guest'; exit 0; fi
 mkdir -p "$TMP/root/opt" "$TMP/payload/bin" "$TMP/bin"
 printf '#!/bin/sh\nexit 0\n' >"$TMP/payload/bin/ledger"
 chmod 755 "$TMP/payload/bin/ledger"

@@ -54,7 +54,7 @@ case "$1" in
   *) echo "unexpected systemctl call: $*" >&2; exit 98;;
 esac
 ''',
-        'install': '#!/bin/bash\ncp "${@: -2:1}" "${@: -1}"\n',
+        'install': '#!/usr/bin/env bash\ncp "${@: -2:1}" "${@: -1}"\n',
         'pacman': '#!/bin/sh\nexit 98\n',
         'apt-get': '#!/bin/sh\nexit 98\n',
         'curl': '#!/bin/sh\nexit 98\n',
@@ -70,6 +70,10 @@ esac
         ('edge', root / 'edge', 'bash'),
         ('auth', root / 'edge', 'bash'),
     ]:
+        # The guest's installer runs only inside the Linux guest, with its GNU tools.
+        if name == 'guest' and os.uname().sysname != 'Linux':
+            print('skip - the guest logging installer runs only in the Linux guest')
+            continue
         case = tmp / name
         stage, live, state = case / 'stage', case / 'live', case / 'state'
         stage.mkdir(parents=True)

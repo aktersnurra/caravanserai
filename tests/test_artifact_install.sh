@@ -25,9 +25,9 @@ JAIL_ROOT="$TMP/jail" SHA256_BIN="$TMP/bin/sha256" CHOWN_BIN=true \
     sh "$installer" demotest rev1 "$TMP/release.tar" "$sha" demo - >/dev/null
 target="$TMP/jail/opt/.infra-releases/demo/rev1"
 test -x "$target/bin/demo"
-test "$(stat -c '%a' "$target")" = 755
-test "$(stat -c '%a' "$target/bin")" = 755
-test "$(stat -c '%a' "$target/bin/runtime-data")" = 644
+test "$("$ROOT/tests/stat-field" perm "$target")" = 755
+test "$("$ROOT/tests/stat-field" perm "$target/bin")" = 755
+test "$("$ROOT/tests/stat-field" perm "$target/bin/runtime-data")" = 644
 test "$(cat "$target/.infra-sha256")" = "$sha"
 
 # Reinstalling the same artifact must leave the existing release in place.
@@ -63,7 +63,7 @@ d=$(printf 'd%.0s' {1..40})
 JAIL_ROOT="$TMP/jail" SHA256_BIN="$TMP/bin/sha256" CHOWN_BIN=true \
     sh "$installer" demo rev1 "$TMP/release.tar" "$sha" demo "$c" >/dev/null
 test "$(cat "$target/.infra-source")" = "$c"
-test "$(stat -c '%a' "$target/.infra-source")" = 644
+test "$("$ROOT/tests/stat-field" perm "$target/.infra-source")" = 644
 JAIL_ROOT="$TMP/jail" SHA256_BIN="$TMP/bin/sha256" CHOWN_BIN=true \
     sh "$installer" demo rev1 "$TMP/release.tar" "$sha" demo "$c" >/dev/null
 test "$(cat "$target/.infra-source")" = "$c"

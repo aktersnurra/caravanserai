@@ -5,6 +5,7 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 id=$(printf 'a%.0s' {1..64}); digest=$(printf 'b%.0s' {1..64})
 mkdir -p "$TMP/jail/opt/.infra-releases/idp/$id/bin" "$TMP/jail/usr/local/bin" "$TMP/bin" "$TMP/jail/var/db/idp"
+cp "$ROOT/tests/stat-field" "$TMP/bin/"
 printf '#!/bin/sh\nexit 0\n' >"$TMP/jail/usr/local/bin/idp"
 cp "$TMP/jail/usr/local/bin/idp" "$TMP/jail/opt/.infra-releases/idp/$id/bin/idp"
 chmod 755 "$TMP/jail/usr/local/bin/idp" "$TMP/jail/opt/.infra-releases/idp/$id/bin/idp"
@@ -31,7 +32,7 @@ EOF
 cat >"$TMP/bin/stat" <<'EOF'
 #!/bin/sh
 if [ "${1:-}" = --version ]; then exec /usr/bin/stat --version; fi
-case "$2" in '%u:%a') printf '0:%s\n' "$(/usr/bin/stat -c %a "$3")" ;; '%u:%h') printf '%s:%s\n' "${SOURCE_UID:-0}" "$(/usr/bin/stat -c %h "$3")" ;; *) exit 1 ;; esac
+case "$2" in '%u:%a' | '%u:%Lp') printf '0:%s\n' "$("${0%/*}/stat-field" perm "$3")" ;; '%u:%h' | '%u:%l') printf '%s:%s\n' "${SOURCE_UID:-0}" "$("${0%/*}/stat-field" links "$3")" ;; *) exit 1 ;; esac
 EOF
 cat >"$TMP/bin/curl" <<'EOF'
 #!/bin/sh
@@ -55,7 +56,7 @@ fi
 [ "$(readlink "$TMP/jail/usr/local/bin/idp")" = /opt/idp/bin/idp ]
 [ "$(readlink "$TMP/jail/opt/idp")" = ".infra-releases/idp/$id" ]
 test -f "$TMP/jail/opt/.infra-legacy/idp/$id.binary"
-test "$(/usr/bin/stat -c %a "$TMP/jail/opt/.infra-legacy/idp")" = 700
+test "$("$ROOT/tests/stat-field" perm "$TMP/jail/opt/.infra-legacy/idp")" = 700
 : >"$EVENTS"
 run >/dev/null
 [ "$(cat "$EVENTS")" = $'status\ncheck' ]

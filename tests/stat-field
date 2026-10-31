@@ -1,0 +1,35 @@
+#!/bin/sh
+# stat-field <field> <path>: one attribute of a file, the same from GNU and
+# BSD stat, so the tests run on Linux and FreeBSD alike.
+#   perm   permission bits in octal, special bits included (755, 1700)
+#   mode   file type and permission bits in octal (100644, 40755)
+#   links  hard link count
+#   uid    owner's numeric id
+#   inode  inode number
+#   size   size in bytes
+#   mtime  modification time in seconds since the epoch
+set -eu
+field=$1 path=$2
+stat=/usr/bin/stat   # never a fake stat earlier on PATH
+if "$stat" --version >/dev/null 2>&1; then
+  case $field in
+    perm | mode) mode=$((0x$("$stat" -c %f -- "$path"))) ;;
+    links) exec "$stat" -c %h -- "$path" ;;
+    uid) exec "$stat" -c %u -- "$path" ;;
+    inode) exec "$stat" -c %i -- "$path" ;;
+    size) exec "$stat" -c %s -- "$path" ;;
+    mtime) exec "$stat" -c %Y -- "$path" ;;
+    *) echo "stat-field: unknown field $field" >&2; exit 2 ;;
+  esac
+else
+  case $field in
+    perm | mode) mode=$((0$("$stat" -f %p -- "$path"))) ;;
+    links) exec "$stat" -f %l -- "$path" ;;
+    uid) exec "$stat" -f %u -- "$path" ;;
+    inode) exec "$stat" -f %i -- "$path" ;;
+    size) exec "$stat" -f %z -- "$path" ;;
+    mtime) exec "$stat" -f %m -- "$path" ;;
+    *) echo "stat-field: unknown field $field" >&2; exit 2 ;;
+  esac
+fi
+if [ "$field" = perm ]; then printf '%o\n' $((mode & 07777)); else printf '%o\n' "$mode"; fi

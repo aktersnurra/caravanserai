@@ -49,13 +49,13 @@ cat >"$TMP/bin/sleep" <<'EOF'
 #!/bin/sh
 [ "$1" = 1 ] || exit 99
 EOF
-# FreeBSD mv -h is GNU mv -T on the Linux test runner. Both perform a real
+# FreeBSD mv -h is GNU mv -T: whichever this system has, both perform a real
 # rename over a destination symlink rather than moving into its directory.
 cat >"$TMP/bin/mv" <<'EOF'
 #!/bin/sh
 [ "$1" = -fh ] || exit 98
 shift
-exec mv -fT "$@"
+if mv --version >/dev/null 2>&1; then exec mv -fT "$@"; fi; exec mv -fh "$@"
 EOF
 chmod +x "$TMP/bin/"*
 # A refused attempt that a retry recovers from prints nothing; a failed

@@ -5,6 +5,7 @@ mkdir -p "$ROOT/serai/_build/prepared-builder"
 TMP="$(mktemp -d "$ROOT/serai/_build/prepared-builder/cold-jail-XXXXXXXX")"
 trap 'chmod -R u+rwx "$TMP"; rm -rf "$TMP"' EXIT
 mkdir -p "$TMP/bin" "$TMP/jails" "$TMP/source"
+cp "$ROOT/tests/stat-field" "$TMP/bin/"
 printf 'cache fixture\n' >"$TMP/cache-fixture"
 cat >"$TMP/bin/time" <<'EOF'
 #!/bin/sh
@@ -40,8 +41,8 @@ cat >"$TMP/bin/stat" <<'EOF'
 #!/bin/sh
 [ "$1" = -f ] || exit 1
 case "$2" in
-    %Lp) printf '%o\n' "$((0x$(/usr/bin/stat -c %f "$3") & 0777))" ;;
-    %p) printf '%o\n' "0x$(/usr/bin/stat -c %f "$3")" ;;
+    %Lp) printf '%o\n' "$((0$("${0%/*}/stat-field" perm "$3") & 0777))" ;;
+    %p) "${0%/*}/stat-field" mode "$3" ;;
     %u) printf '12345\n' ;;
     *) exit 1 ;;
 esac
@@ -50,7 +51,7 @@ cat >"$TMP/bin/chown" <<'EOF'
 #!/bin/sh
 printf 'chown %s\n' "$*" >>"$COMMAND_LOG"
 [ "$1" = -R ] && [ "$2" = 12345 ] || exit 1
-[ "$(/usr/bin/stat -c %a "$3")" = 700 ] || exit 1
+[ "$("${0%/*}/stat-field" perm "$3")" = 700 ] || exit 1
 [ "${FAIL_PUBLISH_OWNER:-0}" != 1 ] || exit 1
 EOF
 cat >"$TMP/bin/ifconfig" <<'EOF'
@@ -120,7 +121,7 @@ if [ "$2" = pkg ] && [ "$3" = bootstrap ]; then
     chmod 755 "$root/usr" "$root/usr/local"
     # pkg bootstrap creates sbin under its inherited umask, not an explicit 0755.
     mkdir "$root/usr/local/sbin"
-    if [ "$(/usr/bin/stat -c %a "$root/usr/local/sbin")" != 755 ]; then
+    if [ "$("${0%/*}/stat-field" perm "$root/usr/local/sbin")" != 755 ]; then
         echo 'pkg bootstrap left public sbin inaccessible to builder' >&2; exit 1
     fi
 fi
@@ -130,8 +131,8 @@ if { [ "$2" = pkg ] && [ "$3" = install ]; } || [ "$3" = /var/infra-build/artifa
 fi
 if [ "$3" = /var/infra-build/artifact_resolve_packages.sh ]; then
     printf 'compiler\t1.0\t%064d\n' 0 >"$JAILS_DIR/$1/var/infra-build/dependencies"
-    [ "$(/usr/bin/stat -c %a "$JAILS_DIR/$1/var/infra-build")" = 700 ] || exit 1
-    [ "$(/usr/bin/stat -c %a "$JAILS_DIR/$1/var/infra-build/dependencies")" = 600 ] || exit 1
+    [ "$("${0%/*}/stat-field" perm "$JAILS_DIR/$1/var/infra-build")" = 700 ] || exit 1
+    [ "$("${0%/*}/stat-field" perm "$JAILS_DIR/$1/var/infra-build/dependencies")" = 600 ] || exit 1
     if [ "${BLOCK_PKG_SEARCH:-0}" = 1 ]; then chmod 700 "$JAILS_DIR/$1/usr/local/sbin"; fi
 fi
 if [ "${2:-}" = sha256 ]; then printf '%064d\n' 1; exit 0; fi
@@ -150,7 +151,7 @@ if [ "$1" = -U ] && [ "${4:-}" = /rescue/sh ] && [ "${5:-}" = -c ]; then
             [ "${FAIL_CACHE_SAVE:-0}" != 1 ] || exit 1
             printf 'cache fixture\n' >"$JAILS_DIR/$3/work/cache.tar"; exit 0 ;;
         *'tar -xf /work/cache.tar'*)
-            [ "$(/usr/bin/stat -c %a "$JAILS_DIR/$3")" = 755 ] || exit 1
+            [ "$("${0%/*}/stat-field" perm "$JAILS_DIR/$3")" = 755 ] || exit 1
             cmp -s "$JAILS_DIR/$3/work/cache.tar" "$CACHE_FIXTURE" || exit 1
             rm "$JAILS_DIR/$3/work/cache.tar"; exit 0 ;;
     esac
@@ -161,11 +162,11 @@ if [ "$1" = -U ]; then
     if [ "$("$STAT_BIN" -f %Lp "$JAILS_DIR/$3")" != 755 ]; then
         echo 'jexec fixture: builder cannot traverse jail root' >&2; exit 1
     fi
-    [ "$(/usr/bin/stat -c %a "$JAILS_DIR/$3/work")" = 700 ] || exit 1
-    [ "$(/usr/bin/stat -c %a "$JAILS_DIR/$3/work/source")" = 700 ] || exit 1
+    [ "$("${0%/*}/stat-field" perm "$JAILS_DIR/$3/work")" = 700 ] || exit 1
+    [ "$("${0%/*}/stat-field" perm "$JAILS_DIR/$3/work/source")" = 700 ] || exit 1
     if [ "${4:-}" = /usr/local/sbin/pkg ]; then
         [ "${5:-}" = query ] && [ "${6:-}" = -a ] || exit 1
-        [ "$(/usr/bin/stat -c %a "$JAILS_DIR/$3/usr/local/sbin")" = 755 ] || {
+        [ "$("${0%/*}/stat-field" perm "$JAILS_DIR/$3/usr/local/sbin")" = 755 ] || {
             echo 'jexec fixture: builder cannot search pkg directory' >&2; exit 1;
         }
         printf 'compiler 1.0\n'
@@ -505,7 +506,7 @@ cache="$TMP/dependency-cache"
 BUILD_CACHE_DIR="$cache" run infra-build-drill-test 10.40.0.200 "$base_sha" "$TMP/cache-cold" >"$TMP/result" 2>&1
 saved=$(find "$cache/drill_trainer" -name '*.tar')
 [ "$(printf '%s\n' "$saved" | grep -c .)" = 1 ] || { echo 'cold build did not save one cache archive' >&2; exit 1; }
-[ "$(/usr/bin/stat -c %a "$cache")" = 700 ] && [ "$(/usr/bin/stat -c %a "$cache/drill_trainer")" = 700 ] ||
+[ "$("$ROOT/tests/stat-field" perm "$cache")" = 700 ] && [ "$("$ROOT/tests/stat-field" perm "$cache/drill_trainer")" = 700 ] ||
     { echo 'cache directory is not root-only' >&2; exit 1; }
 if grep -Fq 'tar -xf /work/cache.tar' "$TMP/commands"; then echo 'cold build restored a cache' >&2; exit 1; fi
 : >"$TMP/commands"

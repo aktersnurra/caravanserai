@@ -45,7 +45,7 @@ grep -q '^configuration: unavailable: ' "$TMP/output"
 grep -Fq -- '--- log ---' "$TMP/output"
 grep -Fq 'fake: unreachable' "$TMP/output"
 test ! -s "$TMP/error"
-test "$(stat -c %a "$TMP/home/.local/state/serai/update")" = 700
+test "$("$ROOT/tests/stat-field" perm "$TMP/home/.local/state/serai/update")" = 700
 
 # The same result again is not news: nothing printed, success.
 run

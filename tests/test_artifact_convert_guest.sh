@@ -7,6 +7,7 @@ trap 'rm -rf "$TMP"' EXIT
 id="$(printf 'a%.0s' {1..64})"; sha="$(printf 'b%.0s' {1..64})"
 mkdir -p "$TMP/root/opt/.infra-releases/ledger/$id/bin" "$TMP/root/usr/local/bin" \
  "$TMP/root/var/lib/ledger" "$TMP/root/etc/ledger" "$TMP/bin"
+cp "$ROOT/tests/stat-field" "$TMP/bin/"
 printf '#!/bin/sh\nexit 0\n' >"$TMP/root/usr/local/bin/ledger"
 chmod 755 "$TMP/root/usr/local/bin/ledger"
 cp "$TMP/root/usr/local/bin/ledger" "$TMP/root/opt/.infra-releases/ledger/$id/bin/ledger"
@@ -31,8 +32,8 @@ cat >"$TMP/bin/stat" <<'EOF'
 #!/bin/sh
 if [ "${1:-}" = --version ]; then exec /usr/bin/stat --version; fi
 case "$2" in
- '%u:%a') printf '0:%s\n' "$(/usr/bin/stat -c %a "$3")" ;;
- '%u:%h') printf '0:%s\n' "$(/usr/bin/stat -c %h "$3")" ;;
+ '%u:%a' | '%u:%Lp') printf '0:%s\n' "$("${0%/*}/stat-field" perm "$3")" ;;
+ '%u:%h' | '%u:%l') printf '0:%s\n' "$("${0%/*}/stat-field" links "$3")" ;;
  *) exit 1 ;;
 esac
 EOF
@@ -53,10 +54,10 @@ run >/dev/null
 [ "$(readlink "$TMP/root/usr/local/bin/ledger")" = /opt/ledger/bin/ledger ]
 [ "$(readlink "$TMP/root/opt/ledger")" = ".infra-releases/ledger/$id" ]
 [ -f "$TMP/root/opt/.infra-legacy/ledger/$id.binary" ]
-[ "$(/usr/bin/stat -c %a "$TMP/root/opt/.infra-legacy/ledger")" = 700 ]
+[ "$("$ROOT/tests/stat-field" perm "$TMP/root/opt/.infra-legacy/ledger")" = 700 ]
 : >"$EVENTS"
 run >/dev/null
 [ "$(cat "$EVENTS")" = 'is-active ledger' ]
 [ "$(sha256sum "$TMP/root/var/lib/ledger/state" "$TMP/root/etc/ledger/ledger.sexp")" = "$before" ]
-[ "$(/usr/bin/stat -c %a "$TMP/root/etc/ledger/ledger.sexp")" = 640 ]
+[ "$("$ROOT/tests/stat-field" perm "$TMP/root/etc/ledger/ledger.sexp")" = 640 ]
 echo 'ok - Ledger conversion uses systemd boundary, retains protected original and preserves external state/config'

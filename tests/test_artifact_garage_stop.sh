@@ -30,13 +30,13 @@ cat >"$TMP/bin/mv" <<'EOF'
 #!/bin/sh
 if [ "$1" = -fh ]; then
  shift
- exec mv -fT "$@"
+ if mv --version >/dev/null 2>&1; then exec mv -fT "$@"; fi; exec mv -fh "$@"
 fi
 exec mv "$@"
 EOF
 cat >"$TMP/bin/stat" <<'EOF'
 #!/bin/sh
-case "$*" in *'%u:%h'*) printf '0:1\n' ;; *) exec stat "$@" ;; esac
+case "$*" in *'%u:%h'* | *'%u:%l'*) printf '0:1\n' ;; *) exec stat "$@" ;; esac
 EOF
 cat >"$TMP/bin/curl" <<'EOF'
 #!/bin/sh

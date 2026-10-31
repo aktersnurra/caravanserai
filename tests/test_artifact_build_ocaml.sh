@@ -157,6 +157,11 @@ fi
 if run . bin/meals.exe meals meals-output ocaml-base-compiler.5.5.1 >"$TMP/error" 2>&1; then exit 1; fi
 [ -f "$TMP/meals-output/release.tar" ]
 if find "$TMP" -maxdepth 1 -name '*.tmp.*' | grep -q .; then echo 'partial worker stage leaked' >&2; exit 1; fi
+if [ "$(uname -s)" != Linux ]; then
+ echo 'ok - isolated OCaml workers package meals without activation or global switch mutation'
+ echo 'skip - the guest adapter and installer run only in the Linux guest'
+ exit 0
+fi
 # Exercise the Linux adapter with actual source/repository inventory verification
 # and the mock toolchain, then feed its real archive to the guest installer.
 mkdir -p "$TMP/guest-source/tools/ledger" "$TMP/guest-repository" "$TMP/runtime/opt"

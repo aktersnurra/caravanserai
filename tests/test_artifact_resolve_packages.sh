@@ -7,6 +7,7 @@ trap 'rm -rf "$TMP"' EXIT
 export TMPDIR="$TMP/tmp"
 mkdir -m 700 "$TMPDIR"
 mkdir "$TMP/bin"
+cp "$ROOT/tests/stat-field" "$TMP/bin/"
 cat >"$TMP/bin/pkg" <<'EOF'
 #!/bin/sh
 printf '%s\n' "$*" >>"$COMMAND_LOG"
@@ -46,7 +47,7 @@ case "$1" in
         # Model public directories created by a package under the inherited mask.
         public="$(dirname "$COMMAND_LOG")/public"
         mkdir -p "$public"
-        [ "$(stat -c %a "$public")" = 755 ] || {
+        [ "$("${0%/*}/stat-field" perm "$public")" = 755 ] || {
             echo 'public package directory must be searchable by the builder' >&2; exit 1;
         }
         if [ "${TAMPER_ARCHIVE:-0}" = 1 ]; then printf 'changed\n' >>"$3"; fi
@@ -72,11 +73,11 @@ grep -Fxq "$(<"$TMP/expected")" "$TMP/good/dependencies"
 test "$(wc -l <"$TMP/good/dependencies")" -eq 3
 grep -q '^fetch -y -d -o .* pkg compiler$' "$TMP/good/commands"
 grep -q '^add -f /' "$TMP/good/commands"
-test "$(stat -c %a "$TMP/good/cache")" = 700
-test "$(stat -c %a "$TMP/good/cache/Hashed")" = 700
-test "$(stat -c %a "$TMP/good/dependencies")" = 600
-test "$(stat -c %a "$TMP/good/cache/Hashed/library.pkg")" = 600
-test "$(stat -c %a "$TMP/good/public")" = 755
+test "$("$ROOT/tests/stat-field" perm "$TMP/good/cache")" = 700
+test "$("$ROOT/tests/stat-field" perm "$TMP/good/cache/Hashed")" = 700
+test "$("$ROOT/tests/stat-field" perm "$TMP/good/dependencies")" = 600
+test "$("$ROOT/tests/stat-field" perm "$TMP/good/cache/Hashed/library.pkg")" = 600
+test "$("$ROOT/tests/stat-field" perm "$TMP/good/public")" = 755
 # Full tuples are the original resolver output; no synthetic package checksum.
 for tuple in 'compiler 1.0_1,1' 'library 2.0' 'pkg 2.5.1'; do
     read -r name version <<<"$tuple"
@@ -86,8 +87,8 @@ cmp "$TMP/full-expected" "$TMP/good/dependencies"
 mkdir "$TMP/all-layout"
 PKG_LAYOUT=All run all-layout
 test "$(wc -l <"$TMP/all-layout/dependencies")" -eq 3
-test "$(stat -c %a "$TMP/all-layout/cache/All")" = 700
-test "$(stat -c %a "$TMP/all-layout/cache/All/library.pkg")" = 600
+test "$("$ROOT/tests/stat-field" perm "$TMP/all-layout/cache/All")" = 700
+test "$("$ROOT/tests/stat-field" perm "$TMP/all-layout/cache/All/library.pkg")" = 600
 for failure in BAD_INSTALLED FAIL_ADD TAMPER_ARCHIVE DUPLICATE_ARCHIVE; do
     mkdir "$TMP/$failure"
     if ( export "$failure=1"; run "$failure" ) >"$TMP/result" 2>&1; then
