@@ -1064,6 +1064,6 @@ stderr.
   jail: its unit tests, the host script lifecycle, the install, and jj
   verifying a gpg-signed commit against a dedicated `GNUPGHOME`. It has not
   yet run from cron against a real configuration.
-- Some tests assume a Linux runner: GNU `stat -c`, `touch -d @<epoch>`,
-  `python3` and `/dev/full`. On FreeBSD they fail in the harness, not in the
-  scripts they test.
+- The tests pass on Linux and FreeBSD. Off Linux, those for scripts found
+  only in the Linux guest report `skip`, so the guest's scripts are tested
+  on Linux only.
