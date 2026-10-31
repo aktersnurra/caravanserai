@@ -70,7 +70,7 @@ apply() {
  CURL_BIN="$TMP/bin/curl" MV_BIN="$TMP/bin/mv" SHA256_BIN="$TMP/bin/sha256" \
  CHOWN_BIN="$TMP/bin/chown" STAT_BIN="$TMP/bin/stat" \
  sh "$ROOT/compute/apps/_lib/artifact_apply.sh" "$1" demo "$2" "$3" "$4" demo_release \
- http://10.40.0.200:4000/ FreeBSD:14:amd64 - - demo
+ http://10.40.0.200:4000/ FreeBSD:14:amd64 - - demo -
 }
 : >"$EVENTS"
 if ABI=FreeBSD:15:amd64 apply upgrade "$a" "$sha_a" "$TMP/a.tar" >"$TMP/error" 2>&1; then exit 1; fi
@@ -122,7 +122,7 @@ apply_binary() {
  CURL_BIN="$TMP/bin/curl" MV_BIN="$TMP/bin/mv" SHA256_BIN="$TMP/bin/sha256" \
  CHOWN_BIN="$TMP/bin/chown" STAT_BIN="$TMP/bin/stat" \
  sh "$ROOT/compute/apps/_lib/artifact_apply.sh" "$1" idp "$2" "$3" "$4" idp \
- http://10.40.0.5:1411/ FreeBSD:14:amd64 /usr/local/bin/idp - idp
+ http://10.40.0.5:1411/ FreeBSD:14:amd64 /usr/local/bin/idp - idp -
 }
 apply_binary convert "$a" "$pa_sha" "$TMP/pocket-a.tar" >/dev/null
 : >"$EVENTS"

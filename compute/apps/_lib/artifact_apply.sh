@@ -1,12 +1,14 @@
 #!/bin/sh
 # Caller selected and reverified a trusted owned-store entry, holds the compute host
 # lifecycle lock, and verified all transferred helper digests before execution.
-# MODE JAIL IDENTITY SHA256 ARCHIVE RELEASE CHECK_URL ABI BINARY_ANCHOR MIGRATE APP
-# MIGRATE (`migrate` | `-`) is passed to activation. APP names the in-jail
-# paths and an executable's service; it differs from JAIL only in a test jail,
-# which conversion refuses. A BINARY_ANCHOR that does not exist yet, in a jail
-# whose /opt/APP is a managed pointer or absent, is created as the link to
-# the active release; any other occupant is legacy.
+# MODE JAIL IDENTITY SHA256 ARCHIVE RELEASE CHECK_URL ABI BINARY_ANCHOR MIGRATE APP SOURCE
+# MIGRATE (`migrate` | `-`) is passed to activation. SOURCE (a full commit
+# or `-`) is passed to the installer, which records it beside the release.
+# APP names the in-jail paths and an executable's service; it differs from
+# JAIL only in a test jail, which conversion refuses. A BINARY_ANCHOR that
+# does not exist yet, in a jail whose /opt/APP is a managed pointer or
+# absent, is created as the link to the active release; any other occupant
+# is legacy.
 set -eu
 mode=${1:?mode required}
 jail=${2:?jail required}
@@ -19,6 +21,7 @@ abi=${8:?target ABI required}
 anchor=${9:?binary anchor required}
 migrate=${10:?migrate mode required}
 app=${11:?app required}
+source=${12:?source commit or - required}
 fail() { echo "artifact apply: $*" >&2; exit 1; }
 [ "${SERAI_LOCK_HELD:-0}" = 1 ] || fail 'lifecycle lock required'
 case "$mode" in upgrade|rollback|convert) ;; *) fail 'invalid operation' ;; esac
@@ -55,7 +58,7 @@ if [ "$mode" = rollback ]; then
         || fail 'requested identity is not the retained previous release'
 fi
 script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
-sh "$script_dir/artifact_install.sh" "$jail" "$identity" "$archive" "$expected" "$app"
+sh "$script_dir/artifact_install.sh" "$jail" "$identity" "$archive" "$expected" "$app" "$source"
 if [ "$mode" = convert ]; then
     sh "$script_dir/artifact_convert_binary.sh" "$jail" "$identity" "$expected" "$release" "$check_url" "$anchor"
 else

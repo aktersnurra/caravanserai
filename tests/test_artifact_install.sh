@@ -22,7 +22,7 @@ installer="$ROOT/compute/apps/_lib/artifact_install.sh"
 
 # A test jail installs under the app's own name.
 JAIL_ROOT="$TMP/jail" SHA256_BIN="$TMP/bin/sha256" CHOWN_BIN=true \
-    sh "$installer" demotest rev1 "$TMP/release.tar" "$sha" demo >/dev/null
+    sh "$installer" demotest rev1 "$TMP/release.tar" "$sha" demo - >/dev/null
 target="$TMP/jail/opt/.infra-releases/demo/rev1"
 test -x "$target/bin/demo"
 test "$(stat -c '%a' "$target")" = 755
@@ -33,29 +33,71 @@ test "$(cat "$target/.infra-sha256")" = "$sha"
 # Reinstalling the same artifact must leave the existing release in place.
 printf 'sentinel\n' >"$target/sentinel"
 JAIL_ROOT="$TMP/jail" SHA256_BIN="$TMP/bin/sha256" CHOWN_BIN=true \
-    sh "$installer" demo rev1 "$TMP/release.tar" "$sha" demo >/dev/null
+    sh "$installer" demo rev1 "$TMP/release.tar" "$sha" demo - >/dev/null
 test "$(cat "$target/sentinel")" = sentinel
 
 if JAIL_ROOT="$TMP/jail" SHA256_BIN="$TMP/bin/sha256" CHOWN_BIN=true \
-    sh "$installer" demo rev2 "$TMP/release.tar" "$(printf '%064d' 0)" demo >/dev/null 2>&1; then
+    sh "$installer" demo rev2 "$TMP/release.tar" "$(printf '%064d' 0)" demo - >/dev/null 2>&1; then
     echo 'accepted a checksum mismatch' >&2; exit 1
 fi
 test ! -e "$TMP/jail/opt/.infra-releases/demo/rev2"
 
 if JAIL_ROOT="$TMP/jail" SHA256_BIN="$TMP/bin/sha256" CHOWN_BIN=true \
-    sh "$installer" demo ../escape "$TMP/release.tar" "$sha" demo >/dev/null 2>&1; then
+    sh "$installer" demo ../escape "$TMP/release.tar" "$sha" demo - >/dev/null 2>&1; then
     echo 'accepted a path escape' >&2; exit 1
 fi
 test ! -e "$TMP/jail/opt/.infra-releases/escape"
 if JAIL_ROOT="$TMP/jail" SHA256_BIN="$TMP/bin/sha256" CHOWN_BIN=true \
-    sh "$installer" demo rev3 "$TMP/release.tar" "$sha" .. >/dev/null 2>&1; then
+    sh "$installer" demo rev3 "$TMP/release.tar" "$sha" .. - >/dev/null 2>&1; then
     echo 'accepted an app path escape' >&2; exit 1
 fi
 test ! -e "$TMP/jail/opt/rev3"
 
+# Without a source commit no record is written.
+test ! -e "$target/.infra-source"
+
+# A source-built release records the commit it was built from. An existing
+# release without a record gets one; a conflicting record is refused.
+c=$(printf 'c%.0s' {1..40})
+d=$(printf 'd%.0s' {1..40})
+JAIL_ROOT="$TMP/jail" SHA256_BIN="$TMP/bin/sha256" CHOWN_BIN=true \
+    sh "$installer" demo rev1 "$TMP/release.tar" "$sha" demo "$c" >/dev/null
+test "$(cat "$target/.infra-source")" = "$c"
+test "$(stat -c '%a' "$target/.infra-source")" = 644
+JAIL_ROOT="$TMP/jail" SHA256_BIN="$TMP/bin/sha256" CHOWN_BIN=true \
+    sh "$installer" demo rev1 "$TMP/release.tar" "$sha" demo "$c" >/dev/null
+test "$(cat "$target/.infra-source")" = "$c"
+if JAIL_ROOT="$TMP/jail" SHA256_BIN="$TMP/bin/sha256" CHOWN_BIN=true \
+    sh "$installer" demo rev1 "$TMP/release.tar" "$sha" demo "$d" >/dev/null 2>&1; then
+    echo 'accepted a conflicting source record' >&2; exit 1
+fi
+test "$(cat "$target/.infra-source")" = "$c"
+JAIL_ROOT="$TMP/jail" SHA256_BIN="$TMP/bin/sha256" CHOWN_BIN=true \
+    sh "$installer" demo fresh "$TMP/release.tar" "$sha" demo "$d" >/dev/null
+test "$(cat "$TMP/jail/opt/.infra-releases/demo/fresh/.infra-source")" = "$d"
+for bad in "$(printf 'c%.0s' {1..39})" "$(printf 'C%.0s' {1..40})" "../$c" ''; do
+    if JAIL_ROOT="$TMP/jail" SHA256_BIN="$TMP/bin/sha256" CHOWN_BIN=true \
+        sh "$installer" demo badsource "$TMP/release.tar" "$sha" demo "$bad" >/dev/null 2>&1; then
+        echo "accepted source commit '$bad'" >&2; exit 1
+    fi
+done
+test ! -e "$TMP/jail/opt/.infra-releases/demo/badsource"
+
+# The record's name is reserved: an archive may not carry it.
+mkdir -p "$TMP/reserved/bin"
+printf '%s\n' "$d" >"$TMP/reserved/.infra-source"
+cp "$TMP/input/bin/demo" "$TMP/reserved/bin/demo"
+tar -cf "$TMP/reserved.tar" -C "$TMP/reserved" bin .infra-source
+reserved_sha=$(sha256sum "$TMP/reserved.tar" | awk '{ print $1 }')
+if JAIL_ROOT="$TMP/jail" SHA256_BIN="$TMP/bin/sha256" CHOWN_BIN=true \
+    sh "$installer" demo reserved "$TMP/reserved.tar" "$reserved_sha" demo "$c" >/dev/null 2>&1; then
+    echo 'accepted an archive carrying .infra-source' >&2; exit 1
+fi
+test ! -e "$TMP/jail/opt/.infra-releases/demo/reserved"
+
 printf 'other\n' >"$target/.infra-sha256"
 if JAIL_ROOT="$TMP/jail" SHA256_BIN="$TMP/bin/sha256" CHOWN_BIN=true \
-    sh "$installer" demo rev1 "$TMP/release.tar" "$sha" demo >/dev/null 2>&1; then
+    sh "$installer" demo rev1 "$TMP/release.tar" "$sha" demo - >/dev/null 2>&1; then
     echo 'accepted an artifact identity collision' >&2; exit 1
 fi
 
@@ -66,8 +108,8 @@ ln -s "$TMP/jail/opt" "$TMP/unsafe/redirect"
 tar -cf "$TMP/unsafe.tar" -C "$TMP/unsafe" redirect
 unsafe_sha=$(sha256sum "$TMP/unsafe.tar" | awk '{ print $1 }')
 if JAIL_ROOT="$TMP/jail" SHA256_BIN="$TMP/bin/sha256" CHOWN_BIN=true \
-    sh "$installer" demo unsafe "$TMP/unsafe.tar" "$unsafe_sha" demo >/dev/null 2>&1; then
+    sh "$installer" demo unsafe "$TMP/unsafe.tar" "$unsafe_sha" demo - >/dev/null 2>&1; then
     echo 'accepted an archive symlink' >&2; exit 1
 fi
 test ! -e "$TMP/jail/opt/.infra-releases/demo/unsafe"
-echo 'ok - verified artifact install is versioned, idempotent, and leaves active release untouched'
+echo 'ok - verified artifact install is versioned, idempotent, records its source commit, and leaves active release untouched'

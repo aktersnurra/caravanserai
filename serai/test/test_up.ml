@@ -112,6 +112,8 @@ let () =
     check "hello upgrades through the generic activation, not a pointer upgrade"
       (List.exists (fun r -> mentions "artifact_apply.sh" r && mentions identity r) calls
        && not (List.exists (mentions "release_bin=") calls));
+    check "the release is applied with the source commit it was built from"
+      (List.exists (fun r -> mentions "artifact_apply.sh" r && mentions identity r && mentions commit r) calls);
     check "the public check uses the app's hostname"
       (List.exists (fun (r : Proc.request) -> r.prog = "curl"
          && List.mem "https://hello.example.org/" r.args) calls);

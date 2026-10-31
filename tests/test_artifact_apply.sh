@@ -18,7 +18,7 @@ mkdir "$TMP/scripts"
 cat >"$TMP/scripts/artifact_install.sh" <<'EOF'
 #!/bin/sh
 [ "$SERAI_LOCK_HELD" = 1 ] || exit 1
-printf 'install %s %s\n' "$1" "$5" >>"$EVENTS"
+printf 'install %s %s %s\n' "$1" "$5" "$6" >>"$EVENTS"
 EOF
 cat >"$TMP/scripts/artifact_activate.sh" <<'EOF'
 #!/bin/sh
@@ -30,15 +30,19 @@ export EVENTS="$TMP/events"
 run() {
  SERAI_LOCK_HELD="${SERAI_LOCK_HELD:-1}" JAIL_ROOT="$TMP/jail" JEXEC_BIN="$TMP/bin/jexec" \
  sh "$TMP/scripts/artifact_apply.sh" "$1" "${RUN_JAIL:-demo}" "$id" "$(printf 'b%.0s' {1..64})" \
- "$TMP/archive" demo http://10.40.0.200:4000/ FreeBSD:15:amd64 "${ANCHOR:--}" "${MIGRATE:--}" demo
+ "$TMP/archive" demo http://10.40.0.200:4000/ FreeBSD:15:amd64 "${ANCHOR:--}" "${MIGRATE:--}" demo "${SOURCE:--}"
 }
 cp "$ROOT/compute/apps/_lib/artifact_apply.sh" "$TMP/scripts/"
 printf 'archive\n' >"$TMP/archive"
 run upgrade
-test "$(cat "$EVENTS")" = $'install demo demo\nactivate demo demo - demo'
+test "$(cat "$EVENTS")" = $'install demo demo -\nactivate demo demo - demo'
+: >"$EVENTS"
+# The source commit a release was built from reaches the installer.
+SOURCE=$(printf 'c%.0s' {1..40}) run upgrade
+test "$(cat "$EVENTS")" = "install demo demo $(printf 'c%.0s' {1..40})"$'\nactivate demo demo - demo'
 : >"$EVENTS"
 MIGRATE=migrate run upgrade
-test "$(cat "$EVENTS")" = $'install demo demo\nactivate demo demo migrate demo'
+test "$(cat "$EVENTS")" = $'install demo demo -\nactivate demo demo migrate demo'
 : >"$EVENTS"
 if MIGRATE=bogus run upgrade >"$TMP/error" 2>&1; then exit 1; fi
 test ! -s "$EVENTS"
@@ -50,7 +54,7 @@ if run rollback >"$TMP/error" 2>&1; then exit 1; fi
 test ! -s "$EVENTS"
 ln -s "$id" "$TMP/jail/opt/.infra-releases/demo/.previous"
 run rollback
-test "$(cat "$EVENTS")" = $'install demo demo\nactivate demo demo - demo'
+test "$(cat "$EVENTS")" = $'install demo demo -\nactivate demo demo - demo'
 : >"$EVENTS"
 # A missing anchor is legacy beside an /opt/demo directory or in a rollback,
 # and so is any anchor that is not the managed link.
@@ -67,16 +71,16 @@ rm "$TMP/jail/usr/local/bin/demo"
 # The first activation of a new jail creates it.
 ANCHOR=/usr/local/bin/demo run upgrade
 test "$(readlink "$TMP/jail/usr/local/bin/demo")" = /opt/demo/bin/demo
-test "$(cat "$EVENTS")" = $'install demo demo\nactivate demo demo - demo'
+test "$(cat "$EVENTS")" = $'install demo demo -\nactivate demo demo - demo'
 : >"$EVENTS"
 JAIL=must-not-leak ANCHOR=/usr/local/bin/demo run upgrade
-test "$(cat "$EVENTS")" = $'install demo demo\nactivate demo demo - demo'
+test "$(cat "$EVENTS")" = $'install demo demo -\nactivate demo demo - demo'
 test "$(cat "$TMP/jail/var/db/demo/state")" = 'state stays here'
 # In the test jail demotest the anchor, the executable's service and every
 # path stay the app's; only the jexec target changes. Conversion is refused.
 : >"$EVENTS"
 RUN_JAIL=demotest ANCHOR=/usr/local/bin/demo run upgrade
-test "$(cat "$EVENTS")" = $'install demotest demo\nactivate demotest demo - demo'
+test "$(cat "$EVENTS")" = $'install demotest demo -\nactivate demotest demo - demo'
 : >"$EVENTS"
 if RUN_JAIL=demotest run convert >"$TMP/error" 2>&1; then exit 1; fi
 grep -Fq 'conversion is for live jails only' "$TMP/error"

@@ -2,8 +2,10 @@
 # Install a verified Phoenix release into a versioned directory in one jail.
 # The host-side serai lock must be held by the caller. This script only stages
 # a release; it never changes /opt/<app> or stops/starts a service. APP names
-# the in-jail paths; it differs from JAIL only in a test jail.
-# Usage: artifact_install.sh JAIL IDENTITY ARCHIVE SHA256 APP
+# the in-jail paths; it differs from JAIL only in a test jail. SOURCE is the
+# full commit a source-built release was built from, recorded beside it in
+# .infra-source, or - for a release with no source commit.
+# Usage: artifact_install.sh JAIL IDENTITY ARCHIVE SHA256 APP SOURCE
 set -eu
 
 jail=${1:?jail required}
@@ -11,6 +13,7 @@ identity=${2:?artifact identity required}
 archive=${3:?archive required}
 expected=${4:?SHA-256 required}
 app=${5:?app required}
+source=${6:?source commit or - required}
 
 safe_component() {
     case "$1" in
@@ -31,6 +34,11 @@ case "$expected" in
     *[!0-9a-fA-F]*|'') echo 'invalid SHA-256' >&2; exit 1 ;;
 esac
 [ "${#expected}" -eq 64 ] || { echo 'invalid SHA-256 length' >&2; exit 1; }
+case "$source" in
+    -) ;;
+    *[!0-9a-f]*) echo 'invalid source commit' >&2; exit 1 ;;
+    *) [ "${#source}" -eq 40 ] || { echo 'invalid source commit length' >&2; exit 1; } ;;
+esac
 [ -f "$archive" ] && [ ! -L "$archive" ] || { echo 'archive must be a regular file' >&2; exit 1; }
 
 sha256_bin=${SHA256_BIN:-sha256}
@@ -38,9 +46,9 @@ actual=$("$sha256_bin" -q "$archive")
 [ "$actual" = "$expected" ] || { echo 'artifact SHA-256 mismatch' >&2; exit 1; }
 
 # The archive is produced by the trusted build jail. Still refuse obviously
-# unsafe names and the metadata path reserved by the installer.
+# unsafe names and the metadata paths reserved by the installer.
 tar -tf "$archive" | awk '
-    /^\// || /(^|\/)\.\.(\/|$)/ || /(^|\/)\.infra-sha256$/ || /[[:cntrl:]]/ { bad = 1 }
+    /^\// || /(^|\/)\.\.(\/|$)/ || /(^|\/)\.infra-(sha256|source)$/ || /[[:cntrl:]]/ { bad = 1 }
     END { exit bad }
 ' || { echo 'unsafe artifact archive entry' >&2; exit 1; }
 
@@ -70,6 +78,19 @@ if [ -e "$target" ] || [ -L "$target" ]; then
         echo 'artifact identity already contains another release' >&2
         exit 1
     }
+    # A release installed before source records were kept gets one; its
+    # identity covers the commit, so a different one is a collision.
+    if [ "$source" != - ]; then
+        if [ -e "$target/.infra-source" ] || [ -L "$target/.infra-source" ]; then
+            [ -f "$target/.infra-source" ] && [ ! -L "$target/.infra-source" ] &&
+                [ "$(cat "$target/.infra-source")" = "$source" ] || {
+                echo 'artifact identity already records another source commit' >&2
+                exit 1
+            }
+        else
+            printf '%s\n' "$source" >"$target/.infra-source"
+        fi
+    fi
     echo "release already installed: $target"
     exit 0
 fi
@@ -78,6 +99,7 @@ tmp=$(mktemp -d "$release_root/.install.XXXXXXXX")
 trap 'rm -rf "$tmp"' EXIT HUP INT TERM
 tar -xf "$archive" -C "$tmp"
 printf '%s\n' "$expected" >"$tmp/.infra-sha256"
+[ "$source" = - ] || printf '%s\n' "$source" >"$tmp/.infra-source"
 chown_bin=${CHOWN_BIN:-chown}
 "$chown_bin" -R root:wheel "$tmp"
 # Build stages use umask 077. Runtime code contains no secrets/config and must

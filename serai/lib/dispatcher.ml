@@ -437,7 +437,7 @@ let artifact_install env app_name ~identity ~archive ~sha256 =
         String.concat " "
           ("doas sh" :: List.map Shell.quote
             [ stage ^ "/artifact_install.sh"; app.endpoint.name; identity;
-              stage ^ "/release.tar"; sha256; app.endpoint.name ])
+              stage ^ "/release.tar"; sha256; app.endpoint.name; "-" ])
       in
       ssh_checked env [ env.compute_target; command ])
 
@@ -1041,7 +1041,10 @@ let artifact_apply ?(convert=false) ?rehearse_ip env app_name ~store ~identity ~
             ^ "\n[ -f \"$file\" ] && [ ! -L \"$file\" ]\n[ \"$(sha256 -q \"$file\")\" = " ^ Shell.quote sha ^ " ]") scripts in
           let args = [stage ^ "/artifact_apply.sh"; mode; jail; identity;
             manifest.archive_sha256; stage ^ "/release.tar"; release; url; manifest.target_abi; anchor;
-            if migrate then "migrate" else "-"; app_name] in
+            if migrate then "migrate" else "-"; app_name;
+            (* The manifest's identity covers its commit, so the host can
+               record it as what this release was built from. *)
+            (match manifest.input with Artifact_manifest.Source_commit commit -> commit | _ -> "-")] in
           Progress.phase "apply";
           (* Proc folds locally signalled exits into 128+signal. Those, SSH
              transport failure and local exceptions leave the remote outcome unknown. *)
