@@ -9,6 +9,10 @@
 # does not exist yet, in a jail whose /opt/APP is a managed pointer or
 # absent, is created as the link to the active release; any other occupant
 # is legacy.
+# MODE revert reactivates the retained previous release where it is
+# installed: SHA256, ARCHIVE, ABI and SOURCE are `-`, nothing is installed,
+# the ABI the release already passed is not probed again, and MIGRATE must be
+# `-`. Activation verifies the release against the digest recorded at install.
 set -eu
 mode=${1:?mode required}
 jail=${2:?jail required}
@@ -24,8 +28,9 @@ app=${11:?app required}
 source=${12:?source commit or - required}
 fail() { echo "artifact apply: $*" >&2; exit 1; }
 [ "${SERAI_LOCK_HELD:-0}" = 1 ] || fail 'lifecycle lock required'
-case "$mode" in upgrade|rollback|convert) ;; *) fail 'invalid operation' ;; esac
+case "$mode" in upgrade|rollback|convert|revert) ;; *) fail 'invalid operation' ;; esac
 case "$migrate" in migrate|-) ;; *) fail 'invalid migrate mode' ;; esac
+[ "$mode" != revert ] || [ "$migrate" = - ] || fail 'revert never migrates'
 case "$jail:$app:$release" in *[!a-zA-Z0-9_:-]*) fail 'invalid workload, app or release' ;; esac
 [ -n "$jail" ] && [ -n "$app" ] && [ -n "$release" ] || fail 'empty workload, app or release'
 [ "$mode" != convert ] || [ "$app" = "$jail" ] || fail 'conversion is for live jails only'
@@ -36,8 +41,10 @@ unset JAIL JAIL_IP JROOT APP
 jexec_bin=${JEXEC_BIN:-jexec}
 jroot=${JAIL_ROOT:-/jails/$jail}
 [ -d "$jroot" ] && [ ! -L "$jroot" ] || fail 'missing or redirected jail root'
-actual_abi=$("$jexec_bin" "$jail" pkg config abi) || fail 'target ABI probe failed'
-[ "$actual_abi" = "$abi" ] || fail 'artifact target ABI does not match the jail'
+if [ "$mode" != revert ]; then
+    actual_abi=$("$jexec_bin" "$jail" pkg config abi) || fail 'target ABI probe failed'
+    [ "$actual_abi" = "$abi" ] || fail 'artifact target ABI does not match the jail'
+fi
 create_anchor=false
 case "$anchor" in
     -) ;;
@@ -52,13 +59,19 @@ case "$anchor" in
         fi ;;
     *) fail 'invalid executable anchor' ;;
 esac
-if [ "$mode" = rollback ]; then
+if [ "$mode" = rollback ] || [ "$mode" = revert ]; then
     previous=$jroot/opt/.infra-releases/$app/.previous
     [ -L "$previous" ] && [ "$(readlink "$previous")" = "$identity" ] \
         || fail 'requested identity is not the retained previous release'
 fi
 script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
-sh "$script_dir/artifact_install.sh" "$jail" "$identity" "$archive" "$expected" "$app" "$source"
+if [ "$mode" = revert ]; then
+    recorded=$jroot/opt/.infra-releases/$app/$identity/.infra-sha256
+    [ -f "$recorded" ] && [ ! -L "$recorded" ] || fail 'retained previous release is not installed'
+    expected=$(cat "$recorded")
+else
+    sh "$script_dir/artifact_install.sh" "$jail" "$identity" "$archive" "$expected" "$app" "$source"
+fi
 if [ "$mode" = convert ]; then
     sh "$script_dir/artifact_convert_binary.sh" "$jail" "$identity" "$expected" "$release" "$check_url" "$anchor"
 else

@@ -92,6 +92,13 @@ val artifact_build_executable_store : ?reuse:string -> env -> string -> ip:strin
 val artifact_apply : ?convert:bool -> ?rehearse_ip:string -> env -> string ->
   store:string -> identity:string -> rollback:bool -> unit
 
+(** Reactivates the release retained in .previous on the compute host,
+    where it is installed: no archive, so not only the store that built it
+    can. Source-built apps that declare no migrate only. Refused before any
+    change when the app migrates or the host has no previous release; the
+    host checks .previous again under the lock. *)
+val revert : env -> string -> unit
+
 (** Which kind of app [new_app] declares. *)
 type new_kind = New_phoenix | New_ocaml
 

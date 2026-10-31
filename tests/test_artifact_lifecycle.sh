@@ -97,6 +97,24 @@ test "$(cat "$EVENTS")" = abi
 apply rollback "$b" "$sha_b" "$TMP/b.tar" >/dev/null
 test "$(readlink "$TMP/jail/opt/demo")" = ".infra-releases/demo/$b"
 test "$(readlink "$TMP/jail/opt/.infra-releases/demo/.previous")" = "$c"
+# Revert switches to the retained previous release where it is installed,
+# without its archive or an ABI probe; reverting again switches back.
+revert() {
+ SERAI_LOCK_HELD=1 JAIL_ROOT="$TMP/jail" JEXEC_BIN="$TMP/bin/jexec" \
+ CURL_BIN="$TMP/bin/curl" MV_BIN="$TMP/bin/mv" STAT_BIN="$TMP/bin/stat" \
+ sh "$ROOT/compute/apps/_lib/artifact_apply.sh" revert demo "$1" - - demo_release \
+ http://10.40.0.200:4000/ - - - demo -
+}
+: >"$EVENTS"
+if revert "$a" >"$TMP/error" 2>&1; then exit 1; fi
+test ! -s "$EVENTS"
+revert "$c" >/dev/null
+test "$(cat "$EVENTS")" = $'stop\nstatus\nstart\ncheck'
+test "$(readlink "$TMP/jail/opt/demo")" = ".infra-releases/demo/$c"
+test "$(readlink "$TMP/jail/opt/.infra-releases/demo/.previous")" = "$b"
+revert "$b" >/dev/null
+test "$(readlink "$TMP/jail/opt/demo")" = ".infra-releases/demo/$b"
+test "$(readlink "$TMP/jail/opt/.infra-releases/demo/.previous")" = "$c"
 # Phoenix conversion ended with drill's adoption: refused before the ABI
 # probe or any install.
 : >"$EVENTS"

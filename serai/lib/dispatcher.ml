@@ -944,78 +944,56 @@ let check_port (endpoint : Network_endpoint.t) =
   | Some p, _ | None, [ p ] -> p.port
   | None, _ -> failwith (endpoint.name ^ ": no http tailnet port to check")
 
-let artifact_apply ?(convert=false) ?rehearse_ip env app_name ~store ~identity ~rollback =
-  let env = app_env env app_name in
-  Progress.phase "verify";
-  if (convert && rollback) || (Option.is_some rehearse_ip && (convert || rollback))
-  then failwith "artifact apply: invalid operation";
-  (* A rehearsal applies to the test jail <app>test at the test ip; every
-     in-jail name stays the app's. *)
-  let app, jail = match rehearse_ip with
-    | None -> find_app env app_name, app_name
-    | Some ip ->
-        let app = find_app env app_name in
-        (match Jail_test.retarget app ~ip with
-         | Ok retargeted -> retargeted, Jail_test.name app
-         | Error errors -> failwith ("artifact apply: " ^ Network_endpoint.errors_message errors)) in
-  let manifest, archive = match Artifact_store.load ~root:store ~identity with
-    | Ok entry -> entry | Error message -> failwith message in
-  if manifest.name <> app_name || not (String.starts_with ~prefix:"FreeBSD:" manifest.target_abi)
-  then failwith "artifact apply: workload or operating system mismatch";
-  (* migrate: whether activation runs the rc script's migrate command. *)
-  (* service_status: how activation tells the old service has stopped. *)
-  let release, path, anchor, health_status, migrate, service_status = match app.strategy, manifest.input with
-    | Strategy_config.Freebsd_native_elixir s, Artifact_manifest.Source_commit _ ->
-        s.release_name, s.check_path, "-", "success", Option.is_some s.migrate, "rc"
-    | Strategy_config.Freebsd_native_ocaml s, Artifact_manifest.Source_commit _ ->
-        app_name, s.check_path, "/usr/local/bin/" ^ app_name, "success", Option.is_some s.migrate, "rc"
-    | Strategy_config.Freebsd_package s, Artifact_manifest.Package_archives package
-        when List.mem package s.packages ->
-        let status = match s.check_status with None -> "success" | Some status -> string_of_int status in
-        let service_status = match s.service_status with Rc -> "rc" | Process -> "process" in
-        package, s.check_path, "/usr/local/bin/" ^ package, status, false, service_status
-    | Strategy_config.Fetch_binary s, Artifact_manifest.Upstream_binary input ->
-        let url = match String.split_on_char '$' s.binary_url_template with
-          | [before; after] when String.starts_with ~prefix:"{VERSION}" after ->
-              before ^ input.version ^ String.sub after 9 (String.length after - 9)
-          | _ -> failwith "artifact apply: invalid binary URL template" in
-        if input.url <> url || (not rollback && (input.version <> s.version || input.sha256 <> s.binary_sha256))
-        then failwith "artifact apply: immutable input does not match the declaration";
-        s.binary_name, s.check_path, "/usr/local/bin/" ^ s.binary_name, "success", false, "rc"
-    | _ -> failwith "artifact apply: immutable input does not match the declaration" in
-  if manifest.release_name <> release then failwith "artifact apply: release name mismatch";
-  (* Conversion moves a legacy executable (package or pinned binary) under
-     the release layout; Phoenix apps were adopted by a one-off since
-     removed. *)
-  if convert && anchor = "-" then failwith "artifact apply: conversion is for executables only";
-  let port = check_port app.endpoint in
-  let url = Printf.sprintf "http://%s:%d%s" app.endpoint.ip port path in
-  let mode = if convert then "convert" else if rollback then "rollback" else "upgrade" in
-  validate_stage env.remote_stage;
-  if not (env.confirm (Printf.sprintf "%s %s to %s (files only; no database rollback)?" mode jail identity))
-  then failwith "artifact apply: cancelled";
+(* How a release activates: its release (the launcher under bin/), health
+   path, executable anchor (- for none), the health status activation
+   expects, whether the rc script's migrate command runs, and how activation
+   tells the old service has stopped. *)
+type release_settings = {
+  release : string;
+  check_path : string;
+  anchor : string;
+  health_status : string;
+  migrate : bool;
+  service_status : string;
+}
+
+(* A source-built app's settings come from its strategy alone. *)
+let source_release_settings app_name (strategy : Strategy_config.t) =
+  match strategy with
+  | Freebsd_native_elixir s ->
+      Some { release = s.release_name; check_path = s.check_path; anchor = "-";
+             health_status = "success"; migrate = Option.is_some s.migrate; service_status = "rc" }
+  | Freebsd_native_ocaml s ->
+      Some { release = app_name; check_path = s.check_path; anchor = "/usr/local/bin/" ^ app_name;
+             health_status = "success"; migrate = Option.is_some s.migrate; service_status = "rc" }
+  | Freebsd_package _ | Fetch_binary _ | Freebsd_package_service _ -> None
+
+(* Snapshots [helpers] from the engine, stages them and [files] (local path,
+   staged name) under [subtree] on the compute host, checks each helper's
+   digest there and runs the first one with [args stage] and [assignments],
+   holding the compute host lock as [label]. A transfer or run whose outcome
+   is unknown keeps the stage and the lock for inspection; otherwise the
+   stage is removed. [context] prefixes its errors. *)
+let run_artifact_helper env ~context ~label ~subtree ~files ~helpers ~assignments ~args =
   let local = Filename.temp_dir "serai-artifact-apply" "" in
   Fun.protect ~finally:(fun () -> artifact_remove_tree local) (fun () ->
     let scripts = List.map (fun name ->
       let source = Layout.lib_file env.layout name in
-      if (Unix.lstat source).Unix.st_kind <> Unix.S_REG then failwith "artifact apply: unsafe helper";
+      if (Unix.lstat source).Unix.st_kind <> Unix.S_REG then failwith (context ^ ": unsafe helper");
       let snapshot = Filename.concat local name in
       In_channel.with_open_bin source (fun input ->
         if (Unix.fstat (Unix.descr_of_in_channel input)).Unix.st_kind <> Unix.S_REG
-        then failwith "artifact apply: unsafe helper";
+        then failwith (context ^ ": unsafe helper");
         Out_channel.with_open_bin snapshot (fun output -> output_string output (In_channel.input_all input)));
       Unix.chmod snapshot 0o600;
-      name, snapshot, artifact_file_sha256 snapshot)
-      (["artifact_apply.sh"; "artifact_install.sh"; "artifact_activate.sh"; "artifact_check_health.sh"]
-       @ if convert then ["artifact_convert_binary.sh"] else []) in
-    let subtree = "artifact-apply/" ^ jail ^ "/" ^ identity in
+      name, snapshot, artifact_file_sha256 snapshot) helpers in
     let stage = env.remote_stage ^ "/" ^ subtree in
     let retain_remote = ref false in
-    ignore (acquire_lock env ~command:("artifact " ^ mode ^ " " ^ jail) Compute_host);
+    ignore (acquire_lock env ~command:label Compute_host);
     Fun.protect ~finally:(fun () ->
       if !retain_remote then begin
         Progress.outcome_unknown ();
-        Printf.eprintf "artifact apply: remote outcome uncertain; stage %s and host lock retained. Inspect before serai unlock %s.\n%!" stage (host_label env Compute_host)
+        Printf.eprintf "%s: remote outcome uncertain; stage %s and host lock retained. Inspect before serai unlock %s.\n%!" context stage (host_label env Compute_host)
       end else release_lock env Compute_host) (fun () ->
         secure_remote_stage env ~target:env.compute_target ~subtree;
         let cleanup () =
@@ -1034,28 +1012,22 @@ let artifact_apply ?(convert=false) ?rehearse_ip env app_name ~store ~identity ~
               ["-az"; "--no-owner"; "--no-group"; "--"; source;
                env.compute_target ^ ":" ^ stage ^ "/" ^ name];
             retain_remote := false in
-          transfer archive "release.tar";
+          List.iter (fun (source, name) -> transfer source name) files;
           List.iter (fun (name, snapshot, _) -> transfer snapshot name) scripts;
           let checks = List.map (fun (name, _, sha) ->
             "file=" ^ Shell.quote (stage ^ "/" ^ name)
             ^ "\n[ -f \"$file\" ] && [ ! -L \"$file\" ]\n[ \"$(sha256 -q \"$file\")\" = " ^ Shell.quote sha ^ " ]") scripts in
-          let args = [stage ^ "/artifact_apply.sh"; mode; jail; identity;
-            manifest.archive_sha256; stage ^ "/release.tar"; release; url; manifest.target_abi; anchor;
-            if migrate then "migrate" else "-"; app_name;
-            (* The manifest's identity covers its commit, so the host can
-               record it as what this release was built from. *)
-            (match manifest.input with Artifact_manifest.Source_commit commit -> commit | _ -> "-")] in
           Progress.phase "apply";
           (* Proc folds locally signalled exits into 128+signal. Those, SSH
              transport failure and local exceptions leave the remote outcome unknown. *)
           retain_remote := true;
-          let command = "SERAI_LOCK_HELD=1 SERAI_ARTIFACT_HTTP_STATUS=" ^ health_status
-            ^ " SERAI_ARTIFACT_SERVICE_STATUS=" ^ service_status ^ " exec sh "
-            ^ String.concat " " (List.map Shell.quote args) in
+          let command = String.concat " "
+            (("SERAI_LOCK_HELD=1" :: List.map (fun (name, value) -> name ^ "=" ^ value) assignments)
+             @ [ "exec sh" ] @ List.map Shell.quote (args stage)) in
           let code = ssh_run env [env.compute_target; "doas sh -c " ^ Shell.quote
             (String.concat "\n" (["set -eu"] @ checks @ [command]))] in
           retain_remote := code >= 128;
-          if code <> 0 then failwith (Printf.sprintf "artifact %s %s: remote exited %d" mode jail code) in
+          if code <> 0 then failwith (Printf.sprintf "%s: remote exited %d" label code) in
         match apply () with
         | () -> cleanup ()
         | exception primary ->
@@ -1064,6 +1036,106 @@ let artifact_apply ?(convert=false) ?rehearse_ip env app_name ~store ~identity ~
             | () -> Printexc.raise_with_backtrace primary backtrace
             | exception secondary ->
                 Printexc.raise_with_backtrace (Proc.Cleanup_failed (primary, secondary)) backtrace))
+
+let artifact_apply ?(convert=false) ?rehearse_ip env app_name ~store ~identity ~rollback =
+  let env = app_env env app_name in
+  Progress.phase "verify";
+  if (convert && rollback) || (Option.is_some rehearse_ip && (convert || rollback))
+  then failwith "artifact apply: invalid operation";
+  (* A rehearsal applies to the test jail <app>test at the test ip; every
+     in-jail name stays the app's. *)
+  let app, jail = match rehearse_ip with
+    | None -> find_app env app_name, app_name
+    | Some ip ->
+        let app = find_app env app_name in
+        (match Jail_test.retarget app ~ip with
+         | Ok retargeted -> retargeted, Jail_test.name app
+         | Error errors -> failwith ("artifact apply: " ^ Network_endpoint.errors_message errors)) in
+  let manifest, archive = match Artifact_store.load ~root:store ~identity with
+    | Ok entry -> entry | Error message -> failwith message in
+  if manifest.name <> app_name || not (String.starts_with ~prefix:"FreeBSD:" manifest.target_abi)
+  then failwith "artifact apply: workload or operating system mismatch";
+  let settings = match source_release_settings app_name app.strategy, app.strategy, manifest.input with
+    | Some settings, _, Artifact_manifest.Source_commit _ -> settings
+    | None, Strategy_config.Freebsd_package s, Artifact_manifest.Package_archives package
+        when List.mem package s.packages ->
+        let status = match s.check_status with None -> "success" | Some status -> string_of_int status in
+        let service_status = match s.service_status with Rc -> "rc" | Process -> "process" in
+        { release = package; check_path = s.check_path; anchor = "/usr/local/bin/" ^ package;
+          health_status = status; migrate = false; service_status }
+    | None, Strategy_config.Fetch_binary s, Artifact_manifest.Upstream_binary input ->
+        let url = match String.split_on_char '$' s.binary_url_template with
+          | [before; after] when String.starts_with ~prefix:"{VERSION}" after ->
+              before ^ input.version ^ String.sub after 9 (String.length after - 9)
+          | _ -> failwith "artifact apply: invalid binary URL template" in
+        if input.url <> url || (not rollback && (input.version <> s.version || input.sha256 <> s.binary_sha256))
+        then failwith "artifact apply: immutable input does not match the declaration";
+        { release = s.binary_name; check_path = s.check_path; anchor = "/usr/local/bin/" ^ s.binary_name;
+          health_status = "success"; migrate = false; service_status = "rc" }
+    | _ -> failwith "artifact apply: immutable input does not match the declaration" in
+  if manifest.release_name <> settings.release then failwith "artifact apply: release name mismatch";
+  (* Conversion moves a legacy executable (package or pinned binary) under
+     the release layout; Phoenix apps were adopted by a one-off since
+     removed. *)
+  if convert && settings.anchor = "-" then failwith "artifact apply: conversion is for executables only";
+  let port = check_port app.endpoint in
+  let url = Printf.sprintf "http://%s:%d%s" app.endpoint.ip port settings.check_path in
+  let mode = if convert then "convert" else if rollback then "rollback" else "upgrade" in
+  validate_stage env.remote_stage;
+  if not (env.confirm (Printf.sprintf "%s %s to %s (files only; no database rollback)?" mode jail identity))
+  then failwith "artifact apply: cancelled";
+  run_artifact_helper env ~context:"artifact apply" ~label:("artifact " ^ mode ^ " " ^ jail)
+    ~subtree:("artifact-apply/" ^ jail ^ "/" ^ identity)
+    ~files:[ archive, "release.tar" ]
+    ~helpers:(["artifact_apply.sh"; "artifact_install.sh"; "artifact_activate.sh"; "artifact_check_health.sh"]
+              @ if convert then ["artifact_convert_binary.sh"] else [])
+    ~assignments:[ ("SERAI_ARTIFACT_HTTP_STATUS", settings.health_status);
+                   ("SERAI_ARTIFACT_SERVICE_STATUS", settings.service_status) ]
+    ~args:(fun stage ->
+      [stage ^ "/artifact_apply.sh"; mode; jail; identity;
+       manifest.archive_sha256; stage ^ "/release.tar"; settings.release; url; manifest.target_abi;
+       settings.anchor; if settings.migrate then "migrate" else "-"; app_name;
+       (* The manifest's identity covers its commit, so the host can
+          record it as what this release was built from. *)
+       (match manifest.input with Artifact_manifest.Source_commit commit -> commit | _ -> "-")])
+
+(* The release kept in .previous, reactivated where it is installed: no
+   archive, so the store that built it is not needed. Only an app that
+   never migrates: its releases are files, and a migrated database may not
+   be readable by the previous release. *)
+let revert env app_name =
+  let env = app_env env app_name in
+  Progress.phase "verify";
+  let app = find_app env app_name in
+  let settings = match source_release_settings app_name app.strategy with
+    | Some settings -> settings
+    | None -> failwith "revert: only source-built apps revert" in
+  if settings.migrate then
+    failwith (Printf.sprintf "revert: %s declares migrate; roll it back with serai artifact rollback" app_name);
+  validate_stage env.remote_stage;
+  let previous =
+    match ssh_capture env [ env.compute_target; "doas sh -c " ^ Shell.quote (Release_probe.script ~app:app_name) ] with
+    | 0, output -> (
+        match Release_probe.check ~app:app_name output with
+        | Ok { previous = Some identity; _ } -> identity
+        | Ok { previous = None; _ } -> failwith (Printf.sprintf "revert: %s has no previous release on the host" app_name)
+        | Error message -> failwith ("revert: " ^ message))
+    | code, _ ->
+        failwith (Printf.sprintf "revert: probing %s's releases on %s failed (exit %d)"
+          app_name (host_label env Compute_host) code) in
+  let url = Printf.sprintf "http://%s:%d%s" app.endpoint.ip (check_port app.endpoint) settings.check_path in
+  if not (env.confirm (Printf.sprintf "revert %s to %s (files only)?" app_name previous)) then
+    failwith "revert: cancelled";
+  (* The script checks .previous again under the lock. *)
+  run_artifact_helper env ~context:"revert" ~label:("artifact revert " ^ app_name)
+    ~subtree:("artifact-revert/" ^ app_name ^ "/" ^ previous)
+    ~files:[]
+    ~helpers:[ "artifact_apply.sh"; "artifact_activate.sh"; "artifact_check_health.sh" ]
+    ~assignments:[ ("SERAI_ARTIFACT_HTTP_STATUS", settings.health_status);
+                   ("SERAI_ARTIFACT_SERVICE_STATUS", settings.service_status) ]
+    ~args:(fun stage ->
+      [ stage ^ "/artifact_apply.sh"; "revert"; app_name; previous; "-"; "-"; settings.release; url;
+        "-"; settings.anchor; "-"; app_name; "-" ])
 
 (* What _lib/check.sh's check_app needs, from the declaration: the rc
    service (a Phoenix release's name, a package service's own, otherwise the

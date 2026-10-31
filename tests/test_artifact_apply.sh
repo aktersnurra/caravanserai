@@ -24,6 +24,7 @@ cat >"$TMP/scripts/artifact_activate.sh" <<'EOF'
 #!/bin/sh
 [ "$SERAI_LOCK_HELD" = 1 ] || exit 1
 printf 'activate %s %s %s %s\n' "$1" "$4" "$7" "$8" >>"$EVENTS"
+printf '%s\n' "$3" >"$EVENTS.digest"
 EOF
 chmod +x "$TMP/bin/jexec"
 export EVENTS="$TMP/events"
@@ -84,5 +85,30 @@ test "$(cat "$EVENTS")" = $'install demotest demo -\nactivate demotest demo - de
 : >"$EVENTS"
 if RUN_JAIL=demotest run convert >"$TMP/error" 2>&1; then exit 1; fi
 grep -Fq 'conversion is for live jails only' "$TMP/error"
+test ! -s "$EVENTS"
+# Revert reactivates the retained previous release where it is installed:
+# no archive, no install, no ABI probe, never a migration. The digest it
+# hands activation is the one recorded at install.
+revert() {
+ SERAI_LOCK_HELD=1 JAIL_ROOT="$TMP/jail" JEXEC_BIN="$TMP/bin/jexec" \
+ sh "$TMP/scripts/artifact_apply.sh" revert demo "${REVERT_ID:-$id}" - - demo \
+ http://10.40.0.200:4000/ - "${ANCHOR:--}" "${MIGRATE:--}" demo -
+}
+digest=$(printf 'd%.0s' {1..64})
+: >"$EVENTS"
+if revert >"$TMP/error" 2>&1; then exit 1; fi
+grep -Fq 'retained previous release is not installed' "$TMP/error"
+test ! -s "$EVENTS"
+mkdir -p "$TMP/jail/opt/.infra-releases/demo/$id"
+printf '%s\n' "$digest" >"$TMP/jail/opt/.infra-releases/demo/$id/.infra-sha256"
+ABI=Linux:x86_64 revert
+test "$(cat "$EVENTS")" = 'activate demo demo - demo'
+test "$(cat "$EVENTS.digest")" = "$digest"
+: >"$EVENTS"
+if MIGRATE=migrate revert >"$TMP/error" 2>&1; then exit 1; fi
+grep -Fq 'revert never migrates' "$TMP/error"
+test ! -s "$EVENTS"
+if REVERT_ID=$(printf 'e%.0s' {1..64}) revert >"$TMP/error" 2>&1; then exit 1; fi
+grep -Fq 'not the retained previous release' "$TMP/error"
 test ! -s "$EVENTS"
 echo 'ok - one locked transaction checks ABI, executable anchor and explicit rollback before installation/activation, which receives migrate'
