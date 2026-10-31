@@ -332,6 +332,7 @@ let update_outcome_json (name, outcome) =
   let open Agent_cli in
   let fields = match outcome with
     | Update.Not_enrolled -> [ "outcome", Text "not_enrolled" ]
+    | Built_on_controller -> [ "outcome", Text "built_on_controller" ]
     | Already_handled commit -> [ "outcome", Text "already_handled"; "commit", Text commit ]
     | Current commit -> [ "outcome", Text "current"; "commit", Text commit ]
     | Would_deploy commit -> [ "outcome", Text "would_deploy"; "commit", Text commit ]

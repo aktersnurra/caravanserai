@@ -142,6 +142,10 @@ requires the bookmark's commit to be signed by a key in `signers`, stages
 that commit locally and runs it on the installed engine. If it isn't signed,
 no app is examined.
 
+An app that declares a `web_bundle` is left out, because only the controller
+builds its bundle. `--plan` lists it as built on the controller, its
+repository is not fetched, and it is deployed with `serai up`.
+
 Each enrolled source-built app is then:
 
 1. **Skipped** when its `deploy` commit was already handled. No host

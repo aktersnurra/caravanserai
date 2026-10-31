@@ -280,6 +280,32 @@ let () =
       (let lines = Update.plan_lines report in
        List.exists (contains "hello") lines && List.exists (contains "counter") lines);
 
+    (* A web bundle built on the controller cannot be built on the compute
+       host: the app is left to serai up, and its repository is not fetched. *)
+    let counter_sexp = Filename.concat tree "apps/counter/app.sexp" in
+    let counter_declared = In_channel.with_open_bin counter_sexp In_channel.input_all in
+    write counter_sexp
+      (String.split_on_char '\n' counter_declared
+       |> List.concat_map (fun line ->
+              if contains "(check_path" line then [ line; "  (web_bundle web/build-bundle.sh)" ] else [ line ])
+       |> String.concat "\n");
+    let report, calls = go (fun () -> Update.plan deps config paths) in
+    check "an app whose web bundle is built on the controller is not updated"
+      (List.assoc_opt "counter" report.apps = Some Update.Built_on_controller);
+    check "and its repository is not fetched"
+      (not (List.exists (fun (r : Proc.request) -> r.prog = "jj" && mentions "/sources/counter" r) calls));
+    check "--plan says to deploy it from the controller"
+      (List.mem "counter: built on the controller (web bundle); deploy it with serai up"
+         (Update.plan_lines report));
+    hello_deploy := None;
+    (match run () with
+     | Some outcome, _ ->
+         check "a run reports nothing for it" (outcome.lines = [] && not outcome.failed);
+         check "and marks nothing handled" ((Update_state.find (state ()) "counter").handled = None)
+     | None, _ -> check "the run takes the run lock" false);
+    write counter_sexp counter_declared;
+    hello_deploy := Some desired;
+
     (* Only one run at a time. *)
     (match Update_state.with_run_lock ~dir:state_dir (fun () ->
        match Unix.fork () with

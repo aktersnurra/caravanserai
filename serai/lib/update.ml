@@ -39,6 +39,7 @@ type revert = Not_attempted of string | Reverted | Revert_failed of string
 
 type outcome =
   | Not_enrolled
+  | Built_on_controller
   | Already_handled of string
   | Current of string
   | Would_deploy of string
@@ -81,18 +82,21 @@ let verified_configuration deps config paths =
 
 (* The apps an update may deploy: source-built, with a declared source,
    and whether each migrates. *)
+type source_app = { name : string; url : string option; migrate : bool; controller_built : bool }
+
+(* A web bundle is built on the controller, which the compute host is not. *)
 let source_apps (env : Dispatcher.env) =
   List.filter_map (fun (app : App_config.t) ->
-      let migrate = match app.strategy with
-        | Strategy_config.Freebsd_native_elixir s -> Some (Option.is_some s.migrate)
-        | Freebsd_native_ocaml s -> Some (Option.is_some s.migrate)
+      let kind = match app.strategy with
+        | Strategy_config.Freebsd_native_elixir s -> Some (Option.is_some s.migrate, false)
+        | Freebsd_native_ocaml s -> Some (Option.is_some s.migrate, Option.is_some s.web_bundle)
         | Freebsd_package _ | Fetch_binary _ | Freebsd_package_service _ -> None in
       let url = match env.topology with
         | Some topology -> Result.to_option (Result.map (fun (i : Up_inputs.t) -> i.source_url)
             (Up_inputs.of_app ~topology app))
         | None -> None in
-      match migrate with
-      | Some migrate -> Some (app.endpoint.name, url, migrate)
+      match kind with
+      | Some (migrate, controller_built) -> Some { name = app.endpoint.name; url; migrate; controller_built }
       | None -> None)
     env.config
 
@@ -123,9 +127,10 @@ let deploy paths env ~name ~commit ~migrate =
         | Jail | Build | Release | Edge -> "nothing was switched" in
       Failed { commit; step; message; revert = Not_attempted why }
 
-let app_outcome ~plan deps config paths env ~handled (name, url, migrate) =
+let app_outcome ~plan deps config paths env ~handled { name; url; migrate; controller_built } =
   let not_applied ?commit message = Not_applied { commit; message } in
   match url with
+  | _ when controller_built -> Built_on_controller
   | None -> Not_enrolled
   | Some url ->
   match Source_mirror.sync ~jj_bin:deps.jj_bin ~cache:paths.cache ~name ~url with
@@ -162,7 +167,7 @@ let examine ~plan deps config paths ~handled =
   | Error configuration -> { configuration; apps = [] }
   | Ok (commit, layout) ->
       let env = deps.env_of_layout layout in
-      let apps = List.map (fun ((name, _, _) as app) ->
+      let apps = List.map (fun ({ name; _ } as app) ->
           let outcome =
             try app_outcome ~plan deps config paths env ~handled:(handled name) app
             with Failure message -> Not_applied { commit = None; message } in
@@ -186,7 +191,7 @@ let revert_text = function
 
 (* The line a run reports for an app, if any; and whether it is a failure. *)
 let line name = function
-  | Not_enrolled | Already_handled _ | Current _ -> None
+  | Not_enrolled | Built_on_controller | Already_handled _ | Current _ -> None
   | Would_deploy commit -> Some (Printf.sprintf "%s: would deploy %s" name (short commit), false)
   | Deployed { commit; identity } ->
       Some (Printf.sprintf "%s: deployed %s as %s" name (short commit) (short identity), false)
@@ -205,6 +210,7 @@ let plan_lines report =
       match line name outcome, outcome with
       | Some (text, _), _ -> text
       | None, Not_enrolled -> name ^ ": not enrolled (no deploy bookmark)"
+      | None, Built_on_controller -> name ^ ": built on the controller (web bundle); deploy it with serai up"
       | None, Already_handled commit -> Printf.sprintf "%s: %s already handled" name (short commit)
       | None, Current commit -> Printf.sprintf "%s: current at %s" name (short commit)
       | None, _ -> name) report.apps
@@ -225,7 +231,7 @@ let record (state : Update_state.t) report =
           let handled = match outcome with
             | Current commit | Already_handled commit -> Some commit
             | Deployed { commit; _ } | Refused { commit; _ } | Failed { commit; _ } -> Some commit
-            | Not_enrolled -> None
+            | Not_enrolled | Built_on_controller -> None
             | Would_deploy _ | Not_applied _ -> last.handled in
           let reported = match line name outcome, outcome with
             | Some (text, _), _ -> Some text

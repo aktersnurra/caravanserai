@@ -38,6 +38,8 @@ type revert = Not_attempted of string | Reverted | Revert_failed of string
 
 type outcome =
   | Not_enrolled  (** no deploy bookmark, or no declared source *)
+  | Built_on_controller
+      (** its web bundle is built on the controller, so only serai up deploys it *)
   | Already_handled of string
   | Current of string
   | Would_deploy of string  (** --plan only *)

@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-11-01: `serai update` leaves controller-built apps alone
+
+- An app that declares a `web_bundle` is no longer updated unattended. Only
+  the controller builds its bundle, so a build on the compute host could
+  only fail. `serai update` doesn't fetch its repository, and reports it as
+  `built_on_controller` (`--plan`: "built on the controller (web bundle);
+  deploy it with serai up"). A run prints nothing for it and marks nothing
+  handled.
+
 ## 2026-11-01: Tests run on FreeBSD too
 
 - The shell and unit tests pass on FreeBSD 15.1 as well as Linux.

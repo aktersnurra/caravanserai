@@ -138,6 +138,7 @@ Only `verified` examines apps. `data.apps` lists each source-built app as
 | `outcome` | Fields | Meaning |
 | --- | --- | --- |
 | `not_enrolled` | | No `deploy` bookmark, or no declared source. |
+| `built_on_controller` | | It declares a `web_bundle`, which only the controller builds. Its repository is not fetched; deploy it with `serai up`. |
 | `already_handled` | `commit` | This `deploy` commit's outcome was final. Not looked at again. |
 | `current` | `commit` | The host already runs it. |
 | `would_deploy` | `commit` | `update.plan` only. |
