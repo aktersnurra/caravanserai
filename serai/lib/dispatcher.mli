@@ -116,6 +116,9 @@ val new_app : env -> string -> kind:new_kind -> repo:string -> hostname:string o
 type up_target =
   | Live  (** the app's jail, then the edge and the public check *)
   | Rehearse of string  (** the test jail <app>test at this ip *)
+  | Update
+      (** the app's existing jail only: a missing jail or env is refused
+          before anything changes, and the edge is skipped *)
 
 val up : ?local_source:string -> ?target:up_target -> env -> string -> revision:string ->
   cache:string -> store:string -> unit
@@ -146,7 +149,7 @@ type up_plan = private {
     probed, the source mirror fetched and the store searched. *)
 val up_plan : ?local_source:string -> env -> string -> revision:string -> cache:string -> store:string -> up_plan
 
-val print_up_plan : up_plan -> unit
+val print_up_plan : ?target:up_target -> up_plan -> unit
 
 type up_step = Jail | Build | Release | Edge | Check
 type step_status = Done | Skipped | Failed of string | Not_run

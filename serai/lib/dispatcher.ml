@@ -1666,7 +1666,7 @@ let new_app env name ~kind ~repo ~hostname =
    with exn -> undo (); raise exn);
   plan
 
-type up_target = Live | Rehearse of string
+type up_target = Live | Rehearse of string | Update
 
 type up_jail = Jail_ready | Jail_create | Jail_needs_env of string
 type up_release = Reuse of string | Build of { ip : string; base_sha256 : string }
@@ -1695,7 +1695,7 @@ let step_index = function Jail -> 0 | Build -> 1 | Release -> 2 | Edge -> 3 | Ch
 let step_name = function
   | Jail -> "jail" | Build -> "build" | Release -> "release" | Edge -> "edge" | Check -> "check"
 
-let print_up_plan plan =
+let print_up_plan ?(target = Live) plan =
   (match plan.rehearsal with
    | None -> announce "up %s on %s" plan.app plan.host
    | Some (jail, ip) -> announce "up %s on %s, rehearsed in %s at %s" plan.app plan.host jail ip);
@@ -1709,6 +1709,8 @@ let print_up_plan plan =
    | Reuse identity -> Printf.printf "    release  reuse %s\n" identity
    | Build { ip; base_sha256 } -> Printf.printf "    release  build in jail %s from base %s\n" ip (short base_sha256));
   (match plan.rehearsal with
+   | None when target = Update ->
+       Printf.printf "    then     install and restart %s, check %s (no edge)\n%!" plan.app plan.public_url
    | None ->
        Printf.printf "    then     install and restart %s, update the edge if needed, check %s\n%!"
          plan.app plan.public_url
@@ -1721,8 +1723,11 @@ let print_up_plan plan =
    and is only called after confirmation, with an env that no longer asks;
    [plan_only] changes no host (a missing test jail is refused, not created). *)
 let prepare_up ?local_source ?(target = Live) ~plan_only env app_name ~revision ~cache ~store =
+  (* An update builds only what the remote has: never a local checkout. *)
+  if target = Update && Option.is_some local_source then
+    failwith "update: builds pushed commits only, not a local checkout";
   let app = find_app env app_name in
-  let rehearse_ip = match target with Rehearse ip -> Some ip | Live -> None in
+  let rehearse_ip = match target with Rehearse ip -> Some ip | Live | Update -> None in
   let topology = match env.topology with
     | Some topology -> topology | None -> failwith "up: configured topology required" in
   let inputs = match Up_inputs.of_app ~topology app with
@@ -1828,7 +1833,11 @@ let prepare_up ?local_source ?(target = Live) ~plan_only env app_name ~revision 
           Ok (Deployed identity)
       | None ->
           let* () = run Release (fun () -> artifact_apply env app_name ~store ~identity ~rollback:false) in
-          let* () = run Edge (fun () -> edge env) in
+          (* The edge renders from the declaration, never from app source,
+             so moving an app's revision cannot change it. *)
+          let* () = match target with
+            | Update -> Ok (set Edge Skipped)
+            | Live | Rehearse _ -> run Edge (fun () -> edge env) in
           let* () = run Check (fun () ->
               Progress.phase "check";
               announce "check %s" inputs.public_url;
@@ -1845,11 +1854,14 @@ let up_plan ?local_source env app_name ~revision ~cache ~store =
 
 let up_run ?local_source ?target env app_name ~revision ~cache ~store =
   let plan, apply = prepare_up ?local_source ?target ~plan_only:false env app_name ~revision ~cache ~store in
-  print_up_plan plan;
-  let question = match plan.jail with
-    | Jail_needs_env message -> failwith ("up: " ^ message)
-    | Jail_create -> Printf.sprintf "create jail %s at %s?" app_name (find_app env app_name).endpoint.ip
-    | Jail_ready -> Printf.sprintf "deploy %s at %s?" app_name (short plan.commit) in
+  print_up_plan ?target plan;
+  let question = match plan.jail, target with
+    | Jail_needs_env message, Some Update -> failwith ("update: " ^ message)
+    | Jail_create, Some Update ->
+        failwith (Printf.sprintf "update: %s has no jail; create it with serai up" app_name)
+    | Jail_needs_env message, _ -> failwith ("up: " ^ message)
+    | Jail_create, _ -> Printf.sprintf "create jail %s at %s?" app_name (find_app env app_name).endpoint.ip
+    | Jail_ready, _ -> Printf.sprintf "deploy %s at %s?" app_name (short plan.commit) in
   if not (env.confirm question) then failwith "up: not applied";
   (* One confirmation covers the whole sequence. *)
   plan, apply { (app_env env app_name) with confirm = (fun _ -> true) }

@@ -136,6 +136,50 @@ let () =
       ((match outcome.result with Dispatcher.Step_failed (Dispatcher.Check, m) -> contains "curl exit 22" m | _ -> false)
        && statuses outcome = [ "jail", "skipped"; "build", "skipped"; "release", "done"; "edge", "done"; "check", "failed" ]);
 
+    (* Update: the existing jail only, never the edge. *)
+    let touches_edge (r : Proc.request) =
+      List.exists (fun a -> a = "edge" || String.starts_with ~prefix:"edge:" a) r.args
+      || mentions "01-pf-rules" r || mentions "01-headscale-policy" r || mentions "02-caddy" r in
+    let update ?(local_source : string option) () =
+      let mock = Proc.Mock.create ~outputs () in
+      let result =
+        try Ok (Proc.Mock.run mock (fun () ->
+          Dispatcher.up_run ?local_source ~target:Dispatcher.Update (env ~confirm:(fun _ -> true))
+            "hello" ~revision:"main" ~cache ~store))
+        with Failure message -> Error message in
+      result, Proc.Mock.calls mock in
+    (match update () with
+     | Ok (_, outcome), calls ->
+         check "an update releases into the ready jail, skips the edge and checks the public URL"
+           (outcome.result = Dispatcher.Deployed identity
+            && statuses outcome = [ "jail", "skipped"; "build", "skipped"; "release", "done"; "edge", "skipped"; "check", "done" ]);
+         check "an update sends nothing to the edge host and runs no edge script"
+           (not (List.exists touches_edge calls));
+         check "an update still checks the public URL"
+           (List.exists (fun (r : Proc.request) -> r.prog = "curl"
+              && List.mem "https://hello.example.org/" r.args) calls)
+     | Error message, _ -> check ("an update of a ready jail succeeds: " ^ message) false);
+    let changes_host calls =
+      List.exists (fun (r : Proc.request) ->
+          r.prog = "rsync" || (r.prog = "ssh" && not (mentions "jail-probe-root" r))) calls in
+    live_probe := "jail-probe-root: absent\njail-probe-running: counter 10.20.0.3\njail-test-env: absent\n";
+    (match update () with
+     | Error message, calls ->
+         check "an update never creates a jail" (contains "update: hello has no jail" message);
+         check "and changes nothing on the host" (not (changes_host calls))
+     | Ok _, _ -> check "an update of an absent jail is refused" false);
+    live_probe := "jail-probe-root: present\njail-probe-configured: hello 10.20.0.2\njail-test-env: absent\n";
+    (match update () with
+     | Error message, calls ->
+         check "an update refuses a jail without its env, naming the file"
+           (String.starts_with ~prefix:"update: " message && contains "/jails/hello/etc/hello/env" message);
+         check "and changes nothing on the host" (not (changes_host calls))
+     | Ok _, _ -> check "an update of a jail without its env is refused" false);
+    live_probe := live_ready;
+    (match update ~local_source:fixture () with
+     | Error _, calls -> check "an update builds only pushed commits, never a local checkout" (calls = [])
+     | Ok _, _ -> check "an update from a local checkout is refused" false);
+
     (* --plan: the same decisions, nothing asked or applied. *)
     let mock = Proc.Mock.create ~outputs () in
     let plan = Proc.Mock.run mock (fun () ->
