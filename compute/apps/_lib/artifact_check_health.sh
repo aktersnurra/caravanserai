@@ -6,7 +6,7 @@ case "$url" in http://?*) ;; *) exit 1 ;; esac
 case "$url" in *[!a-zA-Z0-9./:_?=\&%+-]*) exit 1 ;; esac
 curl_bin=${CURL_BIN:-curl}
 sleep_bin=${SLEEP_BIN:-sleep}
-case "${INFRA_ARTIFACT_HTTP_STATUS:-success}" in
+case "${SERAI_ARTIFACT_HTTP_STATUS:-success}" in
     success)
         # curl reports every failed attempt, also those a later retry
         # recovers from; only the last one says why the check failed.
@@ -19,7 +19,7 @@ case "${INFRA_ARTIFACT_HTTP_STATUS:-success}" in
     [1-5][0-9][0-9])
         # A declared exact status (S3's unsigned 403): the service must run
         # and answer exactly that.
-        expected=$INFRA_ARTIFACT_HTTP_STATUS
+        expected=$SERAI_ARTIFACT_HTTP_STATUS
         jail=${2:?jail required for status readiness}
         service_name=${3:?service required for status readiness}
         jexec_bin=${JEXEC_BIN:-jexec}

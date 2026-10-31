@@ -3,13 +3,13 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # Source-only local contract: never invoke a host_artifact executable here.
 # dune build @all separately compiles the unchanged runner.
-python3 - "$ROOT/infra/test/host_artifact_build_candidate.ml" <<'PYGUARD'
+python3 - "$ROOT/serai/test/host_artifact_build_candidate.ml" <<'PYGUARD'
 from pathlib import Path
 import sys
 text = Path(sys.argv[1]).read_text()
 prefix = '''let run () =
-  if Sys.getenv_opt "INFRA_ARTIFACT_HOST_TEST" <> Some "1" then
-    failwith "host test: explicit opt-in required (INFRA_ARTIFACT_HOST_TEST=1)";
+  if Sys.getenv_opt "SERAI_ARTIFACT_HOST_TEST" <> Some "1" then
+    failwith "host test: explicit opt-in required (SERAI_ARTIFACT_HOST_TEST=1)";
   if not (Unix.isatty Unix.stdin) then
     failwith "host test: real terminal required for SSH/security-key or doas prompts";
 '''
@@ -23,8 +23,8 @@ for entry in ['Array.to_list Sys.argv', 'Layout.discover', 'Declaration.load',
 assert '| _ :: "--app" :: name :: rest -> name, rest' in text, 'the app is always named'
 PYGUARD
 # Dispatcher commands are algebraic effects. The host runner must install the
-# same live handler and Ctrl-C unwinding as the production infra entry point.
+# same live handler and Ctrl-C unwinding as the production serai entry point.
 grep -Fq 'Proc.live (fun () -> Dispatcher.artifact_build_candidate' \
-    "$ROOT/infra/test/host_artifact_build_candidate.ml"
-grep -Fq 'Sys.catch_break true' "$ROOT/infra/test/host_artifact_build_candidate.ml"
+    "$ROOT/serai/test/host_artifact_build_candidate.ml"
+grep -Fq 'Sys.catch_break true' "$ROOT/serai/test/host_artifact_build_candidate.ml"
 echo 'ok - host runner source-contract guards/effect handling only; compilation is covered by @all, no dynamic/native execution'

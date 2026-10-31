@@ -44,7 +44,7 @@ defmodule Mix.Tasks.Infra.Assets do
       # Phoenix generates phoenix-colocated/<app> JavaScript during project
       # compilation. Compile after setup, before esbuild; this is still a
       # build-only task and does not load production runtime configuration.
-      if System.get_env("INFRA_PROGRESS_JSONL") == "1" do
+      if System.get_env("SERAI_PROGRESS_JSONL") == "1" do
         started = System.monotonic_time(:nanosecond)
         status_key = {__MODULE__, :project_compile_status, make_ref()}
         Process.put(status_key, "failed")
@@ -57,7 +57,7 @@ defmodule Mix.Tasks.Infra.Assets do
           try do
             elapsed = (System.monotonic_time(:nanosecond) - started) / 1_000_000_000
             status = Process.delete(status_key)
-            IO.puts(:stderr, "{\"event\":\"infra.phase_duration\",\"operation\":\"artifact.build\",\"workload\":null,\"phase\":\"project-compile\",\"parent\":\"asset-build\",\"status\":\"#{status}\",\"duration_seconds\":#{elapsed},\"reason\":null}")
+            IO.puts(:stderr, "{\"event\":\"serai.phase_duration\",\"operation\":\"artifact.build\",\"workload\":null,\"phase\":\"project-compile\",\"parent\":\"asset-build\",\"status\":\"#{status}\",\"duration_seconds\":#{elapsed},\"reason\":null}")
           rescue
             _ -> :ok
           catch

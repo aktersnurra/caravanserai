@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-mkdir -p "$ROOT/infra/_build"
-TMP="$(mktemp -d "$ROOT/infra/_build/resolver-test.XXXXXXXX")"
+mkdir -p "$ROOT/serai/_build"
+TMP="$(mktemp -d "$ROOT/serai/_build/resolver-test.XXXXXXXX")"
 trap 'rm -rf "$TMP"' EXIT
 export TMPDIR="$TMP/tmp"
 mkdir -m 700 "$TMPDIR"

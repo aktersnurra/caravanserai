@@ -40,7 +40,7 @@ SHELL_SCRIPTS=(
   edge/02-caddy
   edge/03-logging
   edge/04-vmui-auth
-  scripts/install-infra.sh
+  scripts/install.sh
   scripts/lint.sh
   scripts/push.sh
   tests/test_caddy_lifecycle.sh
@@ -94,13 +94,13 @@ fi
 # 2. serai's build and tests
 # ---------------------------------------------------------------------------
 echo "→ serai build and tests"
-if run_quiet sh -c 'cd infra && dune build && dune runtest'; then
-  green "  infra/ builds and its tests pass"
+if run_quiet sh -c 'cd serai && dune build && dune runtest'; then
+  green "  serai/ builds and its tests pass"
 else
-  red "  infra/ build or tests failed"
+  red "  serai/ build or tests failed"
   fail=1
 fi
-SERAI="$PWD/infra/_build/default/bin/main.exe"
+SERAI="$PWD/serai/_build/default/bin/main.exe"
 
 # ---------------------------------------------------------------------------
 # 3. The example configuration's render

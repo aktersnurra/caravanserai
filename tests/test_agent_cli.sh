@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-(cd "$ROOT/infra" && dune build bin/main.exe)
+(cd "$ROOT/serai" && dune build bin/main.exe)
 python3 - "$ROOT" <<'PY'
 import json
 import os
@@ -12,14 +12,14 @@ import sys
 import tempfile
 
 root = Path(sys.argv[1])
-exe = root / 'infra/_build/default/bin/main.exe'
-with tempfile.TemporaryDirectory(prefix='infra-agent-cli-') as directory:
+exe = root / 'serai/_build/default/bin/main.exe'
+with tempfile.TemporaryDirectory(prefix='serai-agent-cli-') as directory:
     fixture = Path(directory)
     # A copy of the example configuration, plus a pinned binary it does not
     # declare; compute/apps/_lib marks it as its own engine too.
     shutil.copytree(root / 'example', fixture, dirs_exist_ok=True)
     (fixture / 'compute/apps/_lib').mkdir(parents=True)
-    binary = (root / 'infra/test/fixtures/executable_apps/idp/app.sexp').read_text()
+    binary = (root / 'serai/test/fixtures/executable_apps/idp/app.sexp').read_text()
     (fixture / 'apps/idp').mkdir()
     (fixture / 'apps/idp/app.sexp').write_text(binary)
     topology = fixture / 'serai.sexp'
@@ -105,7 +105,7 @@ with tempfile.TemporaryDirectory(prefix='infra-agent-cli-') as directory:
     assert events[-1]['status'] == 'succeeded'
     assert events[-1]['operation'] == 'validate'
 
-    # infra new writes the declaration and touches no host: jj only reads
+    # serai new writes the declaration and touches no host: jj only reads
     # the checkout's origin.
     checkout = fixture / 'greeter-src'
     (checkout / 'lib/greeter').mkdir(parents=True)

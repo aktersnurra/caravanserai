@@ -2,7 +2,7 @@
 # Run on the FreeBSD compute host, after the receiver's jail. Never replaces
 # host syslogd.
 # bootstrap.sh <receiver> [--replace]: <receiver> is the app every sender
-# forwards to, whose stage directory holds what infra rendered. A sender
+# forwards to, whose stage directory holds what serai rendered. A sender
 # whose managed files differ is refused unless --replace, which stops it,
 # installs the new files and starts it, and on any failure restores every
 # file and restarts the previous senders.
@@ -29,7 +29,7 @@ validate_logging_targets "$TARGETS" "$RECEIVER" || {
   echo 'logging: generated target manifest missing or invalid' >&2; exit 1;
 }
 JAILS=$(cut -d ' ' -f 1 "$TARGETS")
-# Rendered by infra from the declarations, staged beside the targets: the
+# Rendered by serai from the declarations, staged beside the targets: the
 # host relay, the jail senders' base, and the guest bridge the relay listens
 # on (empty when the host runs no guests).
 HOST_CONFIG="$APPS_DIR/$RECEIVER/syslog-ng-host.conf"

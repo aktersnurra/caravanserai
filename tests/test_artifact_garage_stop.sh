@@ -46,7 +46,7 @@ chmod +x "$TMP/bin/"*
 export STATE="$TMP/state"
 run_helper() {
  JAIL_ROOT="$TMP/jail" JEXEC_BIN="$TMP/bin/jexec" MV_BIN="$TMP/bin/mv" \
- STAT_BIN="$TMP/bin/stat" CURL_BIN="$TMP/bin/curl" SLEEP_BIN=/usr/bin/true INFRA_LOCK_HELD=1 INFRA_ARTIFACT_HTTP_STATUS=403 INFRA_ARTIFACT_SERVICE_STATUS=process \
+ STAT_BIN="$TMP/bin/stat" CURL_BIN="$TMP/bin/curl" SLEEP_BIN=/usr/bin/true SERAI_LOCK_HELD=1 SERAI_ARTIFACT_HTTP_STATUS=403 SERAI_ARTIFACT_SERVICE_STATUS=process \
   sh "$ROOT/compute/apps/_lib/artifact_$1.sh" "${@:2}"
 }
 failures=0

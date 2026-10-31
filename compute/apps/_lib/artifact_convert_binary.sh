@@ -4,10 +4,10 @@
 set -eu
 jail=${1:?}; identity=${2:?}; expected=${3:?}; release=${4:?}; url=${5:?}; anchor=${6:?}
 fail() { echo "binary artifact conversion: $*" >&2; exit 1; }
-[ "${INFRA_LOCK_HELD:-0}" = 1 ] || fail 'lifecycle lock required'
+[ "${SERAI_LOCK_HELD:-0}" = 1 ] || fail 'lifecycle lock required'
 # rc: the service's rc status says whether it runs. process: its rc status
 # checks something else, so a process named after the release decides.
-service_status=${INFRA_ARTIFACT_SERVICE_STATUS:-rc}
+service_status=${SERAI_ARTIFACT_SERVICE_STATUS:-rc}
 case "$service_status" in rc|process) ;; *) fail 'invalid service status mode' ;; esac
 case "$jail:$release" in *[!a-zA-Z0-9_:-]*) fail 'invalid names' ;; esac
 [ -n "$jail" ] && [ -n "$release" ] || fail 'empty names'

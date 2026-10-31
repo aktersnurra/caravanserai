@@ -20,7 +20,7 @@ anchor=${9:?binary anchor required}
 migrate=${10:?migrate mode required}
 app=${11:?app required}
 fail() { echo "artifact apply: $*" >&2; exit 1; }
-[ "${INFRA_LOCK_HELD:-0}" = 1 ] || fail 'lifecycle lock required'
+[ "${SERAI_LOCK_HELD:-0}" = 1 ] || fail 'lifecycle lock required'
 case "$mode" in upgrade|rollback|convert) ;; *) fail 'invalid operation' ;; esac
 case "$migrate" in migrate|-) ;; *) fail 'invalid migrate mode' ;; esac
 case "$jail:$app:$release" in *[!a-zA-Z0-9_:-]*) fail 'invalid workload, app or release' ;; esac

@@ -94,7 +94,7 @@ esac
             script = stage / script_name
             shutil.copyfile(source / script_name, script)
             if name == 'edge':
-                # What infra renders and stages beside the installer.
+                # What serai renders and stages beside the installer.
                 shutil.copyfile(source / 'syslog-ng-victoria.service', stage / 'syslog-ng-victoria.service')
                 (stage / 'syslog-ng-victoria.conf').write_text(
                     (source / 'syslog-ng-victoria.conf.template').read_text()

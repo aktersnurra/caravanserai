@@ -13,7 +13,7 @@ one on example.org.
 ## Install
 
 ```sh
-./scripts/install-infra.sh    # builds, tests, installs ~/.local/bin/serai (and infra)
+./scripts/install.sh    # builds, tests, installs ~/.local/bin/serai
 ```
 
 It also installs the files `serai` runs on the hosts (`compute/apps/_lib`,
@@ -28,7 +28,7 @@ above it holding `serai.sexp`.
 ```
 serai.sexp              hosts, where each workload runs, what the edge proxies
 logging.sexp            which apps forward which logs
-pipelines.sexp          named sequences of steps (infra run <app> <pipeline>)
+pipelines.sexp          named sequences of steps (serai run <app> <pipeline>)
 apps/<app>/app.sexp     an app: address, ports, strategy, hooks
 guests/<guest>/         a bhyve guest: guest.sexp and its own scripts
 edge/edge.sexp          the domain and the operator
@@ -41,12 +41,12 @@ Try it on the example:
 cd example && serai validate
 ```
 
-[`infra/README.md`](infra/README.md) covers every command.
+[`serai/README.md`](serai/README.md) covers every command.
 
 ## Repository layout
 
 ```
-infra/                  serai, the OCaml CLI
+serai/                  serai, the OCaml CLI
 compute/01-base         first-run setup of a FreeBSD compute host
 compute/02-bhyve        bhyve and the guest bridge on a compute host
 compute/01-pf-rules     installs the pf rules serai renders

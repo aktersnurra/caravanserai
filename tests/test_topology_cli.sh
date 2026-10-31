@@ -14,8 +14,8 @@ TOPOLOGY="$ROOT/example/serai.sexp"
 cp -R "$ROOT/example/." "$TMP/"
 rm "$TMP/serai.sexp"
 mkdir -p "$TMP/compute/apps/_lib"
-(cd "$ROOT/infra" && dune build bin/main.exe)
-CLI="$ROOT/infra/_build/default/bin/main.exe"
+(cd "$ROOT/serai" && dune build bin/main.exe)
+CLI="$ROOT/serai/_build/default/bin/main.exe"
 if (cd "$TMP" && "$CLI" validate) >"$TMP/output" 2>&1; then
  echo 'FAIL - missing topology was silently accepted' >&2
  exit 1

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-mkdir -p "$ROOT/infra/_build/prepared-builder/tmp"
-TMP="$(mktemp -d "$ROOT/infra/_build/prepared-builder/tmp/task8-cli.XXXXXXXX")"
+mkdir -p "$ROOT/serai/_build/prepared-builder/tmp"
+TMP="$(mktemp -d "$ROOT/serai/_build/prepared-builder/tmp/task8-cli.XXXXXXXX")"
 trap 'rm -rf "$TMP"' EXIT
 cat >"$TMP/ssh" <<'EOF'
 #!/bin/sh
@@ -13,14 +13,14 @@ chmod +x "$TMP/ssh"
 export SSH_BIN="$TMP/ssh" RSYNC_BIN="$TMP/ssh" REMOTE_LOG="$TMP/remote"
 mkdir "$TMP/store"
 chmod 777 "$TMP/store"
-(cd "$ROOT/infra" && dune build bin/main.exe)
-CLI="$ROOT/infra/_build/default/bin/main.exe"
+(cd "$ROOT/serai" && dune build bin/main.exe)
+CLI="$ROOT/serai/_build/default/bin/main.exe"
 # A copy of the example configuration plus a package and a pinned binary,
 # inside this repository so that its engine is the one above it.
 cp -R "$ROOT/example" "$TMP/config"
 for app in garage idp; do
  mkdir "$TMP/config/apps/$app"
- cp "$ROOT/infra/test/fixtures/executable_apps/$app/app.sexp" "$TMP/config/apps/$app/app.sexp"
+ cp "$ROOT/serai/test/fixtures/executable_apps/$app/app.sexp" "$TMP/config/apps/$app/app.sexp"
 done
 sed -i -e 's/(logs worker)/(logs worker) (garage worker) (idp worker)/' \
  -e 's/(proxy (hello counter logs ledger))/(proxy (hello counter logs ledger garage idp))/' "$TMP/config/serai.sexp"
@@ -105,7 +105,7 @@ for app in garage idp; do
  cmp "$TMP/release.tar" "$TMP/store/$identity/release.tar"
  test -f "$TMP/store/$identity/manifest"
  kind=package; test "$app" != idp || kind=binary
- grep -Fq "INFRA_ARTIFACT_KIND=$kind" "$TMP/remote"
+ grep -Fq "SERAI_ARTIFACT_KIND=$kind" "$TMP/remote"
  grep -Fq 'artifact-executable-cleanup:' "$TMP/remote"
  rm -f "$TMP/remote"
  if ! SSH_BIN="$TMP/ssh" RSYNC_BIN="$TMP/rsync" "$CLI" \

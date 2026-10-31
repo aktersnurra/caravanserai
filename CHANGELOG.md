@@ -1,5 +1,24 @@
 # Changelog
 
+## 2026-10-31 — One name: serai
+
+- BREAKING: the CLI is only `serai`; `scripts/install.sh` (was
+  `install-infra.sh`) no longer installs the `infra` alias. Help, hints,
+  errors and docs say `serai`.
+- BREAKING: every `INFRA_*` variable is `SERAI_*` (`SERAI_CACHE`,
+  `SERAI_STORE`, `SERAI_ARTIFACT_HOST_TEST`, ...), and progress events are
+  `serai.progress`, `serai.phase_duration` and
+  `serai.phase_timing_unavailable`.
+- The default cache and store are `~/.cache/serai` and
+  `~/.local/share/serai/store`; move the `infra` ones there to keep them.
+- The source directory is `serai/`, the dune package and library `serai`,
+  and the configuration's skill `serai-operations`.
+- Names on the hosts and in the store keep `infra` so nothing deployed
+  changes: `/opt/.infra-releases`, `.infra-sha256`, `/var/lib/infra/applied`,
+  `<stage>/locks/infra`, `infra-build-*` jails and the `infra-*-v1` format
+  tags. The builder scripts did change, so every artifact's recipe identity
+  is new and each app rebuilds once on its next `serai up`.
+
 ## 2026-10-31 — Publishable: no deployment's names in the engine
 
 - BREAKING: `fetch_binary` takes `(env_values ((NAME value) ...))` and

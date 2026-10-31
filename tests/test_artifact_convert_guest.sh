@@ -41,7 +41,7 @@ cp "$ROOT/compute/apps/_lib/artifact_service_guest.sh" "$TMP/bin/service"
 chmod +x "$TMP/bin/"*
 export EVENTS="$TMP/events" RUNNING="$TMP/running"
 run() {
- INFRA_LOCK_HELD=1 JAIL_ROOT="$TMP/root" STAT_BIN="$TMP/bin/stat" \
+ SERAI_LOCK_HELD=1 JAIL_ROOT="$TMP/root" STAT_BIN="$TMP/bin/stat" \
  JEXEC_BIN="$TMP/bin/service" SYSTEMCTL_BIN="$TMP/bin/systemctl" CURL_BIN="$TMP/bin/curl" \
  sh "$ROOT/compute/apps/_lib/artifact_convert_binary.sh" ledger "$id" "$sha" ledger http://10.40.0.10:4010/health /usr/local/bin/ledger
 }

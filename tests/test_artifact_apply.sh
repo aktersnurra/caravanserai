@@ -17,18 +17,18 @@ EOF
 mkdir "$TMP/scripts"
 cat >"$TMP/scripts/artifact_install.sh" <<'EOF'
 #!/bin/sh
-[ "$INFRA_LOCK_HELD" = 1 ] || exit 1
+[ "$SERAI_LOCK_HELD" = 1 ] || exit 1
 printf 'install %s %s\n' "$1" "$5" >>"$EVENTS"
 EOF
 cat >"$TMP/scripts/artifact_activate.sh" <<'EOF'
 #!/bin/sh
-[ "$INFRA_LOCK_HELD" = 1 ] || exit 1
+[ "$SERAI_LOCK_HELD" = 1 ] || exit 1
 printf 'activate %s %s %s %s\n' "$1" "$4" "$7" "$8" >>"$EVENTS"
 EOF
 chmod +x "$TMP/bin/jexec"
 export EVENTS="$TMP/events"
 run() {
- INFRA_LOCK_HELD="${INFRA_LOCK_HELD:-1}" JAIL_ROOT="$TMP/jail" JEXEC_BIN="$TMP/bin/jexec" \
+ SERAI_LOCK_HELD="${SERAI_LOCK_HELD:-1}" JAIL_ROOT="$TMP/jail" JEXEC_BIN="$TMP/bin/jexec" \
  sh "$TMP/scripts/artifact_apply.sh" "$1" "${RUN_JAIL:-demo}" "$id" "$(printf 'b%.0s' {1..64})" \
  "$TMP/archive" demo http://10.40.0.200:4000/ FreeBSD:15:amd64 "${ANCHOR:--}" "${MIGRATE:--}" demo
 }
@@ -44,7 +44,7 @@ if MIGRATE=bogus run upgrade >"$TMP/error" 2>&1; then exit 1; fi
 test ! -s "$EVENTS"
 if ABI=Linux:x86_64 run upgrade >"$TMP/error" 2>&1; then exit 1; fi
 test ! -s "$EVENTS"
-if INFRA_LOCK_HELD=0 run upgrade >"$TMP/error" 2>&1; then exit 1; fi
+if SERAI_LOCK_HELD=0 run upgrade >"$TMP/error" 2>&1; then exit 1; fi
 test ! -s "$EVENTS"
 if run rollback >"$TMP/error" 2>&1; then exit 1; fi
 test ! -s "$EVENTS"

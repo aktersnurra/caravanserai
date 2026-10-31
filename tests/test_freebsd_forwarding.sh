@@ -18,7 +18,7 @@ grep -Eq "^render_rc '[^']*'.*\"\\\$tmp/central-logging-jail.rc\"$" "$dir/bootst
 if grep -Eq '^# (REQUIRE|BEFORE):' "$dir/central-logging.rc.template"; then
   fail 'rc template fixes its own boot order'
 fi
-# The host relay and jail base are rendered by infra's Logging_relay, whose
+# The host relay and jail base are rendered by serai's Logging_relay, whose
 # tests pin their content; here only the installer. The engine names no app:
 # every remote source comes from an app's reviewed sender.
 if grep -Eq 'file\(|program\(' "$dir/bootstrap.sh"; then fail 'engine hardcodes a jail source'; fi

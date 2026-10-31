@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-cd "$ROOT/infra"
+cd "$ROOT/serai"
 dune build bin/main.exe
 python3 - "$ROOT" <<'PY'
 import hashlib
@@ -14,17 +14,17 @@ import sys
 import tempfile
 
 root = Path(sys.argv[1])
-exe = root / 'infra/_build/default/bin/main.exe'
+exe = root / 'serai/_build/default/bin/main.exe'
 # Inside this repository, so the copied configuration's engine is the one
 # above it.
-with tempfile.TemporaryDirectory(prefix='infra-progress-', dir=root / 'infra/_build') as directory:
+with tempfile.TemporaryDirectory(prefix='serai-progress-', dir=root / 'serai/_build') as directory:
     temporary = Path(directory)
     # The example configuration plus a package app.
     config = temporary / 'config'
     shutil.copytree(root / 'example', config)
     (config / 'apps/garage').mkdir()
     (config / 'apps/garage/app.sexp').write_text(
-        (root / 'infra/test/fixtures/executable_apps/garage/app.sexp').read_text())
+        (root / 'serai/test/fixtures/executable_apps/garage/app.sexp').read_text())
     topology = config / 'serai.sexp'
     topology.write_text(topology.read_text()
                         .replace('(logs worker)', '(logs worker) (garage worker)')
@@ -33,7 +33,7 @@ with tempfile.TemporaryDirectory(prefix='infra-progress-', dir=root / 'infra/_bu
         '__GARAGE_HOSTNAME__ {\n    reverse_proxy __GARAGE_IP__:__GARAGE_S3_PORT__\n}\n')
     calls = temporary / 'calls'
     ssh = temporary / 'ssh'
-    ssh.write_text('#!/bin/sh\nprintf "ssh\\n" >>"$CALLS"\ncase "$*" in *INFRA_LOCK_HELD=1*) exit 255 ;; esac\nexit 0\n')
+    ssh.write_text('#!/bin/sh\nprintf "ssh\\n" >>"$CALLS"\ncase "$*" in *SERAI_LOCK_HELD=1*) exit 255 ;; esac\nexit 0\n')
     rsync = temporary / 'rsync'
     rsync.write_text('#!/bin/sh\nprintf "rsync\\n" >>"$CALLS"\nexit 0\n')
     ssh.chmod(0o700)
@@ -51,7 +51,7 @@ with tempfile.TemporaryDirectory(prefix='infra-progress-', dir=root / 'infra/_bu
                 item = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if isinstance(item, dict) and item.get('event') == 'infra.progress':
+            if isinstance(item, dict) and item.get('event') == 'serai.progress':
                 parsed.append(item)
         return parsed
 
@@ -92,7 +92,7 @@ with tempfile.TemporaryDirectory(prefix='infra-progress-', dir=root / 'infra/_bu
     # Real committed source fixture, mocked transport: remote-total is one helper
     # invocation including teardown, not a compilation or sum of worker spans.
     # Outside this repository: a checkout nested in it is not its own.
-    source = Path(tempfile.mkdtemp(prefix='infra-progress-source-'))
+    source = Path(tempfile.mkdtemp(prefix='serai-progress-source-'))
     subprocess.run(['jj', 'git', 'init', str(source)], check=True, capture_output=True, timeout=30)
     (source / 'mix.exs').write_text('public committed source fixture\n')
     subprocess.run(['jj', 'describe', '-m', 'progress source fixture'], cwd=source,
@@ -105,7 +105,7 @@ with tempfile.TemporaryDirectory(prefix='infra-progress-', dir=root / 'infra/_bu
                          '--store', str(store), '--yes', '--progress=jsonl')
     assert source_failure.returncode == 1, source_failure.stderr
     spans = [json.loads(line) for line in source_failure.stderr.splitlines() if line.startswith('{')]
-    spans = [item for item in spans if item.get('event') == 'infra.phase_duration']
+    spans = [item for item in spans if item.get('event') == 'serai.phase_duration']
     assert spans, source_failure.stderr
     assert spans[0]['phase'] == 'source' and spans[0]['status'] == 'completed', source_failure.stderr
     assert any(item['phase'] == 'outbound-transfer' for item in spans), spans

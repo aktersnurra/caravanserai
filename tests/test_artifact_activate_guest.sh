@@ -32,7 +32,7 @@ EOF
 chmod +x "$TMP/bin/"*
 export EVENTS="$TMP/events" RUNNING="$TMP/running"
 run() {
- INFRA_LOCK_HELD=1 GUEST_ROOT="$TMP/root" SYSTEMCTL_BIN="$TMP/bin/systemctl" CURL_BIN="$TMP/bin/curl" \
+ SERAI_LOCK_HELD=1 GUEST_ROOT="$TMP/root" SYSTEMCTL_BIN="$TMP/bin/systemctl" CURL_BIN="$TMP/bin/curl" \
  sh "$ROOT/compute/apps/_lib/artifact_activate_guest.sh" "$1" ledger "$2" "$sha" http://10.40.0.10:4010/health
 }
 run upgrade "$id_a"

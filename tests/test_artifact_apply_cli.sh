@@ -10,8 +10,8 @@ printf 'remote\n' >>"$REMOTE_LOG"
 exit 1
 EOF
 chmod +x "$TMP/ssh"
-(cd "$ROOT/infra" && dune build bin/main.exe)
-CLI="$ROOT/infra/_build/default/bin/main.exe"
+(cd "$ROOT/serai" && dune build bin/main.exe)
+CLI="$ROOT/serai/_build/default/bin/main.exe"
 # The example configuration, on this engine.
 cd "$ROOT/example"
 for app in hello logs counter; do

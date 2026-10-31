@@ -1,6 +1,6 @@
 #!/bin/sh
 # Install a verified Phoenix release into a versioned directory in one jail.
-# The host-side infra lock must be held by the caller. This script only stages
+# The host-side serai lock must be held by the caller. This script only stages
 # a release; it never changes /opt/<app> or stops/starts a service. APP names
 # the in-jail paths; it differs from JAIL only in a test jail.
 # Usage: artifact_install.sh JAIL IDENTITY ARCHIVE SHA256 APP

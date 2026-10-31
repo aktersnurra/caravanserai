@@ -2,10 +2,10 @@
 # edge/01-headscale-policy
 # Installs a Headscale ACL rendered elsewhere. Run as root on the edge host.
 #
-# infra renders the policy from each service's declared ports
+# serai renders the policy from each service's declared ports
 # (apps/*/app.sexp, guests/*/guest.sexp) on the operator's machine,
 # which the edge host has no copy of and should not be given one of, and stages it
-# as POLICY_SOURCE. infra edge runs this script with POLICY_DIFF_ONLY=1 to
+# as POLICY_SOURCE. serai edge runs this script with POLICY_DIFF_ONLY=1 to
 # show the change, then again to install it.
 #
 # Split out of edge/00-headscale because that script is a first-run installer:
@@ -104,7 +104,7 @@ log "  headscale nodes list"
 # Entry point
 # ---------------------------------------------------------------------------
 [ -n "${POLICY_SOURCE:-}" ] || {
-  log "ERROR: POLICY_SOURCE is required; run infra edge, which renders and stages the policy"
+  log "ERROR: POLICY_SOURCE is required; run serai edge, which renders and stages the policy"
   exit 1
 }
 [ -f "$POLICY_SOURCE" ] || {

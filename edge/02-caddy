@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # edge/02-caddy
 # Builds Caddy with xcaddy + caddy-ratelimit and installs a Caddy config tree
-# rendered elsewhere: infra renders edge/caddy/'s templates from
+# rendered elsewhere: serai renders edge/caddy/'s templates from
 # apps/*/app.sexp and guests/*/guest.sexp and stages the result as
-# CADDY_SOURCE. Run through infra edge (a config change: CADDY_DIFF_ONLY=1
-# first, then the install) or infra caddy-install (build if needed, unit,
+# CADDY_SOURCE. Run through serai edge (a config change: CADDY_DIFF_ONLY=1
+# first, then the install) or serai caddy-install (build if needed, unit,
 # first install).
 # Upstreams reach jail IPs over the Tailscale subnet route advertised by
 # the compute host (see compute/01-base) and approved in Headscale.
@@ -20,7 +20,7 @@ log() { echo "==> $*"; }
 # Nothing here renders the templates any more, so without a rendered tree
 # there is nothing to install. Checked first, before secrets, build or setup.
 [ -n "${CADDY_SOURCE:-}" ] || {
-  log "ERROR: CADDY_SOURCE is required; run infra edge (config) or infra caddy-install (build/unit/first install)"
+  log "ERROR: CADDY_SOURCE is required; run serai edge (config) or serai caddy-install (build/unit/first install)"
   exit 1
 }
 
@@ -234,7 +234,7 @@ log "==> Caddy running."
 
 # Bootstrap instructions belong to a first run only. Printed on every config
 # update they read as work still outstanding, which is how an ordinary
-# infra edge came to look like a fresh install. $had_caddyfile is the test:
+# serai edge came to look like a fresh install. $had_caddyfile is the test:
 # it is 0 only when this host had no managed Caddyfile before this run.
 if [ "$had_caddyfile" -eq 0 ]; then
   log ""
@@ -243,10 +243,10 @@ if [ "$had_caddyfile" -eq 0 ]; then
   log ""
   log "  1. sh compute/01-base"
   log "  2. sudo headscale nodes approve-routes -i <compute-node-id> -r <jail subnet>"
-  log "  3. From the workstation: infra bootstrap <app>   # per app"
+  log "  3. From the workstation: serai bootstrap <app>   # per app"
   log "  4. Open the pf rules in /etc/pf.conf (set EDGE_TS_IP) and pfctl -f"
   log ""
   log "Then from your workstation, per app:"
   log ""
-  log "  infra rollout <app>        # infra apps lists them"
+  log "  serai rollout <app>        # serai apps lists them"
 fi

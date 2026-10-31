@@ -14,7 +14,7 @@ mkdir -p "$state" "$bin" "$stage/collector"
 for r in "$fake" "$fake/jails/alpha" "$fake/jails/beta" "$fake/jails/collector"; do mkdir -p "$r/usr/local/etc/rc.d"; done
 cp -R "$root/compute/apps/_lib" "$stage/_lib"
 printf 'alpha local_only\nbeta beta_service\n' >"$stage/collector/logging-targets"
-# What infra renders from the declarations, staged beside the targets.
+# What serai renders from the declarations, staged beside the targets.
 printf '@version: 4.12\n# host relay\n' >"$stage/collector/syslog-ng-host.conf"
 printf '@version: 4.12\n# jail sender\n' >"$stage/collector/syslog-ng-jail.conf"
 printf '10.40.0.254\n' >"$stage/collector/guest-bridge"

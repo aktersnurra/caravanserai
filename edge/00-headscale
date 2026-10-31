@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# infra/edge/00_headscale.sh
+# edge/00-headscale
 # Run first, on the edge host
 # Requires: HEADSCALE_DOMAIN, and from edge/edge.sexp BASE_DOMAIN (its
 # base_domain) and HEADSCALE_USER (its operator)
@@ -68,7 +68,7 @@ dns:
       - 9.9.9.9
 EOF
 
-# The ACL policy is installed by edge/01-headscale-policy, from a policy infra
+# The ACL policy is installed by edge/01-headscale-policy, from a policy serai
 # renders from each service's app.sexp/guest.sexp tailnet_ports and
 # operator_ports. It is not written here: this script is a first-run
 # installer, so a policy living in it can only be changed by a run
@@ -125,9 +125,9 @@ headscale users list >/dev/null 2>&1 || { log "Headscale did not start in time";
 headscale users create "$HEADSCALE_USER" 2>/dev/null || true
 USER_ID="$(headscale users list -o json | grep -m1 '"id"' | grep -oP '\d+')"
 
-log "Next: from the workstation, run infra caddy-install"
+log "Next: from the workstation, run serai caddy-install"
 log "      (Caddy will proxy hs.${BASE_DOMAIN} → Headscale). Once the compute host is"
-log "      reachable, run infra edge from the workstation to install the ACL."
+log "      reachable, run serai edge from the workstation to install the ACL."
 log "      The placeholder policy denies everything and stays until the first"
 log "      edge run."
 log ""

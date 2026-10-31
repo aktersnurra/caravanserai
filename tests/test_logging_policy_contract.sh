@@ -4,8 +4,8 @@ set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 config="$root/example"
 [ -f "$config/logging.sexp" ] || { echo 'FAIL - logging declaration missing' >&2; exit 1; }
-(cd "$root/infra" && dune build bin/main.exe)
-out=$(cd "$config" && "$root/infra/_build/default/bin/main.exe" render-logging-targets)
+(cd "$root/serai" && dune build bin/main.exe)
+out=$(cd "$config" && "$root/serai/_build/default/bin/main.exe" render-logging-targets)
 expected=$'hello local_only\ncounter counter_service'
 [ "$out" = "$expected" ] || { echo 'FAIL - rendered logging targets differ from typed declaration' >&2; exit 1; }
 manifest="$root/compute/apps/_lib/logging/target-manifest.sh"
@@ -26,7 +26,7 @@ for invalid in 'hello Unknown' 'counter 9source' 'hello /var/log/auth.log' \
   fi
 done
 [ ! -e "$config/apps/logs/logging-targets" ] || {
-  echo 'FAIL - generated targets were checked in instead of rendered by infra' >&2; exit 1;
+  echo 'FAIL - generated targets were checked in instead of rendered by serai' >&2; exit 1;
 }
 if grep -Eq "^JAILS='" "$root/compute/apps/_lib/logging/bootstrap.sh"; then
   echo 'FAIL - jail list still hardcoded in installer' >&2; exit 1
@@ -57,4 +57,4 @@ if SSH_BIN="$tmp/ssh" PATH="$tmp:$PATH" \
   sh "$config/apps/logs/check-forwarding" offline >/dev/null 2>&1; then
   echo 'FAIL - health check accepted a tampered installed source' >&2; exit 1
 fi
-printf 'ok - infra renders and validates exactly the declared jail logging policies\n'
+printf 'ok - serai renders and validates exactly the declared jail logging policies\n'

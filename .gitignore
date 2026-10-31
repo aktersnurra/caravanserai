@@ -2,7 +2,7 @@
 .claude/
 
 # OCaml build artifacts
-infra/_build/
+serai/_build/
 
 # Local runtime secrets. Commit env.template, never .env.
 **/.env

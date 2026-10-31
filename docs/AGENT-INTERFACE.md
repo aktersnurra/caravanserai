@@ -1,17 +1,17 @@
 # Agent-first infrastructure interface
 
-The execution boundary is the existing deterministic `infra` CLI. The portable
-procedure is the infra-operations skill a configuration carries in
+The execution boundary is the existing deterministic `serai` CLI. The portable
+procedure is the serai-operations skill a configuration carries in
 `.agents/skills/`.
 There is no MCP server, separate agent executor or implicit permission layer.
 
 ## Version 1: read-only results
 
 ```sh
-infra inspect --json
-infra validate --json
-infra artifact plan hello --revision master --json
-infra artifact plan logs --json
+serai inspect --json
+serai validate --json
+serai artifact plan hello --revision master --json
+serai artifact plan logs --json
 ```
 
 Exactly one JSON object is written to stdout. Optional `--progress=jsonl` emits
@@ -58,7 +58,7 @@ host is identified separately. No runtime env file is read.
 ### Validate
 
 Returns app/guest counts and the relative paths rendered successfully in memory.
-It uses the same declaration and rendering validation as plain `infra validate`.
+It uses the same declaration and rendering validation as plain `serai validate`.
 `--out` is deliberately unsupported with `--json`; plain `validate --out` remains
 available for an explicitly requested local render.
 
@@ -77,8 +77,8 @@ This is **not** a live apply plan, an approval token or a build receipt.
 ## Declaring and planning
 
 ```sh
-infra new hello --kind phoenix --repo ~/projects/hello --json
-infra up hello --revision master --plan --json
+serai new hello --kind phoenix --repo ~/projects/hello --json
+serai up hello --revision master --plan --json
 ```
 
 `new` (operation `new`) writes the app's declaration in the repository and
@@ -95,7 +95,7 @@ false. Either refused or failed means nothing was written or changed:
 ## Deploying
 
 ```sh
-infra up hello --revision master --yes --json
+serai up hello --revision master --yes --json
 ```
 
 Operation `up`. It applies only with `--yes`, because there is no terminal

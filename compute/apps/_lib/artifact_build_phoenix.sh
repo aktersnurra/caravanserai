@@ -48,16 +48,16 @@ timing_root=$source_dir
 # Durations cover one isolated invocation, never an accumulated category total.
 # Native FreeBSD acceptance must separately verify /usr/bin/time's real clock.
 timing_unavailable() {
-    [ "${INFRA_PROGRESS_JSONL:-}" = 1 ] || return 0
-    (printf '{"event":"infra.phase_timing_unavailable","operation":"%s","workload":null,"phase":"%s","parent":"remote-total","reason":"%s"}\n' "$timing_operation" "$1" "$2" >&2) || :
+    [ "${SERAI_PROGRESS_JSONL:-}" = 1 ] || return 0
+    (printf '{"event":"serai.phase_timing_unavailable","operation":"%s","workload":null,"phase":"%s","parent":"remote-total","reason":"%s"}\n' "$timing_operation" "$1" "$2" >&2) || :
 }
 timing_skipped() {
-    [ "${INFRA_PROGRESS_JSONL:-}" = 1 ] || return 0
-    (printf '{"event":"infra.phase_duration","operation":"%s","workload":null,"phase":"%s","parent":"remote-total","status":"skipped","duration_seconds":null,"reason":"%s"}\n' "$timing_operation" "$1" "$2" >&2) || :
+    [ "${SERAI_PROGRESS_JSONL:-}" = 1 ] || return 0
+    (printf '{"event":"serai.phase_duration","operation":"%s","workload":null,"phase":"%s","parent":"remote-total","status":"skipped","duration_seconds":null,"reason":"%s"}\n' "$timing_operation" "$1" "$2" >&2) || :
 }
 timed() (
     timing_phase=$1; shift
-    if [ "${INFRA_PROGRESS_JSONL:-}" != 1 ]; then exec "$@"; fi
+    if [ "${SERAI_PROGRESS_JSONL:-}" != 1 ]; then exec "$@"; fi
     if [ ! -x "${TIME_BIN:-/usr/bin/time}" ]; then
         timing_unavailable "$timing_phase" 'time executable unavailable'
         exec "$@"
@@ -82,7 +82,7 @@ timed() (
     if [ -n "$timing_real" ]; then
         timing_state=completed
         [ "$timing_status" = 0 ] || timing_state=failed
-        (printf '{"event":"infra.phase_duration","operation":"%s","workload":null,"phase":"%s","parent":"remote-total","status":"%s","duration_seconds":%s,"reason":null}\n' "$timing_operation" "$timing_phase" "$timing_state" "$timing_real" >&2) || :
+        (printf '{"event":"serai.phase_duration","operation":"%s","workload":null,"phase":"%s","parent":"remote-total","status":"%s","duration_seconds":%s,"reason":null}\n' "$timing_operation" "$timing_phase" "$timing_state" "$timing_real" >&2) || :
     else
         timing_unavailable "$timing_phase" 'time real interval unavailable'
     fi

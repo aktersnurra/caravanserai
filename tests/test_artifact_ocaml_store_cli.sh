@@ -11,8 +11,8 @@ printf 'unexpected remote/source call\n' >>"$CALLS"
 exit 1
 EOF
 chmod +x "$TMP/remote"
-(cd "$ROOT/infra" && dune build bin/main.exe)
-CLI="$ROOT/infra/_build/default/bin/main.exe"
+(cd "$ROOT/serai" && dune build bin/main.exe)
+CLI="$ROOT/serai/_build/default/bin/main.exe"
 # The example configuration, on this engine.
 cd "$ROOT/example"
 if SSH_BIN="$TMP/remote" JJ_BIN="$TMP/remote" CALLS="$TMP/calls" "$CLI" \

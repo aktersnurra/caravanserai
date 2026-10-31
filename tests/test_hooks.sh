@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# _lib/check.sh, which infra check runs with each app's declared inputs, and
+# _lib/check.sh, which serai check runs with each app's declared inputs, and
 # the credential handling in the generated jail scripts, run directly
-# against fakes. infra's own tests hold the inputs (Dispatcher's check
+# against fakes. serai's own tests hold the inputs (Dispatcher's check
 # environment); these hold what check_app does with them.
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -37,7 +37,7 @@ declare -A port=([hello]=4000 [counter]=4001 [store]=3900)
 declare -A host=([hello]=hello.example.org [counter]=counter.example.org [store]=s3.example.org)
 declare -A path=([hello]=/ [counter]=/health [store]=/)
 
-# check_app as infra check runs it: the app's declared inputs plus
+# check_app as serai check runs it: the app's declared inputs plus
 # COMPUTE_TARGET, EDGE_TARGET and CURL_BIN.
 run_check() {
   OPS_LOG="$tmp/log" SSH_BIN="$tmp/bin/ssh" CURL_BIN="$tmp/bin/curl" \
@@ -50,7 +50,7 @@ run_check() {
 # The pinned-binary strategy's generated script (its golden render) keeps
 # its generated secret out of command arguments and readiness output: awk
 # reads it from a file.
-binary_jail="$root/infra/test/golden/strategy/fetch_binary.sh"
+binary_jail="$root/serai/test/golden/strategy/fetch_binary.sh"
 ! grep -Eq 'log .*SESSION_KEY' "$binary_jail" || fail "${binary_jail##*/} prints a credential"
 ! grep -Eq -- '-(e|v) [^ ]*SESSION_KEY' "$binary_jail" || fail 'credential passed as an argument'
 grep -Fq 'getline s_SESSION_KEY < (secrets_dir "/SESSION_KEY")' "$binary_jail" \

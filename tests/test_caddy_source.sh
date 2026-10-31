@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# edge/02-caddy's CADDY_SOURCE: installs a tree rendered elsewhere (infra
-# edge, infra caddy-install) through the validate/backup/rollback path,
+# edge/02-caddy's CADDY_SOURCE: installs a tree rendered elsewhere (serai
+# edge, serai caddy-install) through the validate/backup/rollback path,
 # refuses an incomplete or unsubstituted tree before touching the live
 # config, and refuses to run at all without one.
 set -euo pipefail
@@ -37,7 +37,7 @@ run() {
 }
 
 # Without CADDY_SOURCE there is nothing to install: the script fails naming
-# the infra commands, before reading secrets, building, or touching the live
+# the serai commands, before reading secrets, building, or touching the live
 # config. secrets.env is moved aside to prove the check comes first.
 mkdir -p "$tmp/spy"
 for tool in caddy systemctl install; do
@@ -50,7 +50,7 @@ if PATH="$tmp/spy:$PATH" CADDY_DIR="$tmp/caddy" CADDY_UNIT_FILE="$tmp/unit" \
   CADDY_SKIP_BUILD=1 CADDY_SKIP_SETUP=1 env -u CADDY_SOURCE bash "$script" >"$tmp/out" 2>&1; then
   fail 'ran without CADDY_SOURCE'
 fi
-grep -Fq 'ERROR: CADDY_SOURCE is required; run infra edge (config) or infra caddy-install (build/unit/first install)' "$tmp/out" ||
+grep -Fq 'ERROR: CADDY_SOURCE is required; run serai edge (config) or serai caddy-install (build/unit/first install)' "$tmp/out" ||
   fail "missing-CADDY_SOURCE diagnostic absent: $(cat "$tmp/out")"
 [ ! -e "$tmp/called" ] || fail "ran $(tr '\n' ' ' <"$tmp/called")without CADDY_SOURCE"
 grep -Fxq keep-me "$tmp/caddy/Caddyfile" || fail 'live Caddyfile touched without CADDY_SOURCE'

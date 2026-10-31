@@ -20,7 +20,7 @@ SUBR
 sed -e "s|/etc/rc.subr|$TMP/subr|" \
     -e "s|/etc/hello/env|$TMP/fixture|g" \
     -e "s|/var/log/hello/hello.log|$TMP/service.log|g" \
-    "$ROOT/infra/test/golden/strategy/rc_hello.sh" >"$TMP/service"
+    "$ROOT/serai/test/golden/strategy/rc_hello.sh" >"$TMP/service"
 grep -Fq "$TMP/fixture" "$TMP/service"
 env -u RELEASE_COOKIE -u ENVIRONMENT_PROOF sh "$TMP/service" start
 echo 'ok - Phoenix rc keeps sourced fixture environment in the service shell'

@@ -4,7 +4,7 @@
 # SOURCE PROJECT_SUBDIR DUNE_TARGET RELEASE OUTPUT COMPILER REPOSITORY [WEB]
 # WEB, when given, is a flat web bundle the controller built; it ships as
 # share/web beside bin/.
-# INFRA_OPAM_ROOT, when set, is the build jail's opam root: created on first
+# SERAI_OPAM_ROOT, when set, is the build jail's opam root: created on first
 # use, reused with its switch when the dependency cache restored it, and kept.
 # Otherwise the root is private to this run and removed with it.
 # No install, service operation, migration, or use of the user's switch.
@@ -28,7 +28,7 @@ for path in "$source_dir" "$output" "$repository"; do
 done
 [ -d "$source_dir" ] && [ ! -L "$source_dir" ] || refuse
 [ -d "$repository" ] && [ ! -L "$repository" ] && [ -f "$repository/repo" ] || refuse
-opam_root=${INFRA_OPAM_ROOT:-}
+opam_root=${SERAI_OPAM_ROOT:-}
 if [ -n "$opam_root" ]; then
     case "$opam_root" in /*) ;; *) refuse ;; esac
     if [ -e "$opam_root" ] || [ -L "$opam_root" ]; then
@@ -67,7 +67,7 @@ trap 'exit 1' HUP INT TERM
 OPAMROOT=${opam_root:-$stage/opam}
 OPAMREQUIRECHECKSUMS=true
 export OPAMROOT OPAMREQUIRECHECKSUMS
-unset OPAMSWITCH OPAM_SWITCH_PREFIX OPAMROOTISOK INFRA_OPAM_ROOT
+unset OPAMSWITCH OPAM_SWITCH_PREFIX OPAMROOTISOK SERAI_OPAM_ROOT
 if [ ! -d "$OPAMROOT/artifact" ]; then
     opam init --bare --no-setup --disable-sandboxing -y default "$repository"
     opam switch create artifact "$compiler" --repos=default -y

@@ -35,7 +35,7 @@ awk '
 ' "$config" || fail 'distinct oauth persist name missing or Caddy queue identity changed'
 # The auth destination must never interpolate a raw journal message.
 if grep -F 'template(' "$config" | grep -Fq 'MESSAGE'; then fail 'raw auth message interpolated into syslog'; fi
-# infra fills both from the logs app; the installer checks the same receiver.
+# serai fills both from the logs app; the installer checks the same receiver.
 [ "$(grep -c '^        "__LOGS_IP__"$' "$config")" = 2 ] || fail 'destination not the logs receiver'
 [ "$(grep -c '^        port(__LOGS_SYSLOG_PORT__)$' "$config")" = 2 ] || fail 'port not the logs receiver'
 grep -Fq 'logging-receiver' "$installer" || fail 'installer does not check the rendered receiver'

@@ -45,7 +45,7 @@ EOF
 chmod +x "$TMP/bin/"*
 export RUNNING="$TMP/running" EVENTS="$TMP/events"
 run() {
- INFRA_LOCK_HELD=1 JAIL_ROOT="$TMP/jail" JEXEC_BIN="$TMP/bin/jexec" STAT_BIN="$TMP/bin/stat" CURL_BIN="$TMP/bin/curl" SLEEP_BIN="$TMP/bin/sleep" \
+ SERAI_LOCK_HELD=1 JAIL_ROOT="$TMP/jail" JEXEC_BIN="$TMP/bin/jexec" STAT_BIN="$TMP/bin/stat" CURL_BIN="$TMP/bin/curl" SLEEP_BIN="$TMP/bin/sleep" \
  sh "$ROOT/compute/apps/_lib/artifact_convert_binary.sh" idp "$id" "$digest" idp http://test/ /usr/local/bin/idp
 }
 touch "$RUNNING"

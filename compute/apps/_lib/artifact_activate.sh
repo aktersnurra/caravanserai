@@ -1,6 +1,6 @@
 #!/bin/sh
 # Activate an already verified/installed release/executable in a FreeBSD jail.
-# Caller must hold the compute host infra lock. No legacy conversion or config rewriting.
+# Caller must hold the compute host serai lock. No legacy conversion or config rewriting.
 # Explicit rollback uses this same operation with the previous identity/digest.
 # MIGRATE is `migrate` to run `service SERVICE migrate` after the switch and
 # before start, or `-`. The release already active but stopped is resumed:
@@ -84,7 +84,7 @@ umask 022
 # rc: the service's rc status says whether it runs. process: its rc status
 # checks something else, so it is not asked, and a process named after the
 # release decides when the old one has stopped.
-service_status=${INFRA_ARTIFACT_SERVICE_STATUS:-rc}
+service_status=${SERAI_ARTIFACT_SERVICE_STATUS:-rc}
 case "$service_status" in rc|process) ;; *) fail 'invalid service status mode' ;; esac
 if [ "$old_id" = "$identity" ]; then
     status=0

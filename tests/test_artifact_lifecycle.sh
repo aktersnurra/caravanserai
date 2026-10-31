@@ -66,7 +66,7 @@ EOF
 chmod +x "$TMP/bin/"*
 export EVENTS="$TMP/events" RUNNING="$TMP/running"
 apply() {
- INFRA_LOCK_HELD=1 JAIL_ROOT="$TMP/jail" JEXEC_BIN="$TMP/bin/jexec" \
+ SERAI_LOCK_HELD=1 JAIL_ROOT="$TMP/jail" JEXEC_BIN="$TMP/bin/jexec" \
  CURL_BIN="$TMP/bin/curl" MV_BIN="$TMP/bin/mv" SHA256_BIN="$TMP/bin/sha256" \
  CHOWN_BIN="$TMP/bin/chown" STAT_BIN="$TMP/bin/stat" \
  sh "$ROOT/compute/apps/_lib/artifact_apply.sh" "$1" demo "$2" "$3" "$4" demo_release \
@@ -118,7 +118,7 @@ cp "$TMP/pocket-a/bin/idp" "$TMP/jail/usr/local/bin/idp"
 pa_sha=$(sha256sum "$TMP/pocket-a.tar" | awk '{print $1}')
 pb_sha=$(sha256sum "$TMP/pocket-b.tar" | awk '{print $1}')
 apply_binary() {
- INFRA_LOCK_HELD=1 JAIL_ROOT="$TMP/jail" JEXEC_BIN="$TMP/bin/jexec" \
+ SERAI_LOCK_HELD=1 JAIL_ROOT="$TMP/jail" JEXEC_BIN="$TMP/bin/jexec" \
  CURL_BIN="$TMP/bin/curl" MV_BIN="$TMP/bin/mv" SHA256_BIN="$TMP/bin/sha256" \
  CHOWN_BIN="$TMP/bin/chown" STAT_BIN="$TMP/bin/stat" \
  sh "$ROOT/compute/apps/_lib/artifact_apply.sh" "$1" idp "$2" "$3" "$4" idp \

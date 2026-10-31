@@ -13,7 +13,7 @@ validate_logging_targets() (
     esac
     [ "$jail" != "$receiver" ] && [ -z "$extra" ] || return 1
     case "$source" in
-      # local_only, or a reviewed sender the jail's app ships; infra's typed
+      # local_only, or a reviewed sender the jail's app ships; serai's typed
       # policy decides which, this checks only the shape.
       ''|[!a-z]*|*[!a-z0-9_]*) return 1 ;;
     esac

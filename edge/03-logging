@@ -15,7 +15,7 @@ case "${1-}" in
   *) echo 'logging: unknown mode' >&2; exit 1 ;;
 esac
 mode=${1-}
-# The logs jail's address and syslog port, rendered by infra beside this script.
+# The logs jail's address and syslog port, rendered by serai beside this script.
 read -r receiver_ip receiver_port <"$SCRIPT_DIR/logging-receiver" || true
 [[ "$receiver_ip" =~ ^[0-9]+(\.[0-9]+){3}$ && "$receiver_port" =~ ^[0-9]+$ ]] || {
   echo 'logging: generated receiver missing or invalid' >&2

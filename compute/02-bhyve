@@ -49,7 +49,7 @@ zfs list "$VM_DATASET" >/dev/null 2>&1 ||
 log "Enabling vm-bhyve"
 sysrc vm_enable="YES"
 sysrc vm_dir="zfs:${VM_DATASET}"
-# vm_list (guests started at boot) is not set here: infra provision adds each
+# vm_list (guests started at boot) is not set here: serai provision adds each
 # guest once it is installed, and rerunning this script must not drop them.
 
 log "Initialising vm-bhyve"
@@ -82,4 +82,4 @@ log "Switch      : guests (private, no physical member)"
 log ""
 log "Next:"
 log "  1. sh guests/<guest>/guest   # create and install a declared guest"
-log "  2. From the workstation: infra edge   # open its tailnet_ports in pf and the ACL"
+log "  2. From the workstation: serai edge   # open its tailnet_ports in pf and the ACL"

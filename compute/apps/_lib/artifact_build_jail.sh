@@ -109,7 +109,7 @@ cleanup() {
 }
 trap cleanup EXIT
 trap 'exit 130' HUP INT TERM
-[ "${INFRA_LOCK_HELD:-}" = 1 ] || refuse
+[ "${SERAI_LOCK_HELD:-}" = 1 ] || refuse
 [ "$#" -ge 10 ] || refuse
 jail_name=$1
 ip=$2
@@ -130,7 +130,7 @@ esac
 suffix=${jail_name#infra-build-}
 case "$suffix" in ''|*[!a-z0-9_-]*) refuse ;; esac
 [ "${#jail_name}" -le 128 ] || refuse
-# infra checks the address is a host on the declared jail subnet; here it
+# serai checks the address is a host on the declared jail subnet; here it
 # must at least be one IPv4 address in one spelling.
 is_ipv4() {
     case "$1" in *[!0-9.]*|.*|*.|*..*) return 1 ;; esac
@@ -151,20 +151,20 @@ addresses=$("$ifconfig_bin" lo1) || refuse
 if printf '%s\n' "$addresses" | awk -v ip="$ip" '$1 == "inet" && $2 == ip { found = 1 } END { exit !found }'; then
     refuse
 fi
-kind=${INFRA_ARTIFACT_KIND:-phoenix}
+kind=${SERAI_ARTIFACT_KIND:-phoenix}
 case "$kind" in phoenix|ocaml|package|binary) ;; *) refuse ;; esac
 if [ "$kind" = ocaml ]; then
-    [ -d "${INFRA_OPAM_REPOSITORY:-}" ] && [ ! -L "$INFRA_OPAM_REPOSITORY" ] || refuse
-    [ -f "${INFRA_OPAM_INVENTORY:-}" ] && [ ! -L "$INFRA_OPAM_INVENTORY" ] || refuse
-    case "${INFRA_OPAM_INVENTORY_SHA256:-}" in ''|*[!0-9a-f]*) refuse ;; esac
-    [ "${#INFRA_OPAM_INVENTORY_SHA256}" -eq 64 ] || refuse
-    case "${INFRA_OCAML_COMPILER:-}" in ocaml-base-compiler.[0-9]*) ;; *) refuse ;; esac
-    case "$INFRA_OCAML_COMPILER" in *[!a-zA-Z0-9_.+-]*) refuse ;; esac
+    [ -d "${SERAI_OPAM_REPOSITORY:-}" ] && [ ! -L "$SERAI_OPAM_REPOSITORY" ] || refuse
+    [ -f "${SERAI_OPAM_INVENTORY:-}" ] && [ ! -L "$SERAI_OPAM_INVENTORY" ] || refuse
+    case "${SERAI_OPAM_INVENTORY_SHA256:-}" in ''|*[!0-9a-f]*) refuse ;; esac
+    [ "${#SERAI_OPAM_INVENTORY_SHA256}" -eq 64 ] || refuse
+    case "${SERAI_OCAML_COMPILER:-}" in ocaml-base-compiler.[0-9]*) ;; *) refuse ;; esac
+    case "$SERAI_OCAML_COMPILER" in *[!a-zA-Z0-9_.+-]*) refuse ;; esac
     # Optional: the web bundle the controller built; the worker checks its files.
-    if [ -n "${INFRA_WEB_BUNDLE:-}" ]; then
-        [ -d "$INFRA_WEB_BUNDLE" ] && [ ! -L "$INFRA_WEB_BUNDLE" ] || refuse
+    if [ -n "${SERAI_WEB_BUNDLE:-}" ]; then
+        [ -d "$SERAI_WEB_BUNDLE" ] && [ ! -L "$SERAI_WEB_BUNDLE" ] || refuse
     fi
-elif [ -n "${INFRA_WEB_BUNDLE:-}" ]; then
+elif [ -n "${SERAI_WEB_BUNDLE:-}" ]; then
     refuse
 fi
 case "$release_name" in ''|-*|*[!a-z0-9_-]*) refuse ;; esac
@@ -191,10 +191,10 @@ if [ "$kind" = phoenix ] || [ "$kind" = ocaml ]; then
 else
     [ "$source_dir:$inventory:$inventory_sha256" = '-:-:-' ] || refuse
     if [ "$kind" = binary ]; then
-        case "${INFRA_EXECUTABLE_SOURCE:-}" in https://?*) ;; *) refuse ;; esac
-        case "${INFRA_EXECUTABLE_SOURCE:-}" in *[!a-zA-Z0-9/.:_+-]*) refuse ;; esac
-        case "${INFRA_EXECUTABLE_SHA256:-}" in ''|*[!0-9a-f]*) refuse ;; esac
-        [ "${#INFRA_EXECUTABLE_SHA256}" -eq 64 ] || refuse
+        case "${SERAI_EXECUTABLE_SOURCE:-}" in https://?*) ;; *) refuse ;; esac
+        case "${SERAI_EXECUTABLE_SOURCE:-}" in *[!a-zA-Z0-9/.:_+-]*) refuse ;; esac
+        case "${SERAI_EXECUTABLE_SHA256:-}" in ''|*[!0-9a-f]*) refuse ;; esac
+        [ "${#SERAI_EXECUTABLE_SHA256}" -eq 64 ] || refuse
     fi
 fi
 [ ! -e "$output_dir" ] && [ ! -L "$output_dir" ] || refuse
@@ -221,7 +221,7 @@ if [ "$kind" = phoenix ] || [ "$kind" = ocaml ]; then
     [ "$("$sha256_bin" -q "$inventory")" = "$inventory_sha256" ] || refuse
 fi
 if [ "$kind" = ocaml ]; then
-    [ "$("$sha256_bin" -q "$INFRA_OPAM_INVENTORY")" = "$INFRA_OPAM_INVENTORY_SHA256" ] || refuse
+    [ "$("$sha256_bin" -q "$SERAI_OPAM_INVENTORY")" = "$SERAI_OPAM_INVENTORY_SHA256" ] || refuse
 fi
 jail_bin=${JAIL_BIN:-jail}
 jexec_bin=${JEXEC_BIN:-jexec}
@@ -235,16 +235,16 @@ timing_root=$(dirname "$output_dir")
 # Durations cover one isolated invocation, never an accumulated category total.
 # Native FreeBSD acceptance must separately verify /usr/bin/time's real clock.
 timing_unavailable() {
-    [ "${INFRA_PROGRESS_JSONL:-}" = 1 ] || return 0
-    (printf '{"event":"infra.phase_timing_unavailable","operation":"%s","workload":null,"phase":"%s","parent":"remote-total","reason":"%s"}\n' "$timing_operation" "$1" "$2" >&2) || :
+    [ "${SERAI_PROGRESS_JSONL:-}" = 1 ] || return 0
+    (printf '{"event":"serai.phase_timing_unavailable","operation":"%s","workload":null,"phase":"%s","parent":"remote-total","reason":"%s"}\n' "$timing_operation" "$1" "$2" >&2) || :
 }
 timing_skipped() {
-    [ "${INFRA_PROGRESS_JSONL:-}" = 1 ] || return 0
-    (printf '{"event":"infra.phase_duration","operation":"%s","workload":null,"phase":"%s","parent":"remote-total","status":"skipped","duration_seconds":null,"reason":"%s"}\n' "$timing_operation" "$1" "$2" >&2) || :
+    [ "${SERAI_PROGRESS_JSONL:-}" = 1 ] || return 0
+    (printf '{"event":"serai.phase_duration","operation":"%s","workload":null,"phase":"%s","parent":"remote-total","status":"skipped","duration_seconds":null,"reason":"%s"}\n' "$timing_operation" "$1" "$2" >&2) || :
 }
 timed() (
     timing_phase=$1; shift
-    if [ "${INFRA_PROGRESS_JSONL:-}" != 1 ]; then exec "$@"; fi
+    if [ "${SERAI_PROGRESS_JSONL:-}" != 1 ]; then exec "$@"; fi
     if [ ! -x "${TIME_BIN:-/usr/bin/time}" ]; then
         timing_unavailable "$timing_phase" 'time executable unavailable'
         exec "$@"
@@ -269,7 +269,7 @@ timed() (
     if [ -n "$timing_real" ]; then
         timing_state=completed
         [ "$timing_status" = 0 ] || timing_state=failed
-        (printf '{"event":"infra.phase_duration","operation":"%s","workload":null,"phase":"%s","parent":"remote-total","status":"%s","duration_seconds":%s,"reason":null}\n' "$timing_operation" "$timing_phase" "$timing_state" "$timing_real" >&2) || :
+        (printf '{"event":"serai.phase_duration","operation":"%s","workload":null,"phase":"%s","parent":"remote-total","status":"%s","duration_seconds":%s,"reason":null}\n' "$timing_operation" "$timing_phase" "$timing_state" "$timing_real" >&2) || :
     else
         timing_unavailable "$timing_phase" 'time real interval unavailable'
     fi
@@ -340,12 +340,12 @@ if [ "$kind" = phoenix ] || [ "$kind" = ocaml ]; then
         chmod 644 "$jroot/work/build_assets.exs"
     else
         mkdir -m 700 "$jroot/work/repository"
-        cp -Rp "$INFRA_OPAM_REPOSITORY/." "$jroot/work/repository/"
+        cp -Rp "$SERAI_OPAM_REPOSITORY/." "$jroot/work/repository/"
         SHA256_BIN="$sha256_bin" STAT_BIN="$stat_bin" sh "$script_dir/artifact_verify_source.sh" \
-            "$jroot/work/repository" "$INFRA_OPAM_INVENTORY" "$INFRA_OPAM_INVENTORY_SHA256"
-        if [ -n "${INFRA_WEB_BUNDLE:-}" ]; then
+            "$jroot/work/repository" "$SERAI_OPAM_INVENTORY" "$SERAI_OPAM_INVENTORY_SHA256"
+        if [ -n "${SERAI_WEB_BUNDLE:-}" ]; then
             mkdir -m 700 "$jroot/work/web"
-            cp -Rp "$INFRA_WEB_BUNDLE/." "$jroot/work/web/"
+            cp -Rp "$SERAI_WEB_BUNDLE/." "$jroot/work/web/"
         fi
         cp "$script_dir/artifact_build_ocaml.sh" "$jroot/work/worker.sh"
     fi
@@ -406,7 +406,7 @@ if [ "$kind" = phoenix ] || [ "$kind" = ocaml ]; then
     {
         printf '%s-dependencies-v1\n%s\n' "$kind" "$target_abi"
         if [ "$kind" = ocaml ]; then
-            printf 'compiler %s\nrepository %s\n' "$INFRA_OCAML_COMPILER" "$INFRA_OPAM_INVENTORY_SHA256"
+            printf 'compiler %s\nrepository %s\n' "$SERAI_OCAML_COMPILER" "$SERAI_OPAM_INVENTORY_SHA256"
         fi
         printf 'package %s\n' "$@"
         cat "$jroot/var/infra-build/dependencies"
@@ -451,18 +451,18 @@ case "$kind" in
     # An OCaml app's executable is bin/<app>.exe in its dune project; the
     # release name is the app's, also in a test jail.
     ocaml)
-        set -- /work/source . "bin/$release_name.exe" "$release_name" /work/output "$INFRA_OCAML_COMPILER" /work/repository
+        set -- /work/source . "bin/$release_name.exe" "$release_name" /work/output "$SERAI_OCAML_COMPILER" /work/repository
         # Kept after the worker, so the dependency cache can save it.
-        INFRA_OPAM_ROOT=/work/opam
-        export INFRA_OPAM_ROOT
-        if [ -n "${INFRA_WEB_BUNDLE:-}" ]; then set -- "$@" /work/web; fi ;;
+        SERAI_OPAM_ROOT=/work/opam
+        export SERAI_OPAM_ROOT
+        if [ -n "${SERAI_WEB_BUNDLE:-}" ]; then set -- "$@" /work/web; fi ;;
     package)
         binary_sha256=$("$jexec_bin" "$jail_name" sha256 -q "/usr/local/bin/$release_name") || refuse
         set -- verified-file "/usr/local/bin/$release_name" "$binary_sha256" "$release_name" /work/output ;;
-    binary) set -- download "$INFRA_EXECUTABLE_SOURCE" "$INFRA_EXECUTABLE_SHA256" "$release_name" /work/output ;;
+    binary) set -- download "$SERAI_EXECUTABLE_SOURCE" "$SERAI_EXECUTABLE_SHA256" "$release_name" /work/output ;;
 esac
 # shellcheck disable=SC2016
-INFRA_PROGRESS_JSONL="${INFRA_PROGRESS_JSONL:-0}" "$jexec_bin" -U builder "$jail_name" /rescue/sh -c 'exec /bin/sh "$@"' sh /work/worker.sh "$@"
+SERAI_PROGRESS_JSONL="${SERAI_PROGRESS_JSONL:-0}" "$jexec_bin" -U builder "$jail_name" /rescue/sh -c 'exec /bin/sh "$@"' sh /work/worker.sh "$@"
 echo 'build jail: completed worker'
 # Only after a successful build, and only once per key. A failed save costs
 # the next build its speed, not its correctness, so it does not fail this one.

@@ -2,8 +2,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-mkdir -p "$ROOT/infra/_build/prepared-builder"
-PRIVATE_TMP="$(mktemp -d "$ROOT/infra/_build/prepared-builder/phoenix-XXXXXXXX")"
+mkdir -p "$ROOT/serai/_build/prepared-builder"
+PRIVATE_TMP="$(mktemp -d "$ROOT/serai/_build/prepared-builder/phoenix-XXXXXXXX")"
 chmod 700 "$PRIVATE_TMP"
 export TMPDIR="$PRIVATE_TMP"
 TMP="$(mktemp -d "$TMPDIR/fixture-XXXXXXXX")"
@@ -64,7 +64,7 @@ printf 'real %s\nuser 0.1\nsys 0.2\n' "$real" >&2
 exit "$status"
 EOF
 chmod +x "$TMP/bin/time"
-export TIME_BIN="$TMP/bin/time" INFRA_PROGRESS_JSONL=1
+export TIME_BIN="$TMP/bin/time" SERAI_PROGRESS_JSONL=1
 MIX_LOG="$TMP/mix.log" MIX_BIN="$TMP/bin/mix" ELIXIR_BIN="$TMP/bin/elixir" SHA256_BIN="$TMP/bin/sha256" \
     sh "$ROOT/compute/apps/_lib/artifact_build_phoenix.sh" \
     "$TMP/source" demo "$TMP/output" "$TMP/assets.exs" 2>"$TMP/events"
@@ -72,7 +72,7 @@ MIX_LOG="$TMP/mix.log" MIX_BIN="$TMP/bin/mix" ELIXIR_BIN="$TMP/bin/elixir" SHA25
 python3 - "$TMP/events" <<'PYTEST'
 import json,sys
 e=[json.loads(s) for s in open(sys.argv[1]) if s.startswith('{')]
-e=[i for i in e if i.get('event')=='infra.phase_duration']
+e=[i for i in e if i.get('event')=='serai.phase_duration']
 assert [i['phase'] for i in e]==['asset-prepare','tool-prepare','tool-prepare','dependency-fetch','dependency-compile','asset-build','release-archive'],e
 assert all(i['parent']=='remote-total' and i['duration_seconds']==2.125 and i['status']=='completed' for i in e)
 PYTEST
@@ -143,15 +143,15 @@ for mode in malformed disabled broken; do
     export MIX_LOG="$TMP/$mode.log"
     case $mode in
         malformed) TIME_BIN="$TMP/bin/time-malformed" sh "$worker" "$TMP/$mode" demo "$TMP/$mode-output" "$TMP/assets.exs" 2>"$TMP/$mode-events" ;;
-        disabled) INFRA_PROGRESS_JSONL=0 sh "$worker" "$TMP/$mode" demo "$TMP/$mode-output" "$TMP/assets.exs" 2>"$TMP/$mode-events" ;;
+        disabled) SERAI_PROGRESS_JSONL=0 sh "$worker" "$TMP/$mode" demo "$TMP/$mode-output" "$TMP/assets.exs" 2>"$TMP/$mode-events" ;;
         broken) sh "$worker" "$TMP/$mode" demo "$TMP/$mode-output" "$TMP/assets.exs" 2>/dev/full ;;
     esac
     cmp "$TMP/expected" "$MIX_LOG"
     test -z "$(find "$TMP/$mode" -name '.phase-time.*' -print)"
 done
 test ! -s "$TMP/disabled-events"
-grep -q '"event":"infra.phase_timing_unavailable"' "$TMP/malformed-events"
-if grep -q '"event":"infra.phase_duration"' "$TMP/malformed-events"; then
+grep -q '"event":"serai.phase_timing_unavailable"' "$TMP/malformed-events"
+if grep -q '"event":"serai.phase_duration"' "$TMP/malformed-events"; then
     echo 'malformed time produced a fabricated duration' >&2; exit 1
 fi
 mkdir "$TMP/exact-exit"

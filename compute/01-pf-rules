@@ -3,11 +3,11 @@
 # Installs the edge host -> service filter rules rendered elsewhere, spliced into
 # /etc/pf.conf between their own anchors. Run as root on the compute host.
 #
-# infra renders the rules from each service's declared tailnet ports
+# serai renders the rules from each service's declared tailnet ports
 # (apps/*/app.sexp, guests/*/guest.sexp), the same declaration the
 # Headscale ACL is rendered from: the ACL decides whether a packet may leave
 # the edge host, pf decides whether it is accepted here, and declaring the port
-# once means the two cannot disagree. infra stages the rules as PF_SOURCE
+# once means the two cannot disagree. serai stages the rules as PF_SOURCE
 # and runs this script with PF_DIFF_ONLY=1 to show the change, then again to
 # install it. The rules carry __EDGE__ in place of the edge host's Tailscale
 # address, which is resolved here: only this host can see the tailnet.
@@ -146,7 +146,7 @@ install_rules() {
 # Entry point
 # ---------------------------------------------------------------------------
 [ -n "${PF_SOURCE:-}" ] || {
-  log "ERROR: PF_SOURCE is required; run infra edge, which renders and stages the rules"
+  log "ERROR: PF_SOURCE is required; run serai edge, which renders and stages the rules"
   exit 1
 }
 [ -f "$PF_SOURCE" ] || {

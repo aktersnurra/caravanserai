@@ -1,3 +1,0 @@
-(library
- (name infra)
- (libraries base unix sexplib digestif mtime.clock.os))

@@ -52,7 +52,7 @@ chmod +x "$TMP/bin/"*
 export EVENTS="$TMP/events"
 activate() {
  JAIL_ROOT="$TMP/jail" JEXEC_BIN="$TMP/bin/jexec" CURL_BIN="$TMP/bin/curl" SLEEP_BIN="$TMP/bin/sleep" \
-  MV_BIN="$TMP/bin/mv" INFRA_ARTIFACT_HTTP_STATUS=403 INFRA_ARTIFACT_SERVICE_STATUS=process sh "$ROOT/compute/apps/_lib/artifact_activate.sh" \
+  MV_BIN="$TMP/bin/mv" SERAI_ARTIFACT_HTTP_STATUS=403 SERAI_ARTIFACT_SERVICE_STATUS=process sh "$ROOT/compute/apps/_lib/artifact_activate.sh" \
   garage "$identity" "$digest" garage garage http://10.40.0.4:3900/ - garage
 }
 if ! activate >"$TMP/result" 2>&1; then

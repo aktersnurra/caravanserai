@@ -8,7 +8,7 @@ fail() { echo "guest artifact activation: $*" >&2; exit 1; }
 case "$release" in [a-z]*) ;; *) fail 'invalid release name' ;; esac
 case "$release" in *[!a-z0-9_-]*) fail 'invalid release name' ;; esac
 digest() { case "$1" in ''|*[!0-9a-f]*) return 1 ;; esac; [ "${#1}" = 64 ]; }
-[ "${INFRA_LOCK_HELD:-0}" = 1 ] || fail 'lifecycle lock required'
+[ "${SERAI_LOCK_HELD:-0}" = 1 ] || fail 'lifecycle lock required'
 case "$mode" in upgrade|rollback) ;; *) fail 'invalid operation' ;; esac
 digest "$identity" && digest "$expected" || fail 'invalid identity or digest'
 case "$url" in http://*) ;; *) fail 'invalid health URL' ;; esac

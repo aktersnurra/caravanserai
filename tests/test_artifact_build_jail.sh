@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-mkdir -p "$ROOT/infra/_build/prepared-builder"
-TMP="$(mktemp -d "$ROOT/infra/_build/prepared-builder/cold-jail-XXXXXXXX")"
+mkdir -p "$ROOT/serai/_build/prepared-builder"
+TMP="$(mktemp -d "$ROOT/serai/_build/prepared-builder/cold-jail-XXXXXXXX")"
 trap 'chmod -R u+rwx "$TMP"; rm -rf "$TMP"' EXIT
 mkdir -p "$TMP/bin" "$TMP/jails" "$TMP/source"
 printf 'cache fixture\n' >"$TMP/cache-fixture"
@@ -174,10 +174,10 @@ if [ "$1" = -U ]; then
     if [ "${16:-}" = /work/web ] && [ ! -f "$JAILS_DIR/$3/work/web/index.html" ]; then
         echo 'jexec fixture: web bundle not in the jail' >&2; exit 1
     fi
-    if [ "${INFRA_ARTIFACT_KIND:-}" = ocaml ] && [ "${INFRA_OPAM_ROOT:-}" != /work/opam ]; then
+    if [ "${SERAI_ARTIFACT_KIND:-}" = ocaml ] && [ "${SERAI_OPAM_ROOT:-}" != /work/opam ]; then
         echo 'jexec fixture: OCaml worker not given the kept opam root' >&2; exit 1
     fi
-    if [ "${INFRA_ARTIFACT_KIND:-}" = ocaml ] && [ "${11:-}" != bin/meals.exe ]; then
+    if [ "${SERAI_ARTIFACT_KIND:-}" = ocaml ] && [ "${11:-}" != bin/meals.exe ]; then
         echo "jexec fixture: unknown application Dune target ${11:-missing}" >&2; exit 1
     fi
     [ "${FAIL_BUILD:-0}" != 1 ] || exit 1
@@ -227,12 +227,12 @@ PYCLOSED
 run() {
     local source="${SOURCE_DIR:-$TMP/source}" inventory="${SOURCE_INVENTORY:-$TMP/inventory}" digest="${SOURCE_DIGEST:-$inv_sha}"
     local packages=("${ERLANG_PACKAGE:-erlang-runtime29}" elixir-devel sqlite3 gmake)
-    case "${INFRA_ARTIFACT_KIND:-phoenix}" in
+    case "${SERAI_ARTIFACT_KIND:-phoenix}" in
         ocaml) packages=(ocaml-opam bash gmake pkgconf sqlite3 gmp ca_root_nss git rsync) ;;
         package) source=-; inventory=-; digest=-; packages=(garage) ;;
         binary) source=-; inventory=-; digest=-; packages=(sqlite3 s5cmd) ;;
     esac
-    INFRA_LOCK_HELD="${INFRA_LOCK_HELD:-1}" FAIL_BUILD="${FAIL_BUILD:-0}" FAIL_REMOVE="${FAIL_REMOVE:-0}" FAIL_CREATE="${FAIL_CREATE:-0}" REMOVE_STUCK="${REMOVE_STUCK:-0}" FAIL_PKG="${FAIL_PKG:-0}" FAIL_UMOUNT="${FAIL_UMOUNT:-0}" FAIL_ALIAS="${FAIL_ALIAS:-0}" FAIL_CHFLAGS="${FAIL_CHFLAGS:-0}" FAIL_PUBLISH_OWNER="${FAIL_PUBLISH_OWNER:-0}" FAIL_SHELL_PROBE="${FAIL_SHELL_PROBE:-0}" DROP_RESCUE_AFTER_PKG="${DROP_RESCUE_AFTER_PKG:-0}" BAD_CHECKSUM="${BAD_CHECKSUM:-0}" BAD_ABI="${BAD_ABI:-0}" \
+    SERAI_LOCK_HELD="${SERAI_LOCK_HELD:-1}" FAIL_BUILD="${FAIL_BUILD:-0}" FAIL_REMOVE="${FAIL_REMOVE:-0}" FAIL_CREATE="${FAIL_CREATE:-0}" REMOVE_STUCK="${REMOVE_STUCK:-0}" FAIL_PKG="${FAIL_PKG:-0}" FAIL_UMOUNT="${FAIL_UMOUNT:-0}" FAIL_ALIAS="${FAIL_ALIAS:-0}" FAIL_CHFLAGS="${FAIL_CHFLAGS:-0}" FAIL_PUBLISH_OWNER="${FAIL_PUBLISH_OWNER:-0}" FAIL_SHELL_PROBE="${FAIL_SHELL_PROBE:-0}" DROP_RESCUE_AFTER_PKG="${DROP_RESCUE_AFTER_PKG:-0}" BAD_CHECKSUM="${BAD_CHECKSUM:-0}" BAD_ABI="${BAD_ABI:-0}" \
     FIXTURE_JAIL="$1" FIXTURE_IP="$2" JAILS_DIR="$TMP/jails" BUILD_CACHE_DIR="${BUILD_CACHE_DIR:-$TMP/cache}" CACHE_FIXTURE="$TMP/cache-fixture" FAIL_CACHE_SAVE="${FAIL_CACHE_SAVE:-0}" SHA256_BIN="$TMP/bin/sha256" STAT_BIN="$TMP/bin/stat" \
     JAIL_BIN="$TMP/bin/jail" JEXEC_BIN="$TMP/bin/jexec" JLS_BIN="$TMP/bin/jls" IFCONFIG_BIN="$TMP/bin/ifconfig" MOUNT_BIN="$TMP/bin/mount" UMOUNT_BIN="$TMP/bin/umount" CHFLAGS_BIN="$TMP/bin/chflags" CHOWN_BIN="$TMP/bin/chown" JAIL_STATE="$TMP/jail-state" MOUNT_STATE="$TMP/mount-state" ALIAS_STATE="$TMP/alias-state" COMMAND_LOG="$TMP/commands" \
     cold_native_exec sh "$ROOT/compute/apps/_lib/artifact_build_jail.sh" \
@@ -265,7 +265,7 @@ for special in 1 2 4; do
     [ ! -s "$TMP/commands" ] || { echo 'effects after permission refusal' >&2; exit 1; }
 done
 chmod 00700 "$TMP/jails"
-INFRA_LOCK_HELD=0 refuse_before_jail infra-build-drill-test 10.40.0.200 "$base_sha" "$TMP/no-lock" lock
+SERAI_LOCK_HELD=0 refuse_before_jail infra-build-drill-test 10.40.0.200 "$base_sha" "$TMP/no-lock" lock
 refuse_before_jail bad-name 10.40.0.200 "$base_sha" "$TMP/bad-name" name
 refuse_before_jail infra-build-drill-test 'bad-ip' "$base_sha" "$TMP/bad-ip" ip
 for ip in 10.40.0.256 10.20.0.01 10.20.0 10.20..2 .10.20.0.2 10.20.0.2.3 10.20.0.2a; do
@@ -293,7 +293,7 @@ test "$(grep -c '^build jail: root rescue/sh mode=' "$TMP/result")" -eq 2
 if [ "$(grep -c '^jexec infra-build-drill-test /rescue/sh -c[[:space:]]*$' "$TMP/commands")" -ne 2 ]; then
     echo 'missing pre/post-package shell probes' >&2; exit 1
 fi
-# The host's jail subnet is the declaration's: infra checks the address is on
+# The host's jail subnet is the declaration's: serai checks the address is on
 # it, the script that it is one host address.
 if ! run infra-build-drill-test 10.20.0.200 "$base_sha" "$TMP/other-subnet" >"$TMP/result" 2>&1; then
     echo 'build refused an address outside 10.40.0.0/24' >&2; tail -5 "$TMP/result" >&2; exit 1
@@ -310,9 +310,9 @@ printf 'infra-source-v1\t%s\n600\t%s\trepo\n' "$commit" \
     "$(sha256sum "$TMP/repository/repo" | awk '{print $1}')" >"$TMP/repository-inventory"
 repo_sha="$(sha256sum "$TMP/repository-inventory" | awk '{print $1}')"
 : >"$TMP/commands"
-if ! INFRA_ARTIFACT_KIND=ocaml RELEASE_NAME=meals INFRA_OCAML_COMPILER=ocaml-base-compiler.5.5.1 \
- INFRA_OPAM_REPOSITORY="$TMP/repository" INFRA_OPAM_INVENTORY="$TMP/repository-inventory" \
- INFRA_OPAM_INVENTORY_SHA256="$repo_sha" \
+if ! SERAI_ARTIFACT_KIND=ocaml RELEASE_NAME=meals SERAI_OCAML_COMPILER=ocaml-base-compiler.5.5.1 \
+ SERAI_OPAM_REPOSITORY="$TMP/repository" SERAI_OPAM_INVENTORY="$TMP/repository-inventory" \
+ SERAI_OPAM_INVENTORY_SHA256="$repo_sha" \
  run infra-build-meals-test 10.40.0.200 "$base_sha" "$TMP/meals-candidate" >"$TMP/meals-result" 2>&1; then
     echo 'FAIL - OCaml build jail must verify source/repository and run the declared compiler without OTP' >&2
     tail -5 "$TMP/meals-result"; exit 1
@@ -325,24 +325,24 @@ if grep -Fq '/work/web' "$TMP/commands"; then echo 'FAIL - no web bundle declare
 mkdir -m 700 "$TMP/web"
 printf '<html>\n' >"$TMP/web/index.html"
 : >"$TMP/commands"
-if ! INFRA_WEB_BUNDLE="$TMP/web" INFRA_ARTIFACT_KIND=ocaml RELEASE_NAME=meals INFRA_OCAML_COMPILER=ocaml-base-compiler.5.5.1 \
- INFRA_OPAM_REPOSITORY="$TMP/repository" INFRA_OPAM_INVENTORY="$TMP/repository-inventory" \
- INFRA_OPAM_INVENTORY_SHA256="$repo_sha" \
+if ! SERAI_WEB_BUNDLE="$TMP/web" SERAI_ARTIFACT_KIND=ocaml RELEASE_NAME=meals SERAI_OCAML_COMPILER=ocaml-base-compiler.5.5.1 \
+ SERAI_OPAM_REPOSITORY="$TMP/repository" SERAI_OPAM_INVENTORY="$TMP/repository-inventory" \
+ SERAI_OPAM_INVENTORY_SHA256="$repo_sha" \
  run infra-build-meals-test 10.40.0.200 "$base_sha" "$TMP/meals-web" >"$TMP/meals-web-result" 2>&1; then
     echo 'FAIL - OCaml build jail must carry the web bundle to the worker' >&2
     tail -5 "$TMP/meals-web-result"; exit 1
 fi
 grep -Fq '/work/repository /work/web' "$TMP/commands"
 ln -s "$TMP/web" "$TMP/web-link"
-INFRA_WEB_BUNDLE="$TMP/web-link" INFRA_ARTIFACT_KIND=ocaml RELEASE_NAME=meals INFRA_OCAML_COMPILER=ocaml-base-compiler.5.5.1 \
- INFRA_OPAM_REPOSITORY="$TMP/repository" INFRA_OPAM_INVENTORY="$TMP/repository-inventory" \
- INFRA_OPAM_INVENTORY_SHA256="$repo_sha" \
+SERAI_WEB_BUNDLE="$TMP/web-link" SERAI_ARTIFACT_KIND=ocaml RELEASE_NAME=meals SERAI_OCAML_COMPILER=ocaml-base-compiler.5.5.1 \
+ SERAI_OPAM_REPOSITORY="$TMP/repository" SERAI_OPAM_INVENTORY="$TMP/repository-inventory" \
+ SERAI_OPAM_INVENTORY_SHA256="$repo_sha" \
  refuse_before_jail infra-build-meals-test 10.40.0.200 "$base_sha" "$TMP/meals-web-link" web-bundle-link
-INFRA_WEB_BUNDLE="$TMP/web" refuse_before_jail infra-build-drill-test 10.40.0.200 "$base_sha" "$TMP/phoenix-web" web-bundle-phoenix
+SERAI_WEB_BUNDLE="$TMP/web" refuse_before_jail infra-build-drill-test 10.40.0.200 "$base_sha" "$TMP/phoenix-web" web-bundle-phoenix
 : >"$TMP/commands"
-if ! INFRA_ARTIFACT_KIND=ocaml RELEASE_NAME=meals INFRA_OCAML_COMPILER=ocaml-base-compiler.5.5.1 \
- INFRA_OPAM_REPOSITORY="$TMP/repository" INFRA_OPAM_INVENTORY="$TMP/repository-inventory" \
- INFRA_OPAM_INVENTORY_SHA256="$repo_sha" \
+if ! SERAI_ARTIFACT_KIND=ocaml RELEASE_NAME=meals SERAI_OCAML_COMPILER=ocaml-base-compiler.5.5.1 \
+ SERAI_OPAM_REPOSITORY="$TMP/repository" SERAI_OPAM_INVENTORY="$TMP/repository-inventory" \
+ SERAI_OPAM_INVENTORY_SHA256="$repo_sha" \
  run infra-build-meals-isolated 10.40.0.200 "$base_sha" "$TMP/meals-isolated" >"$TMP/meals-isolated-result" 2>&1; then
     echo 'FAIL - isolated workload must compile the actual meals Dune target' >&2
     tail -5 "$TMP/meals-isolated-result"; exit 1
@@ -353,9 +353,9 @@ pkg_line=$(grep -n 'jexec -U builder infra-build-meals-isolated /usr/local/sbin/
 worker_line=$(grep -n 'jexec -U builder infra-build-meals-isolated /rescue/sh.* /work/worker.sh' "$TMP/commands" | cut -d: -f1)
 test -n "$pkg_line" && test "$pkg_line" -lt "$worker_line"
 : >"$TMP/commands"
-if BLOCK_PKG_SEARCH=1 INFRA_ARTIFACT_KIND=ocaml RELEASE_NAME=meals INFRA_OCAML_COMPILER=ocaml-base-compiler.5.5.1 \
- INFRA_OPAM_REPOSITORY="$TMP/repository" INFRA_OPAM_INVENTORY="$TMP/repository-inventory" \
- INFRA_OPAM_INVENTORY_SHA256="$repo_sha" \
+if BLOCK_PKG_SEARCH=1 SERAI_ARTIFACT_KIND=ocaml RELEASE_NAME=meals SERAI_OCAML_COMPILER=ocaml-base-compiler.5.5.1 \
+ SERAI_OPAM_REPOSITORY="$TMP/repository" SERAI_OPAM_INVENTORY="$TMP/repository-inventory" \
+ SERAI_OPAM_INVENTORY_SHA256="$repo_sha" \
  run infra-build-meals-blocked 10.40.0.200 "$base_sha" "$TMP/meals-blocked" >"$TMP/meals-blocked-result" 2>&1; then
     echo 'FAIL - inaccessible pkg directory was accepted' >&2; exit 1
 fi
@@ -368,12 +368,12 @@ test ! -e "$TMP/jails/infra-build-meals-blocked"
 test ! -e "$TMP/jail-state"
 test ! -e "$TMP/mount-state"
 test ! -e "$TMP/alias-state"
-INFRA_ARTIFACT_KIND=ocaml INFRA_OCAML_COMPILER=ocaml-base-compiler.5.5.1 \
- INFRA_OPAM_REPOSITORY="$TMP/repository" INFRA_OPAM_INVENTORY="$TMP/repository-inventory" \
- INFRA_OPAM_INVENTORY_SHA256="$(printf '%064d' 0)" \
+SERAI_ARTIFACT_KIND=ocaml SERAI_OCAML_COMPILER=ocaml-base-compiler.5.5.1 \
+ SERAI_OPAM_REPOSITORY="$TMP/repository" SERAI_OPAM_INVENTORY="$TMP/repository-inventory" \
+ SERAI_OPAM_INVENTORY_SHA256="$(printf '%064d' 0)" \
  refuse_before_jail infra-build-meals-test 10.40.0.200 "$base_sha" "$TMP/bad-repo" repository-integrity
 : >"$TMP/commands"
-if ! INFRA_ARTIFACT_KIND=package RELEASE_NAME=garage run infra-build-garage-test 10.40.0.200 "$base_sha" "$TMP/garage-candidate" >"$TMP/garage-result" 2>&1; then
+if ! SERAI_ARTIFACT_KIND=package RELEASE_NAME=garage run infra-build-garage-test 10.40.0.200 "$base_sha" "$TMP/garage-candidate" >"$TMP/garage-result" 2>&1; then
     echo 'FAIL - package jail must use verified-file worker without a source checkout or OTP' >&2
     tail -5 "$TMP/garage-result"; exit 1
 fi
@@ -381,8 +381,8 @@ grep -Fq '/work/worker.sh verified-file /usr/local/bin/garage' "$TMP/commands"
 if grep -Fq 'for binary' "$TMP/commands"; then echo 'FAIL - package jail must not link Erlang' >&2; exit 1; fi
 test -f "$TMP/garage-candidate/release.tar"
 : >"$TMP/commands"
-if ! INFRA_ARTIFACT_KIND=binary RELEASE_NAME=idp INFRA_EXECUTABLE_SOURCE=https://example.org/idp \
-    INFRA_EXECUTABLE_SHA256="$(printf '%064d' 1)" run infra-build-idp-test 10.40.0.200 "$base_sha" "$TMP/idp-candidate" >"$TMP/idp-result" 2>&1; then
+if ! SERAI_ARTIFACT_KIND=binary RELEASE_NAME=idp SERAI_EXECUTABLE_SOURCE=https://example.org/idp \
+    SERAI_EXECUTABLE_SHA256="$(printf '%064d' 1)" run infra-build-idp-test 10.40.0.200 "$base_sha" "$TMP/idp-candidate" >"$TMP/idp-result" 2>&1; then
     echo 'FAIL - pinned binary jail must pass its URL/digest to the unprivileged worker' >&2
     tail -5 "$TMP/idp-result"; exit 1
 fi
@@ -526,14 +526,14 @@ grep -Fq 'build jail: dependency cache not saved' "$TMP/result" || { echo 'faile
 [ -z "$(find "$cache" -type f)" ] || { echo 'failed cache save left a file' >&2; exit 1; }
 # Other kinds never touch the cache.
 rm -rf "$cache"
-INFRA_ARTIFACT_KIND=package RELEASE_NAME=garage BUILD_CACHE_DIR="$cache" run infra-build-garage-test 10.40.0.200 "$base_sha" "$TMP/cache-package" >"$TMP/result" 2>&1
+SERAI_ARTIFACT_KIND=package RELEASE_NAME=garage BUILD_CACHE_DIR="$cache" run infra-build-garage-test 10.40.0.200 "$base_sha" "$TMP/cache-package" >"$TMP/result" 2>&1
 [ ! -e "$cache" ] || { echo 'a package build touched the dependency cache' >&2; exit 1; }
 # OCaml dependency cache: the build jail's opam root, keyed by the compiler,
 # the opam repository, the build packages and the project's opam files.
 ocaml_build() {
-    INFRA_ARTIFACT_KIND=ocaml RELEASE_NAME=meals INFRA_OCAML_COMPILER="${COMPILER:-ocaml-base-compiler.5.5.1}" \
-    INFRA_OPAM_REPOSITORY="$TMP/repository" INFRA_OPAM_INVENTORY="$TMP/repository-inventory" \
-    INFRA_OPAM_INVENTORY_SHA256="$repo_sha" BUILD_CACHE_DIR="$cache" \
+    SERAI_ARTIFACT_KIND=ocaml RELEASE_NAME=meals SERAI_OCAML_COMPILER="${COMPILER:-ocaml-base-compiler.5.5.1}" \
+    SERAI_OPAM_REPOSITORY="$TMP/repository" SERAI_OPAM_INVENTORY="$TMP/repository-inventory" \
+    SERAI_OPAM_INVENTORY_SHA256="$repo_sha" BUILD_CACHE_DIR="$cache" \
     run infra-build-meals-test 10.40.0.200 "$base_sha" "$TMP/$1" >"$TMP/result" 2>&1
 }
 : >"$TMP/commands"

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Source contract: the host setup scripts and the shared app check carry no
 # private address of their own; each value comes from the operator, or from
-# infra, out of the declarations. Never runs the scripts.
+# serai, out of the declarations. Never runs the scripts.
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 fail() { printf 'FAIL - %s\n' "$1" >&2; exit 1; }
@@ -25,7 +25,7 @@ requires "$base" HEADSCALE_URL PREAUTH_KEY SSH_PUBKEY ADMIN_USER LAN_NET JAIL_SU
 requires "$bhyve" JAIL_SUBNET GUEST_BRIDGE
 requires "$headscale" HEADSCALE_DOMAIN BASE_DOMAIN HEADSCALE_USER
 requires "$tailscale" HEADSCALE_URL PREAUTH_KEY
-# infra check always passes both targets; a default would only hide a caller
+# serai check always passes both targets; a default would only hide a caller
 # that forgot them.
 for var in COMPUTE_TARGET EDGE_TARGET; do
   grep -Fq ": \"\${${var}:?" "$check" || fail "check.sh does not require $var"

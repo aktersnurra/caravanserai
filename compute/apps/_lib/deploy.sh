@@ -9,7 +9,7 @@
 #   set -euo pipefail
 #   SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 #   . "${SCRIPT_DIR}/config"
-#   . "${SERAI_LIB:?run through infra deploy <app>}/deploy.sh"
+#   . "${SERAI_LIB:?run through serai deploy <app>}/deploy.sh"
 #   run_deploy "$@"
 #
 # Optional hooks (per-app, executable files next to `config`):

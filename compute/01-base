@@ -102,7 +102,7 @@ pass in on \$ts_if proto tcp to port 22 keep state
 pass in on \$guest_if from \$guest_net to any keep state
 pass out on \$guest_if to \$guest_net keep state
 
-# edge host -> service ports via Tailscale are rendered by infra from each
+# edge host -> service ports via Tailscale are rendered by serai from each
 # service's app.sexp/guest.sexp tailnet_ports, and compute/01-pf-rules splices
 # them in between its own anchors below.
 # They are not listed here: a commented rule per service is a step that gets
@@ -151,8 +151,8 @@ log "Next:"
 log "  1. On edge host: approve the jail subnet route:"
 log "       sudo headscale nodes list                              # find compute host node id"
 log "       sudo headscale nodes approve-routes -i <ID> -r ${JAIL_SUBNET}"
-log "  2. From the workstation: infra edge   # open the edge host -> service ports in pf"
+log "  2. From the workstation: serai edge   # open the edge host -> service ports in pf"
 log "  3. Verify SSH over Tailscale, then tighten pf SSH rules"
-log "  4. From the workstation: infra bootstrap <app>  # per app; infra apps lists them"
+log "  4. From the workstation: serai bootstrap <app>  # per app; serai apps lists them"
 log ""
-log "Then from the workstation: infra rollout <app> --edge"
+log "Then from the workstation: serai rollout <app> --edge"

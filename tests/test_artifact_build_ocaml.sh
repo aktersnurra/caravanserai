@@ -94,16 +94,16 @@ done
 # The build jail keeps its opam root for the dependency cache: the first build
 # creates it, a later one reuses its switch; the app itself is always rebuilt.
 : >"$TMP/commands"
-INFRA_OPAM_ROOT="$TMP/kept-opam" run . bin/meals.exe meals kept-cold ocaml-base-compiler.5.5.1
+SERAI_OPAM_ROOT="$TMP/kept-opam" run . bin/meals.exe meals kept-cold ocaml-base-compiler.5.5.1
 [ -d "$TMP/kept-opam/artifact" ] || { echo 'kept opam root removed with the stage' >&2; exit 1; }
 grep -Fq 'opam switch create artifact ocaml-base-compiler.5.5.1' "$TMP/commands"
 : >"$TMP/commands"
-INFRA_OPAM_ROOT="$TMP/kept-opam" run . bin/meals.exe meals kept-warm ocaml-base-compiler.5.5.1
+SERAI_OPAM_ROOT="$TMP/kept-opam" run . bin/meals.exe meals kept-warm ocaml-base-compiler.5.5.1
 if grep -Eq '^opam (init|switch create)' "$TMP/commands"; then echo 'a kept switch was rebuilt' >&2; exit 1; fi
 grep -Fq 'opam install . --deps-only' "$TMP/commands"
 grep -Fq 'dune build --profile release bin/meals.exe' "$TMP/commands"
 tar -tf "$TMP/kept-warm/release.tar" | grep -Fxq './bin/meals'
-if PRIVATE_LIBRARY=1 INFRA_OPAM_ROOT="$TMP/kept-opam" run . bin/meals.exe meals kept-private ocaml-base-compiler.5.5.1 >"$TMP/error" 2>&1; then
+if PRIVATE_LIBRARY=1 SERAI_OPAM_ROOT="$TMP/kept-opam" run . bin/meals.exe meals kept-private ocaml-base-compiler.5.5.1 >"$TMP/error" 2>&1; then
  echo 'a library inside the kept opam root was published' >&2; exit 1
 fi
 [ ! -e "$TMP/kept-private" ]
@@ -116,7 +116,7 @@ for bad in relative link no-switch; do
   no-switch) root=$TMP/opam-empty ;;
  esac
  : >"$TMP/commands"
- if INFRA_OPAM_ROOT="$root" run . bin/meals.exe meals "kept-$bad" ocaml-base-compiler.5.5.1 >"$TMP/error" 2>&1; then
+ if SERAI_OPAM_ROOT="$root" run . bin/meals.exe meals "kept-$bad" ocaml-base-compiler.5.5.1 >"$TMP/error" 2>&1; then
   echo "kept opam root ($bad) accepted" >&2; exit 1
  fi
  [ ! -s "$TMP/commands" ] && [ ! -e "$TMP/kept-$bad" ]

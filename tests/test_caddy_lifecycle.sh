@@ -13,7 +13,7 @@ touch "$tmp/validated"
 exit 42
 EOF_CADDY
 chmod +x "$tmp/bin/caddy"
-# The tree infra renders and stages; 02-caddy installs only such a tree.
+# The tree serai renders and stages; 02-caddy installs only such a tree.
 printf '%s\n' 'import conf.d/*.caddy' >"$tmp/source/Caddyfile"
 printf '%s\n' 'demo.example.org {' '    reverse_proxy 10.40.0.2:4002 {' '        header_up X-Video-Secret "{$VIDEO_SECRET}"' '    }' '}' >"$tmp/source/conf.d/40-demo.caddy"
 run() { PATH="$tmp/bin:$PATH" CADDY_DIR="$tmp/caddy" CADDY_SOURCE="$tmp/source" CADDY_SKIP_BUILD=1 CADDY_SKIP_SETUP=1 "$script"; }

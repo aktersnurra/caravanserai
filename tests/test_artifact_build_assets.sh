@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-mkdir -p "$ROOT/infra/_build/prepared-builder"
-PRIVATE_TMP="$(mktemp -d "$ROOT/infra/_build/prepared-builder/assets-XXXXXXXX")"
+mkdir -p "$ROOT/serai/_build/prepared-builder"
+PRIVATE_TMP="$(mktemp -d "$ROOT/serai/_build/prepared-builder/assets-XXXXXXXX")"
 chmod 700 "$PRIVATE_TMP"
 export TMPDIR="$PRIVATE_TMP"
 TMP="$(mktemp -d "$TMPDIR/fixture-XXXXXXXX")"
@@ -93,11 +93,11 @@ run prepare-log --prepare-only
 if grep -Eq '^(setup|deploy)$' "$TMP/prepare-log"; then
     echo 'preflight ran asset tasks' >&2; exit 1
 fi
-INFRA_PROGRESS_JSONL=1 run log 2>"$TMP/compile-events"
+SERAI_PROGRESS_JSONL=1 run log 2>"$TMP/compile-events"
 python3 - "$TMP/compile-events" <<'PYTEST'
 import json,sys
 items=[json.loads(s) for s in open(sys.argv[1]) if s.startswith('{')]
-e=[i for i in items if i.get('event')=='infra.phase_duration']
+e=[i for i in items if i.get('event')=='serai.phase_duration']
 assert len(e)==1,e
 assert e[0]['phase']=='project-compile' and e[0]['parent']=='asset-build'
 assert e[0]['status']=='completed' and e[0]['duration_seconds']>=0 and e[0]['reason'] is None
@@ -111,12 +111,12 @@ EXPLICIT_TAILWIND="$TMP/source/_build/infra-tailwind/node_modules/.bin/tailwindc
 test "$(cat "$TMP/explicit-log")" = $'setup\ndeploy'
 # Compile raises while diagnostic stderr is unusable: the exact primary survives.
 (cd "$TMP/source" && PATH="$TMP/bin:$PATH" MIX_ENV=prod ASSETS_LOG="$TMP/failure-probe-log" \
-  FAIL_PROJECT_COMPILE=1 INFRA_PROGRESS_JSONL=1 EXCEPTION_RECEIPT="$TMP/exception-receipt" \
+  FAIL_PROJECT_COMPILE=1 SERAI_PROGRESS_JSONL=1 EXCEPTION_RECEIPT="$TMP/exception-receipt" \
   elixir -r "$TMP/tasks.exs" -r "$ROOT/compute/apps/_lib/artifact_build_assets.exs" -S mix infra.fail_probe) 2>/dev/full
 test "$(cat "$TMP/exception-receipt")" = PRIMARY_PROJECT_COMPILE
 # A failed project compile emits failed, not completed, when stderr works.
 (cd "$TMP/source" && PATH="$TMP/bin:$PATH" MIX_ENV=prod ASSETS_LOG="$TMP/failure-probe-log" \
-  FAIL_PROJECT_COMPILE=1 INFRA_PROGRESS_JSONL=1 EXCEPTION_RECEIPT="$TMP/exception-receipt" \
+  FAIL_PROJECT_COMPILE=1 SERAI_PROGRESS_JSONL=1 EXCEPTION_RECEIPT="$TMP/exception-receipt" \
   elixir -r "$TMP/tasks.exs" -r "$ROOT/compute/apps/_lib/artifact_build_assets.exs" -S mix infra.fail_probe) 2>"$TMP/failed-events"
 grep -q '"status":"failed"' "$TMP/failed-events"
 rm "$TMP/source/_build/infra-tailwind/.infra-package"
