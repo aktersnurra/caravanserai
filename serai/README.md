@@ -1060,5 +1060,10 @@ stderr.
   which doesn't exist until it actually runs — `(script typo-name ...)` in
   `pipelines.sexp` only surfaces as an `ENOENT` when that pipeline executes,
   not at load time the way an unknown hook name does.
-- `serai update` is tested against the process mock and fixtures only. It
-  has not yet been built or run on FreeBSD, where it is meant to run.
+- `serai update` has been built and tested on FreeBSD 15.1 in a throwaway
+  jail: its unit tests, the host script lifecycle, the install, and jj
+  verifying a gpg-signed commit against a dedicated `GNUPGHOME`. It has not
+  yet run from cron against a real configuration.
+- Some tests assume a Linux runner: GNU `stat -c`, `touch -d @<epoch>`,
+  `python3` and `/dev/full`. On FreeBSD they fail in the harness, not in the
+  scripts they test.
