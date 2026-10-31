@@ -1099,6 +1099,18 @@ let artifact_apply ?(convert=false) ?rehearse_ip env app_name ~store ~identity ~
           record it as what this release was built from. *)
        (match manifest.input with Artifact_manifest.Source_commit commit -> commit | _ -> "-")])
 
+(* The app's release pointers and source record, read as root. *)
+let probe_releases env app_name =
+  let env = app_env env app_name in
+  match ssh_capture env [ env.compute_target; "doas sh -c " ^ Shell.quote (Release_probe.script ~app:app_name) ] with
+  | 0, output -> (
+      match Release_probe.check ~app:app_name output with
+      | Ok releases -> releases
+      | Error message -> failwith message)
+  | code, _ ->
+      failwith (Printf.sprintf "probing %s's releases on %s failed (exit %d)"
+        app_name (host_label env Compute_host) code)
+
 (* The release kept in .previous, reactivated where it is installed: no
    archive, so the store that built it is not needed. Only an app that
    never migrates: its releases are files, and a migrated database may not
@@ -1114,15 +1126,10 @@ let revert env app_name =
     failwith (Printf.sprintf "revert: %s declares migrate; roll it back with serai artifact rollback" app_name);
   validate_stage env.remote_stage;
   let previous =
-    match ssh_capture env [ env.compute_target; "doas sh -c " ^ Shell.quote (Release_probe.script ~app:app_name) ] with
-    | 0, output -> (
-        match Release_probe.check ~app:app_name output with
-        | Ok { previous = Some identity; _ } -> identity
-        | Ok { previous = None; _ } -> failwith (Printf.sprintf "revert: %s has no previous release on the host" app_name)
-        | Error message -> failwith ("revert: " ^ message))
-    | code, _ ->
-        failwith (Printf.sprintf "revert: probing %s's releases on %s failed (exit %d)"
-          app_name (host_label env Compute_host) code) in
+    match probe_releases env app_name with
+    | { previous = Some identity; _ } -> identity
+    | { previous = None; _ } -> failwith (Printf.sprintf "revert: %s has no previous release on the host" app_name)
+    | exception Failure message -> failwith ("revert: " ^ message) in
   let url = Printf.sprintf "http://%s:%d%s" app.endpoint.ip (check_port app.endpoint) settings.check_path in
   if not (env.confirm (Printf.sprintf "revert %s to %s (files only)?" app_name previous)) then
     failwith "revert: cancelled";

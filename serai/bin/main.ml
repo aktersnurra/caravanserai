@@ -35,6 +35,7 @@ let usage_text =
   \  serai jail-test <app> --ip <addr> [--yes]   (generated script on jail <app>test)\n\
   \  serai jail-test <app> --destroy [--yes]\n\
   \  serai rollout <app> [--edge] [--yes]\n\
+  \  serai update [--plan] [--json]   (deploy what CI marked, if signed and newer; settings in ~/.config/serai/update.sexp)\n\
   \  serai update-version <app> [version]\n\
   \  serai run <app> <pipeline>\n\
   \  Add --progress=jsonl to stream phase/outcome events on stderr.\n"
@@ -67,8 +68,7 @@ let load_declaration layout =
   | Ok declaration -> declaration
   | Error error -> failwith (Declaration.error_message error)
 
-let build_env ~assume_yes () : Dispatcher.env * Pipeline.t =
-  let layout = locate_layout () in
+let env_of_layout ~assume_yes layout : Dispatcher.env =
   let declaration = load_declaration layout in
   List.iter (fun key -> match Sys.getenv_opt key with
     | Some value when value <> "" -> failwith (key ^ ": configure hosts in serai.sexp instead")
@@ -133,7 +133,11 @@ let build_env ~assume_yes () : Dispatcher.env * Pipeline.t =
       source_checkout_override = getenv_nonempty "SOURCE_CHECKOUT";
     }
   in
-  (env, Pipeline.load (Layout.pipelines layout))
+  env
+
+let build_env ~assume_yes () : Dispatcher.env * Pipeline.t =
+  let layout = locate_layout () in
+  (env_of_layout ~assume_yes layout, Pipeline.load (Layout.pipelines layout))
 
 let write_files dir files =
   match Rendered_output.write ~dir files with
@@ -284,6 +288,127 @@ let up_json app ~revision ((plan : Dispatcher.up_plan), (outcome : Dispatcher.up
   | Step_failed (step, message) ->
       Error (data [ "outcome", Text "failed" ] (Some (next_after app ~revision step)), message)
 
+(* serai update: its settings and state live with the user running it, the
+   configuration comes from a verified commit, not the working directory. *)
+let update_paths () =
+  let home = Sys.getenv "HOME" in
+  let xdg name fallback = match Sys.getenv_opt name with
+    | Some dir when dir <> "" -> dir | _ -> Filename.concat home fallback in
+  let settings = Filename.concat (Filename.concat (xdg "XDG_CONFIG_HOME" ".config") "serai") "update.sexp" in
+  let state_dir = Filename.concat (Filename.concat (xdg "XDG_STATE_HOME" ".local/state") "serai") "update" in
+  let cache, store = up_dirs () in
+  settings, { Update.state_dir; cache; store; engine = installed_engine () }
+
+let update_settings path =
+  match In_channel.with_open_bin path In_channel.input_all with
+  | text -> (match Update.config_of_string text with Ok config -> config | Error message -> failwith message)
+  | exception Sys_error message -> failwith ("update: " ^ message)
+
+let update_deps () =
+  { Update.jj_bin = getenv_default "JJ_BIN" "jj"; env_of_layout = env_of_layout ~assume_yes:true }
+
+(* Everything a run prints, its subprocesses included, kept aside: cron
+   mails any output, and a run with nothing new must print nothing. *)
+let captured f =
+  let log = Filename.temp_file "serai-update" ".log" in
+  flush_all ();
+  let saved_out = Unix.dup Unix.stdout and saved_err = Unix.dup Unix.stderr in
+  let fd = Unix.openfile log [ Unix.O_WRONLY; Unix.O_TRUNC ] 0o600 in
+  Unix.dup2 fd Unix.stdout; Unix.dup2 fd Unix.stderr; Unix.close fd;
+  let result = try Ok (f ()) with error -> Error error in
+  flush_all ();
+  Unix.dup2 saved_out Unix.stdout; Unix.dup2 saved_err Unix.stderr;
+  Unix.close saved_out; Unix.close saved_err;
+  let text = In_channel.with_open_bin log In_channel.input_all in
+  Sys.remove log;
+  result, text
+
+let revert_json = function
+  | Update.Not_attempted why -> Agent_cli.(Object [ "outcome", Text "not_attempted"; "message", Text why ])
+  | Reverted -> Agent_cli.(Object [ "outcome", Text "reverted" ])
+  | Revert_failed message -> Agent_cli.(Object [ "outcome", Text "failed"; "message", Text message ])
+
+let update_outcome_json (name, outcome) =
+  let open Agent_cli in
+  let fields = match outcome with
+    | Update.Not_enrolled -> [ "outcome", Text "not_enrolled" ]
+    | Already_handled commit -> [ "outcome", Text "already_handled"; "commit", Text commit ]
+    | Current commit -> [ "outcome", Text "current"; "commit", Text commit ]
+    | Would_deploy commit -> [ "outcome", Text "would_deploy"; "commit", Text commit ]
+    | Deployed { commit; identity } ->
+        [ "outcome", Text "deployed"; "commit", Text commit; "identity", Text identity ]
+    | Refused { commit; refusal } ->
+        [ "outcome", Text "refused"; "commit", Text commit;
+          "message", Text (Update_decision.refusal_message refusal) ]
+    | Failed { commit; step; message; revert } ->
+        [ "outcome", Text "failed"; "commit", Text commit; "step", Text (Dispatcher.step_name step);
+          "message", Text message; "revert", revert_json revert ]
+    | Not_applied { commit; message } ->
+        [ "outcome", Text "not_applied";
+          "commit", (match commit with Some commit -> Text commit | None -> Null);
+          "message", Text message ] in
+  Object (("app", Text name) :: fields)
+
+let update_report_json (report : Update.report) =
+  let open Agent_cli in
+  [ "configuration", (match report.configuration with
+      | Update.Configuration commit -> Object [ "status", Text "verified"; "commit", Text commit ]
+      | Configuration_refused { commit; refusal } ->
+          Object [ "status", Text "refused"; "commit", Text commit;
+                   "message", Text (Update_decision.refusal_message refusal) ]
+      | Configuration_unavailable message -> Object [ "status", Text "unavailable"; "message", Text message ]);
+    "apps", Array (List.map update_outcome_json report.apps);
+    "host_inspected", Bool (match report.configuration with Update.Configuration _ -> true | _ -> false) ]
+
+let update argv =
+  let flags = List.filter (fun arg -> arg <> "update") argv in
+  if List.exists (fun flag -> not (List.mem flag [ "--plan"; "--json" ])) flags then begin
+    prerr_string usage_text;
+    exit 1
+  end;
+  let plan = List.mem "--plan" flags and json = List.mem "--json" flags in
+  let settings_path, paths = update_paths () in
+  let act () =
+    let config = update_settings settings_path in
+    if plan then `Plan (Update.plan (update_deps ()) config paths)
+    else `Run (Update.run (update_deps ()) config paths) in
+  if json then begin
+    let operation = if plan then "update.plan" else "update" in
+    (* stdout carries exactly the one result: what the run prints goes to stderr. *)
+    let saved = Unix.dup Unix.stdout in
+    Unix.dup2 Unix.stderr Unix.stdout;
+    let response = Fun.protect ~finally:(fun () -> flush stdout; Unix.dup2 saved Unix.stdout; Unix.close saved)
+      (fun () -> Agent_cli.respond ~operation (fun () ->
+         match Proc.live act with
+         | `Plan report ->
+             let data = Agent_cli.Object (update_report_json report @ [ "applied", Agent_cli.Bool false ]) in
+             (match report.configuration with
+              | Update.Configuration _ -> Ok data
+              | _ -> Error (data, String.concat "; " (Update.plan_lines report)))
+         | `Run None -> Ok (Agent_cli.Object [ "ran", Agent_cli.Bool false ])
+         | `Run (Some run) ->
+             let data = Agent_cli.Object (update_report_json run.report
+               @ [ "ran", Agent_cli.Bool true;
+                   "reported", Agent_cli.Array (List.map (fun line -> Agent_cli.Text line) run.lines) ]) in
+             if run.failed then Error (data, String.concat "; " run.lines) else Ok data)) in
+    print_endline (Agent_cli.to_json response);
+    exit (Agent_cli.exit_code response)
+  end;
+  match captured (fun () -> Proc.live act) with
+  | Ok (`Plan report), _ ->
+      List.iter print_endline (Update.plan_lines report);
+      exit (match report.configuration with Update.Configuration _ -> 0 | _ -> 1)
+  | Ok (`Run None), _ -> exit 0
+  | Ok (`Run (Some { lines = []; _ })), _ -> exit 0
+  | Ok (`Run (Some run)), log ->
+      List.iter print_endline run.lines;
+      if log <> "" then (print_string "\n--- log ---\n"; print_string log);
+      exit (if run.failed then 1 else 0)
+  | Error error, log ->
+      Printf.printf "update: %s\n" (match error with Failure message -> message | error -> Printexc.to_string error);
+      if log <> "" then (print_string "\n--- log ---\n"; print_string log);
+      exit 1
+
 let acting_json argv =
   let run ?(assume_yes = false) operation workload f =
     Progress.start ~enabled:(List.mem "--progress=jsonl" argv) ~operation ~workload:(Some workload);
@@ -400,6 +525,7 @@ let dispatch (env, registry) argv =
 
 let () =
   let argv = List.tl (Array.to_list Sys.argv) in
+  (match argv with "update" :: _ -> update argv | _ -> ());
   if List.mem "--json" argv then acting_json argv;
   if List.mem "--json" argv then begin
     let args = List.filter (fun arg -> not (String.starts_with ~prefix:"--" arg)) argv in

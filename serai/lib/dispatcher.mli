@@ -92,6 +92,10 @@ val artifact_build_executable_store : ?reuse:string -> env -> string -> ip:strin
 val artifact_apply : ?convert:bool -> ?rehearse_ip:string -> env -> string ->
   store:string -> identity:string -> rollback:bool -> unit
 
+(** The app's releases on the compute host, read-only: the active one, its
+    source record and the one retained for rollback. *)
+val probe_releases : env -> string -> Release_probe.t
+
 (** Reactivates the release retained in .previous on the compute host,
     where it is installed: no archive, so not only the store that built it
     can. Source-built apps that declare no migrate only. Refused before any
