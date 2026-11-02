@@ -38,7 +38,7 @@ let usage_text =
   \  serai update [--plan] [--json]   (deploy what CI marked, if signed and newer; settings in ~/.config/serai/update.sexp)\n\
   \  serai idp [--yes]   (Pocket ID's users, groups, clients and APIs to match idp.sexp; key in SERAI_IDP_API_KEY)\n\
   \  serai idp --plan [--json]   (what idp would change; exits 2 when changes are pending)\n\
-  \  serai idp --export [--url <url>]   (the live resources as idp.sexp; --url only before idp.sexp exists)\n\
+  \  serai idp --export [--url <url>]   (the live resources as idp.sexp; without --url, idp.sexp's url)\n\
   \  serai update-version <app> [version]\n\
   \  serai run <app> <pipeline>\n\
   \  Add --progress=jsonl to stream phase/outcome events on stderr.\n"
@@ -466,14 +466,16 @@ let idp argv =
     exit (if code = 0 && !pending then 2 else code)
   end;
   let layout = locate_layout () in
-  let declared = match Idp_declaration.load ~layout with Ok d -> d | Error message -> fail message in
+  let load () = match Idp_declaration.load ~layout with Ok d -> d | Error message -> fail message in
   let fetch url = match fetch_result url with Ok x -> x | Error message -> fail message in
   if export then begin
-    let url = match declared, url with
-      | Some _, Some _ -> fail "idp.sexp exists: --export reads its url; drop --url"
-      | Some d, None -> d.url
-      | None, Some url -> url
-      | None, None -> fail "no idp.sexp yet: give the server with --export --url https://<host>" in
+    (* --url never reads idp.sexp: [serai idp --export --url ... > idp.sexp]
+       has the shell create it, empty, before serai starts. *)
+    let url = match url with
+      | Some url -> url
+      | None -> (match load () with
+          | Some d -> d.url
+          | None -> fail "no idp.sexp: give the server with --export --url https://<host>") in
     let _, live = fetch url in
     match Idp_plan.export ~url live with
     | Error message -> fail message
@@ -482,7 +484,7 @@ let idp argv =
           url (Sexplib.Sexp.to_string_hum (Idp_declaration.to_sexp declaration));
         exit 0
   end;
-  let declaration = match declared with Some d -> d | None -> fail (no_declaration layout) in
+  let declaration = match load () with Some d -> d | None -> fail (no_declaration layout) in
   let session, live = fetch declaration.url in
   let t = Idp_plan.plan declaration live in
   List.iter print_endline (Idp_plan.lines t);

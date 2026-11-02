@@ -135,8 +135,16 @@ grep -Fq 'applied 0 of 2; stopped: POST /api/user-groups (HTTP 400): Group alrea
 rm "$TMP/responses/POST_api_user-groups.json" "$TMP/responses/POST_api_user-groups.status"
 
 # Export.
-test "$(status --export --url https://id.example.org)" = 1 || fail "--export --url accepted beside idp.sexp"
-grep -Fq 'idp.sexp exists' "$TMP/error"
+# The adoption command as typed: the shell creates the empty idp.sexp
+# before serai starts, so --export --url must not read it.
+: >"$TMP/empty.sexp"
+cp "$TMP/config/idp.sexp" "$TMP/kept.sexp"
+(cd "$TMP/config" && EXPECTED_KEY="$KEY" LOG="$TMP/log" RESPONSES="$TMP/responses" CURL_BIN="$TMP/curl" \
+  "$CLI" idp --export --url https://id.example.org >idp.sexp 2>"$TMP/error") \
+  || { cat "$TMP/error"; fail "--export --url > idp.sexp failed"; }
+head -n1 "$TMP/config/idp.sexp" | grep -Fq '; Exported from https://id.example.org' || fail "the redirected export is not an export"
+test "$(status --plan)" = 0 || { cat "$TMP/error" "$TMP/output"; fail "the redirected export does not plan to nothing"; }
+cp "$TMP/kept.sexp" "$TMP/config/idp.sexp"
 test "$(status --export)" = 0 || fail "--export from idp.sexp's url failed"
 head -n1 "$TMP/output" | grep -Fq '; Exported from https://id.example.org by serai idp --export'
 mv "$TMP/config/idp.sexp" "$TMP/declared.sexp"

@@ -294,8 +294,9 @@ applies the difference, the way `serai edge` does for the edge host.
   shows what remains.
 
 `--export` prints the live resources as `idp.sexp`, without secrets.
-`--url` names the server before `idp.sexp` exists; afterwards its `url` is
-used and `--url` is refused.
+`--url` names the server and never reads `idp.sexp`, so
+`serai idp --export --url ... > idp.sexp` works; without it, `idp.sexp`'s
+`url` is used.
 
 After losing Pocket ID's database, the nightly backup restores everything,
 passkeys included. Without a backup: reinstall, create the first admin and
