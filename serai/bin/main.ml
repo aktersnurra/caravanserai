@@ -153,6 +153,7 @@ let validate ~out =
   let declaration = load_declaration layout in
   ignore (Logging_policy.load ~layout ~apps:declaration.apps);
   ignore (Pipeline.load (Layout.pipelines layout));
+  (match Idp_declaration.load ~layout with Ok _ -> () | Error message -> failwith message);
   (match Config_drift.check declaration with
    | [] -> ()
    | drift -> failwith (String.concat "\n" (List.map Config_drift.message drift)));

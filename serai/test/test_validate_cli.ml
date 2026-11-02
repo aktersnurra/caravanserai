@@ -62,4 +62,26 @@ let () =
        let rec at i = i + n <= String.length text && (String.sub text i n = needle || at (i + 1)) in
        at 0));
   Test_declaration.remove_tree out;
+  (* idp.sexp is validated with the rest: a copy of the example whose
+     idp.sexp names an undeclared group fails both validate forms. *)
+  let copy = Filename.temp_dir "serai-validate-idp" "" in
+  Fun.protect ~finally:(fun () -> Test_declaration.remove_tree copy) (fun () ->
+    let config = Filename.concat copy "example" in
+    ignore (Proc.live (fun () -> Proc.run "cp" [ "-R"; Filename.concat (Repo_root.find ()) "example"; copy ]));
+    Out_channel.with_open_bin (Filename.concat config "idp.sexp") (fun channel ->
+      output_string channel "((url https://id.example.org) (users ((alice (groups (nope))))))");
+    let contains text needle =
+      let n = String.length needle in
+      let rec at i = i + n <= String.length text && (String.sub text i n = needle || at (i + 1)) in
+      at 0 in
+    let code, output = Fun.protect ~finally:(fun () -> Sys.chdir cwd) (fun () ->
+      Sys.chdir config;
+      Proc.live (fun () -> Proc.capture binary [ "validate" ])) in
+    ignore output;
+    check "validate refuses an invalid idp.sexp" (code <> 0);
+    let response =
+      Agent_cli.run ~layout:(fun () -> Layout.v ~engine:(Repo_root.find ()) ~config) [ "validate"; "--json" ] in
+    check "validate --json refuses an invalid idp.sexp, naming it"
+      (Agent_cli.exit_code response <> 0
+       && contains (Agent_cli.to_json response) "user alice names undeclared group nope"));
   if !failures > 0 then exit 1

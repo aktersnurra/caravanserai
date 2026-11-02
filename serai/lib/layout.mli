@@ -20,6 +20,7 @@ val config : t -> string
     {v
     serai.sexp          hosts, compute and proxy; the configuration's anchor
     logging.sexp
+    idp.sexp            the identity provider's resources (optional)
     pipelines.sexp
     apps/<app>/         app.sexp, config, env.template, hooks, extra steps
     guests/<guest>/     guest.sexp, ...
@@ -31,6 +32,7 @@ val config : t -> string
 val topology : t -> string
 val pipelines : t -> string
 val logging : t -> string
+val idp : t -> string
 val apps_dir : t -> string
 val app_dir : t -> string -> string
 val guests_dir : t -> string

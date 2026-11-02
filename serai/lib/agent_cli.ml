@@ -132,6 +132,8 @@ let run ~layout argv =
           (match Config_drift.check d with
            | [] -> ()
            | drift -> refuse Invalid_declaration (String.concat "\n" (List.map Config_drift.message drift)));
+          (match Idp_declaration.load ~layout with
+           | Ok _ -> () | Error message -> refuse Invalid_declaration message);
           let files = match Validation.render_all d with
             | Ok files -> files | Error message -> refuse Render_failed message in
           Object ["apps",Int (List.length d.apps); "guests",Int (List.length d.guests);
