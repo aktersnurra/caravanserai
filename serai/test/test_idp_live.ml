@@ -30,7 +30,13 @@ let () =
   check "groups decode to the example's" (values live.groups = example.groups);
   check "users decode to the example's, without the static API key user"
     (List.map fst (values live.users) = example.users);
-  check "clients decode to the example's" (List.map fst (values live.clients) = example.clients);
+  let without_lifetimes (c : Idp_declaration.client) =
+    { c with access_token_minutes = None; refresh_token_minutes = None } in
+  check "clients decode to the example's, without the CIMD client"
+    (List.map (fun (c, _) -> without_lifetimes c) (values live.clients) = example.clients);
+  check "stored lifetimes decode as they are"
+    (List.for_all (fun ((c : Idp_declaration.client), _) ->
+         c.access_token_minutes = Some 60 && c.refresh_token_minutes = Some 43200) (values live.clients));
   check "APIs decode to the example's, CIMD-only entries not grants"
     (List.map (fun (a : Idp_live.api) -> a.api) (values live.apis) = example.apis);
   check "ids are kept"

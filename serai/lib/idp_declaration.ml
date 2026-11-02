@@ -210,6 +210,8 @@ let client_of (id, sexp) =
       length_within "description" ~min:0 ~max:150 description;
       let allowed_groups = list_or_empty "allowed_groups" f atoms in
       check_unique "allowed group" allowed_groups;
+      if flag "public" f && not (flag "pkce" f) then
+        invalid "a public client always uses PKCE in Pocket ID: add (pkce)";
       let callback_urls = list_or_empty "callback_urls" f atoms in
       let logout_callback_urls = list_or_empty "logout_callback_urls" f atoms in
       check_unique "callback URL" callback_urls;

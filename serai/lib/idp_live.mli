@@ -41,7 +41,8 @@ val version : Json.t -> (string, string) result
 
 (** The live state from every page's items: [/user-groups], [/users],
     [/oidc/clients], and each of [/apis] with its [/apis/:id/clients].
-    An error names the resource and the field. A client restricted to no
+    CIMD clients ([clientType "cimd"]) are left out: their vendors register
+    them. An error names the resource and the field. A client restricted to no
     groups is an error: idp.sexp cannot declare it, and reading it as
     unrestricted would open it to everyone. A token lifetime of 0 is
     [None]. *)

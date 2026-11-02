@@ -1,11 +1,11 @@
 {"data":[
- {"client":{"id":"hello","name":"Hello","clientType":"public","isPublic":true,"hasLogo":false,
+ {"client":{"id":"hello","name":"Hello","clientType":"standard","isPublic":true,"hasLogo":false,
             "hasDarkLogo":false},
   "userDelegatedAccess":true,"clientAccess":false,
   "userDelegatedPermissionIds":["7c4d2e10-0000-4000-8000-000000000001"],"clientPermissionIds":[],
   "cimdGrantedAccess":false,"cimdGrantedPermissionIds":[]},
  {"client":{"id":"https://assistant.example.net/oauth/client.json","name":"Assistant",
-            "clientType":"public","isPublic":true,"hasLogo":false,"hasDarkLogo":false},
+            "clientType":"cimd","isPublic":true,"hasLogo":false,"hasDarkLogo":false},
   "userDelegatedAccess":false,"clientAccess":false,"userDelegatedPermissionIds":[],
   "clientPermissionIds":[],"cimdGrantedAccess":true,
   "cimdGrantedPermissionIds":["7c4d2e10-0000-4000-8000-000000000001"]}],

@@ -148,6 +148,7 @@ let () =
   refused "a client ID with a space" (base ~clients:{|("c 1" (name C))|} ~apis:"" ());
   refused "a client ID of one character" (base ~clients:"(c (name C))" ~apis:"" ());
   refused "a client ID over 128" (base ~clients:(Printf.sprintf "(%s (name C))" (String.make 129 'c')) ~apis:"" ());
+  refused "a public client without pkce" (base ~clients:"(c1 (name C) (public))" ~apis:"" ());
   refused "a client without a name" (base ~clients:"(c1)" ~apis:"" ());
   refused "a client name over 50" (base ~clients:(Printf.sprintf "(c1 (name %s))" (String.make 51 'n')) ~apis:"" ());
   refused "a client description over 150"

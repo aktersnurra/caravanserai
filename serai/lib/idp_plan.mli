@@ -46,5 +46,6 @@ val lines : t -> string list
 
 val to_json : t -> Agent_cli.json
 
-(** The live state as a declaration, validated as idp.sexp is. *)
+(** The live state as a declaration, validated as idp.sexp is. Token
+    lifetimes equal to Pocket ID's defaults are left out. *)
 val export : url:string -> Idp_live.t -> (Idp_declaration.t, string) result

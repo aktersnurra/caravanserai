@@ -215,8 +215,16 @@ let to_json t =
            Object [ ("kind", Text (kind_name kind)); ("name", Text name) ]) t.undeclared));
       ("secrets_needed", strings t.secrets_needed) ]
 
+(* Pocket ID stores these when a client sets none (v2.19.1). *)
+let default_access_token_minutes = 60
+let default_refresh_token_minutes = 30 * 24 * 60
+
 let export ~url (live : Idp_live.t) =
   let values xs = List.map (fun (x : _ Idp_live.with_id) -> x.value) xs in
+  let unless_default default = function Some n when n = default -> None | other -> other in
+  let client (c : client) =
+    { c with access_token_minutes = unless_default default_access_token_minutes c.access_token_minutes;
+             refresh_token_minutes = unless_default default_refresh_token_minutes c.refresh_token_minutes } in
   make ~url ~groups:(values live.groups) ~users:(List.map fst (values live.users))
-    ~clients:(List.map fst (values live.clients))
+    ~clients:(List.map (fun (c, _) -> client c) (values live.clients))
     ~apis:(List.map (fun (a : Idp_live.api) -> a.api) (values live.apis))

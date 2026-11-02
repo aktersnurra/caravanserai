@@ -188,6 +188,10 @@ let assemble ~version ~groups ~users ~clients ~apis =
   let* groups = traverse group groups in
   let* users = traverse user users in
   let users = List.filter (fun u -> u.id <> static_api_key_user) users in
+  (* A CIMD client is registered by its vendor's metadata document, its ID
+     the document's URL: not something idp.sexp declares. *)
+  let clients = List.filter (fun json ->
+      match Json.member "clientType" json with Ok (Some (Json.String "cimd")) -> false | _ -> true) clients in
   let* clients = traverse client clients in
   let* apis = traverse api apis in
   Ok { version; groups; users; clients; apis }

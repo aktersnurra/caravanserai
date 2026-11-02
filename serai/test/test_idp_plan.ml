@@ -67,7 +67,8 @@ let () =
   client_field "logout_callback_urls" (fun c -> { c with logout_callback_urls = [ "https://logs.example.org/bye" ] });
   client_field "backchannel_logout_url" (fun c -> { c with backchannel_logout_url = Some "https://logs.example.org/bc" });
   client_field "launch_url" (fun c -> { c with launch_url = Some "https://logs.example.org/" });
-  client_field "public" (fun c -> { c with public = true });
+  one_change "client public" (with_client "hello" (fun c -> { c with public = false }))
+    ~expect:(update_naming "public");
   client_field "pkce" (fun c -> { c with pkce = true });
   client_field "skip_consent" (fun c -> { c with skip_consent = true });
   client_field "allowed_groups" (fun c -> { c with allowed_groups = [ "admins"; "family" ] });
@@ -192,9 +193,13 @@ let () =
 
   (* Export. *)
   check "export of the live state is the declaration" (Idp_plan.export ~url:example.url live = Ok example);
-  check "export carries live token lifetimes"
-    (match Idp_plan.export ~url:example.url live_with_lifetime with
-     | Ok t -> (List.find (fun (c : client) -> c.id = "logs") t.clients).access_token_minutes = Some 60
+  let live_with_long_lifetime =
+    { live with clients = List.map (fun (c : _ Idp_live.with_id) ->
+          if c.id = "logs" then { c with value = ({ (fst c.value) with access_token_minutes = Some 120 }, snd c.value) }
+          else c) live.clients } in
+  check "export carries a lifetime that is not the default"
+    (match Idp_plan.export ~url:example.url live_with_long_lifetime with
+     | Ok t -> (List.find (fun (c : client) -> c.id = "logs") t.clients).access_token_minutes = Some 120
      | Error _ -> false);
   check "export validates the url" (Result.is_error (Idp_plan.export ~url:"http://id.example.org" live));
 
