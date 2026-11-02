@@ -19,8 +19,8 @@ val error_message : error -> string
 val supported : string
 
 (** Checks the server's version first and refuses anything but
-    {!supported}.x before another request; then every page of groups,
-    users, clients and APIs, and each API's grants. *)
+    {!supported}.x before another request; then the key's owner, every page
+    of groups, users, clients and APIs, and each API's grants. *)
 val fetch : ?curl_bin:string -> session -> (Idp_live.t, error) result
 
 type applied = { completed : Idp_plan.action list; failed : (Idp_plan.action * error) option }

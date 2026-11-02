@@ -38,6 +38,32 @@ let () =
     (in_sync.actions = [] && in_sync.undeclared = [] && in_sync.secrets_needed = []
      && not (Idp_plan.pending in_sync) && Idp_plan.lines in_sync = []);
 
+  (* The API key's owner: demoting or disabling it would revoke the key. *)
+  let lockout_mentions declaration live fragments =
+    match (Idp_plan.plan declaration live).lockout with
+    | Some reason -> List.for_all (fun f ->
+        let n = String.length f in
+        let rec at i = i + n <= String.length reason && (String.sub reason i n = f || at (i + 1)) in
+        at 0) fragments
+    | None -> false in
+  check "in sync, no lockout" (in_sync.lockout = None);
+  check "removing the key owner's admin is a lockout"
+    (lockout_mentions (with_user "alice" (fun u -> { u with admin = false })) live [ "alice"; "admin"; "API key" ]);
+  check "disabling the key owner is a lockout"
+    (lockout_mentions (with_user "alice" (fun u -> { u with disabled = true })) live [ "alice"; "disabl" ]);
+  check "the plan still lists the change it refuses"
+    ((Idp_plan.plan (with_user "alice" (fun u -> { u with admin = false })) live).actions <> []);
+  check "other changes to the key owner are not"
+    ((Idp_plan.plan (with_user "alice" (fun u -> { u with groups = [ "admins" ]; display_name = "A" })) live).lockout = None);
+  check "demoting or disabling another user is not"
+    ((Idp_plan.plan (with_user "bob" (fun u -> { u with admin = true; disabled = true })) live).lockout = None);
+  check "a key owner left undeclared is never touched, so no lockout"
+    ((Idp_plan.plan (declare ~users:(List.filter (fun (u : user) -> u.username <> "alice") example.users)
+                       ~clients:example.clients ()) live).lockout = None);
+  check "the static key's user owns no declared user, so no lockout"
+    ((Idp_plan.plan (with_user "alice" (fun u -> { u with admin = false }))
+        { live with key_owner = Idp_live.static_api_key_user }).lockout = None);
+
   (* One changed field, one action naming it: every declared field. *)
   let one_change name declaration ~expect =
     let t = Idp_plan.plan declaration live in

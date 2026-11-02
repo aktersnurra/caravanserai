@@ -16,7 +16,12 @@ type action =
   | Set_grant of { resource : string; grant : grant }
   | Remove_grant of { resource : string; client : string }
 
-type t = { actions : action list; undeclared : (kind * string) list; secrets_needed : string list }
+type t = {
+  actions : action list;
+  undeclared : (kind * string) list;
+  secrets_needed : string list;
+  lockout : string option;
+}
 
 let sorted xs = List.sort_uniq compare xs
 
@@ -139,7 +144,21 @@ let plan (d : Idp_declaration.t) (live : Idp_live.t) =
     @ undeclared Api ~key:(fun (a : api) -> a.resource) ~live:live_apis d.apis in
   let secrets_needed =
     List.filter_map (function Create_client c when not c.public -> Some c.id | _ -> None) actions in
-  { actions; undeclared; secrets_needed }
+  (* The key's admin power is its owner's, checked on every request: a
+     declared owner losing it is the one change serai idp cannot undo. *)
+  let lockout =
+    let owner = List.find_opt (fun (u : _ Idp_live.with_id) -> u.id = live.key_owner) live.users in
+    let declared = Option.bind owner (fun (o : _ Idp_live.with_id) ->
+        List.find_opt (fun (u : user) -> u.username = (fst o.value).username) d.users) in
+    let refuse (u : user) what =
+      Some (Printf.sprintf
+              "user %s owns the API key: %s would make Pocket ID refuse the key, and serai idp could not undo it; make that change in the admin UI, or with a key another admin owns"
+              u.username what) in
+    match declared with
+    | Some u when u.disabled -> refuse u "disabling it"
+    | Some u when not u.admin -> refuse u "removing its admin flag"
+    | _ -> None in
+  { actions; undeclared; secrets_needed; lockout }
 
 let pending t = t.actions <> []
 

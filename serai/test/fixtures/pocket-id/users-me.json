@@ -1,0 +1,44 @@
+{
+  "id": "2c5e7a10-0000-4000-8000-000000000001",
+  "username": "alice",
+  "email": "alice@example.org",
+  "emailVerified": true,
+  "firstName": "",
+  "lastName": null,
+  "displayName": "Alice",
+  "isAdmin": true,
+  "locale": null,
+  "customClaims": [
+    {
+      "key": "ledger_account",
+      "value": "a-001"
+    }
+  ],
+  "userGroups": [
+    {
+      "id": "6f1d0c3e-0000-4000-8000-000000000001",
+      "friendlyName": "Admins",
+      "name": "admins",
+      "customClaims": [],
+      "userCount": 1,
+      "ldapId": null,
+      "createdAt": "2026-11-02T10:00:00Z"
+    },
+    {
+      "id": "6f1d0c3e-0000-4000-8000-000000000002",
+      "friendlyName": "Family",
+      "name": "family",
+      "customClaims": [
+        {
+          "key": "household",
+          "value": "north"
+        }
+      ],
+      "userCount": 2,
+      "ldapId": null,
+      "createdAt": "2026-11-02T10:00:00Z"
+    }
+  ],
+  "ldapId": null,
+  "disabled": false
+}

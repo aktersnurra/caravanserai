@@ -30,6 +30,10 @@ type t = {
   actions : action list;
   undeclared : (kind * string) list;  (** live, not declared: reported, never acted on *)
   secrets_needed : string list;  (** confidential clients this plan creates *)
+  lockout : string option;
+      (** Why the plan must not be applied: it removes the admin flag from,
+          or disables, the user the API key acts as. Pocket ID would then
+          refuse the key, and serai idp could not undo the change. *)
 }
 
 (** Within a declared resource the declaration is complete: a group, claim,

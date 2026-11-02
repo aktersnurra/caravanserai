@@ -88,6 +88,7 @@ let fetch ?(curl_bin = "curl") session =
     Error { request = "GET /api/version/current"; status = None; code = None;
             message = Printf.sprintf "Pocket ID %s: serai idp is tested against %s.x only" version supported }
   else
+    let* key_owner = request ~curl_bin session "GET" "/api/users/me" () in
     let* groups = all_pages ~curl_bin session "/api/user-groups" in
     let* users = all_pages ~curl_bin session "/api/users" in
     let* clients = all_pages ~curl_bin session "/api/oidc/clients" in
@@ -98,7 +99,7 @@ let fetch ?(curl_bin = "curl") session =
         let* grants = all_pages ~curl_bin session ("/api/apis/" ^ id ^ "/clients") in
         Ok (api, grants)) apis in
     Result.map_error (decode_error "decode")
-      (Idp_live.assemble ~version ~groups ~users ~clients ~apis)
+      (Idp_live.assemble ~version ~key_owner ~groups ~users ~clients ~apis)
 
 (* Request bodies. *)
 

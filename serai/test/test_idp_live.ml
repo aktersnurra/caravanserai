@@ -12,8 +12,9 @@ let contains text needle =
 let json text = match Json.parse text with Ok j -> j | Error m -> failwith m
 
 (* assemble with one resource kind replaced. *)
-let assemble ?(groups = []) ?(users = []) ?(clients = []) ?(apis = []) () =
-  Idp_live.assemble ~version:"2.19.1" ~groups ~users ~clients ~apis
+let assemble ?(key_owner = Pocket_id_fixtures.json "users-me.json") ?(groups = []) ?(users = [])
+    ?(clients = []) ?(apis = []) () =
+  Idp_live.assemble ~version:"2.19.1" ~key_owner ~groups ~users ~clients ~apis
 
 let error_mentions result fragments =
   match result with
@@ -27,6 +28,9 @@ let () =
   let live = Pocket_id_fixtures.live () in
   let values xs = List.map (fun (x : _ Idp_live.with_id) -> x.value) xs in
   check "the version" (live.version = "2.19.1");
+  check "the key's owner is /users/me's id" (live.key_owner = "2c5e7a10-0000-4000-8000-000000000001");
+  check "a /users/me without an id is an error"
+    (error_mentions (assemble ~key_owner:(json {|{"username":"alice"}|}) ()) [ "users/me"; "id" ]);
   check "groups decode to the example's" (values live.groups = example.groups);
   check "users decode to the example's, without the static API key user"
     (List.map fst (values live.users) = example.users);

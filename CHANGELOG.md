@@ -13,6 +13,9 @@
   `idp.sexp`. Pocket ID 2.19.x only.
 - No new dependency: `Json` parses and prints JSON, and requests go
   through curl.
+- `serai idp` refuses a plan that removes `(admin)` from the API key's
+  owner or disables them: Pocket ID would refuse the key, and `serai idp`
+  could not undo it.
 
 ## 2026-11-01: `serai update` leaves controller-built apps alone
 

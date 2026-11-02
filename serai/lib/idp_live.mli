@@ -24,6 +24,7 @@ type api = {
 
 type t = {
   version : string;
+  key_owner : string;  (** the id of the user the API key acts as *)
   groups : Idp_declaration.group with_id list;
   users : (Idp_declaration.user * user_extra) with_id list;  (** without the static API key user *)
   clients : (Idp_declaration.client * client_extra) with_id list;
@@ -45,7 +46,7 @@ val version : Json.t -> (string, string) result
     them. An error names the resource and the field. A client restricted to no
     groups is an error: idp.sexp cannot declare it, and reading it as
     unrestricted would open it to everyone. A token lifetime of 0 is
-    [None]. *)
+    [None]. [key_owner] is [GET /api/users/me]'s response. *)
 val assemble :
-  version:string -> groups:Json.t list -> users:Json.t list -> clients:Json.t list ->
+  version:string -> key_owner:Json.t -> groups:Json.t list -> users:Json.t list -> clients:Json.t list ->
   apis:(Json.t * Json.t list) list -> (t, string) result

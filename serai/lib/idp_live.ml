@@ -13,6 +13,7 @@ type api = { api : Idp_declaration.api; permission_ids : (string * string) list 
 
 type t = {
   version : string;
+  key_owner : string;
   groups : Idp_declaration.group with_id list;
   users : (Idp_declaration.user * user_extra) with_id list;
   clients : (Idp_declaration.client * client_extra) with_id list;
@@ -184,7 +185,8 @@ let api (json, grant_items) =
                             cimd; grants };
                     permission_ids } })
 
-let assemble ~version ~groups ~users ~clients ~apis =
+let assemble ~version ~key_owner ~groups ~users ~clients ~apis =
+  let* key_owner = Result.map_error (fun m -> "users/me: " ^ m) (req "id" Json.string key_owner) in
   let* groups = traverse group groups in
   let* users = traverse user users in
   let users = List.filter (fun u -> u.id <> static_api_key_user) users in
@@ -194,4 +196,4 @@ let assemble ~version ~groups ~users ~clients ~apis =
       match Json.member "clientType" json with Ok (Some (Json.String "cimd")) -> false | _ -> true) clients in
   let* clients = traverse client clients in
   let* apis = traverse api apis in
-  Ok { version; groups; users; clients; apis }
+  Ok { version; key_owner; groups; users; clients; apis }

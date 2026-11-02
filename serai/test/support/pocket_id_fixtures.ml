@@ -18,7 +18,7 @@ let items name =
 let live () =
   let version = match Idp_live.version (json "version.json") with
     | Ok v -> v | Error m -> failwith m in
-  match Idp_live.assemble ~version ~groups:(items "user-groups.json") ~users:(items "users.json")
+  match Idp_live.assemble ~version ~key_owner:(json "users-me.json") ~groups:(items "user-groups.json") ~users:(items "users.json")
           ~clients:(items "oidc-clients.json")
           ~apis:(List.map (fun api -> (api, items "api-clients.json")) (items "apis.json")) with
   | Ok live -> live

@@ -20,6 +20,7 @@ cp "$ROOT/example/idp.sexp" "$TMP/config/"
 
 respond() { cp "$FIXTURES/$2" "$TMP/responses/$1.json"; }
 respond GET_api_version_current version.json
+respond GET_api_users_me users-me.json
 respond GET_api_user-groups user-groups.json
 respond GET_api_users users.json
 respond GET_api_oidc_clients oidc-clients.json
@@ -133,6 +134,18 @@ echo 400 >"$TMP/responses/POST_api_user-groups.status"
 test "$(status --yes)" = 1 || fail "a failed apply did not exit 1"
 grep -Fq 'applied 0 of 2; stopped: POST /api/user-groups (HTTP 400): Group already exists [already_in_use]' "$TMP/output"
 rm "$TMP/responses/POST_api_user-groups.json" "$TMP/responses/POST_api_user-groups.status"
+
+# The key's owner (alice in the fixtures) losing admin: refused before any change.
+cp "$TMP/config/idp.sexp" "$TMP/before-lockout.sexp"
+sed -i.bak 's/(alice (email alice@example.org) (display_name Alice) (admin)/(alice (email alice@example.org) (display_name Alice)/' "$TMP/config/idp.sexp"
+test "$(status --plan)" = 1 || { cat "$TMP/output" "$TMP/error"; fail "a lockout --plan did not exit 1"; }
+grep -Fq 'user alice: update admin' "$TMP/output" || fail "the refused plan was not shown"
+grep -Fq 'idp: refused: user alice owns the API key' "$TMP/error" || { cat "$TMP/error"; fail "no lockout refusal"; }
+test "$(status --yes)" = 1 || fail "a lockout was applied"
+! grep -qv '^GET ' "$TMP/log" || fail "a lockout changed something"
+test "$(status --plan --json)" = 1 || fail "a lockout --plan --json did not exit 1"
+grep -Fq '"code":"not_applied"' "$TMP/output" && grep -Fq 'owns the API key' "$TMP/output" || { cat "$TMP/output"; fail "the JSON result does not refuse"; }
+cp "$TMP/before-lockout.sexp" "$TMP/config/idp.sexp"
 
 # Export.
 # The adoption command as typed: the shell creates the empty idp.sexp

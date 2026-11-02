@@ -47,6 +47,7 @@ let get path file c =
 
 let fixture_routes = [
   get "/api/version/current" "version.json";
+  get "/api/users/me" "users-me.json";
   get "/api/user-groups" "user-groups.json";
   get "/api/users" "users.json";
   get "/api/oidc/clients" "oidc-clients.json";
@@ -73,7 +74,9 @@ let () =
   let m = mock fixture_routes in
   let result = Proc.Mock.run m (fun () -> Pocket_id.fetch s) in
   check "fetch gives the fixtures' live state" (result = Ok (Pocket_id_fixtures.live ()));
-  check "the version is checked first" (List.hd (lines (calls m)) = "GET /api/version/current");
+  check "the version is checked first, then the key's owner"
+    (match lines (calls m) with
+     | "GET /api/version/current" :: "GET /api/users/me" :: _ -> true | _ -> false);
   check "the key is in no request's arguments"
     (List.for_all (fun (r : Proc.request) -> not (List.exists (fun a -> contains a key) r.args)) (Proc.Mock.calls m));
   check "the key reaches each request only through its environment"

@@ -459,6 +459,7 @@ let idp argv =
          | Error message -> failwith message
          | Ok (_, live) ->
              let t = Idp_plan.plan declaration live in
+             Option.iter failwith t.lockout;
              pending := Idp_plan.pending t;
              Ok (Idp_plan.to_json t))) in
     print_endline (Agent_cli.to_json response);
@@ -488,6 +489,7 @@ let idp argv =
   let session, live = fetch declaration.url in
   let t = Idp_plan.plan declaration live in
   List.iter print_endline (Idp_plan.lines t);
+  Option.iter (fun reason -> fail ("refused: " ^ reason)) t.lockout;
   if plan then exit (if Idp_plan.pending t then 2 else 0);
   if not (Idp_plan.pending t) then exit 0;
   let count = List.length t.actions in

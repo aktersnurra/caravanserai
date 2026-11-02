@@ -290,6 +290,11 @@ applies the difference, the way `serai edge` does for the edge host.
   says so: create one in the UI and put it in the app's env file.
 - It refuses a Pocket ID outside the minor version it was tested against
   (2.19), because the admin API is unversioned.
+- It refuses, before any request that changes something, a plan that
+  removes `(admin)` from the user the API key belongs to or disables them:
+  Pocket ID would refuse the key from then on, and `serai idp` could not
+  undo it. Make that change in the admin UI, or with a key another admin
+  owns.
 - It stops at the first failed request, with no rollback; `--plan` then
   shows what remains.
 

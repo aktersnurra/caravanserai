@@ -167,7 +167,9 @@ serai idp --plan --json
 Operation `idp.plan`, read-only, with the key in `SERAI_IDP_API_KEY` (see
 `serai/README.md`). It exits 2 when `data.pending` is true. Without
 `idp.sexp`, without a usable key, or when Pocket ID refuses or is
-unreachable, the result is `not_applied` with the reason. Applying has no
+unreachable, the result is `not_applied` with the reason. So is a plan
+that would remove `(admin)` from the API key's owner or disable them, which
+`serai idp` refuses to apply. Applying has no
 JSON form.
 
 `data` holds:

@@ -80,6 +80,8 @@ run() { (cd "$TMP/config" && SERAI_IDP_API_KEY="$KEY" "$CLI" idp "$@" </dev/null
 status() { set +e; run "$@"; code=$?; set -e; echo "$code"; }
 
 test "$(api GET /api/version/current | field 'd["currentVersion"]')" = 2.19.1 || fail "the version response"
+test "$(api GET /api/users/me | field 'd["id"]')" = 00000000-0000-0000-0000-000000000000 \
+  || fail "the static key does not act as the static API key user"
 
 # 1. The first apply creates; a second plan is empty.
 test "$(status --plan)" = 2 || { cat "$TMP/error"; fail "the first plan did not exit 2"; }
@@ -92,6 +94,7 @@ test ! -s "$TMP/output" || { cat "$TMP/output"; fail "the plan after applying pr
 if [ -n "${SERAI_IDP_CAPTURE:-}" ]; then
   mkdir -p "$SERAI_IDP_CAPTURE"
   api GET /api/version/current >"$SERAI_IDP_CAPTURE/version.json"
+  api GET /api/users/me >"$SERAI_IDP_CAPTURE/users-me.json"
   api GET '/api/user-groups?pagination[limit]=100' -g >"$SERAI_IDP_CAPTURE/user-groups.json"
   api GET '/api/users?pagination[limit]=100' -g >"$SERAI_IDP_CAPTURE/users.json"
   api GET '/api/oidc/clients?pagination[limit]=100' -g >"$SERAI_IDP_CAPTURE/oidc-clients.json"
