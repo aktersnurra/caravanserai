@@ -66,6 +66,11 @@ type t = private {
     an audience that is not an absolute URI). The error names the resource. *)
 val parse : Sexplib.Sexp.t -> (t, string) result
 
+(** A declaration from its parts, validated as [parse] validates a file. *)
+val make :
+  url:string -> groups:group list -> users:user list -> clients:client list -> apis:api list ->
+  (t, string) result
+
 (** The configuration's idp.sexp, or [None] when it has none. *)
 val load : layout:Layout.t -> (t option, string) result
 

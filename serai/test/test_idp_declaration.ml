@@ -56,6 +56,11 @@ let () =
      && ledger.grants = [ { client = "hello"; user_delegated = Some [ "ledger:read" ];
                             client_credentials = None } ]);
   check "the example round-trips through to_sexp" (parse (to_sexp example) = Ok example);
+  check "make builds the same declaration"
+    (make ~url:example.url ~groups:example.groups ~users:example.users ~clients:example.clients
+       ~apis:example.apis = Ok example);
+  check "make validates"
+    (Result.is_error (make ~url:example.url ~groups:[] ~users:example.users ~clients:[] ~apis:[]));
 
   (* No file. *)
   let empty_config = Filename.temp_dir "idp-declaration" "test" in

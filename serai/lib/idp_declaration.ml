@@ -356,3 +356,5 @@ let to_sexp t =
     (field "url" (Atom t.url)
      :: section "groups" group t.groups @ section "users" user t.users
      @ section "clients" client t.clients @ section "apis" api t.apis)
+
+let make ~url ~groups ~users ~clients ~apis = parse (to_sexp { url; groups; users; clients; apis })
