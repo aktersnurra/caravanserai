@@ -158,6 +158,37 @@ The status is `failed` with code `step_failed` when one of those lines is
 a refusal or failure. `update.plan` fails the same way when the
 configuration isn't verified.
 
+## The identity provider
+
+```sh
+serai idp --plan --json
+```
+
+Operation `idp.plan`, read-only, with the key in `SERAI_IDP_API_KEY` (see
+`serai/README.md`). It exits 2 when `data.pending` is true. Without
+`idp.sexp`, without a usable key, or when Pocket ID refuses or is
+unreachable, the result is `not_applied` with the reason. Applying has no
+JSON form.
+
+`data` holds:
+
+- `pending`: whether there are actions. Undeclared resources alone are not.
+- `actions`: in apply order, each `{action, kind, name, ...}`, where `kind`
+  is `group`, `user`, `client` or `api` and `name` is its group name,
+  username, client ID or audience:
+
+| `action` | Fields | Meaning |
+| --- | --- | --- |
+| `create` | | Declared, not live. |
+| `update` | `changes` | Each `{field}`, or `{field, added, removed}` for memberships, callback URLs, claims (`key=value`) and permission keys. |
+| `set_cimd` | `permissions` | CIMD access for the API: the permission keys, or null for off. |
+| `set_grant` | `client`, `user_delegated`, `client_credentials` | A client's access to the API: permission keys, or null for none. |
+| `remove_grant` | `client` | A grant the declaration leaves out. |
+
+- `undeclared`: each `{kind, name}` live and not declared. Reported only.
+- `secrets_needed`: confidential clients the plan creates; each needs a
+  secret made in the UI.
+
 ## Mutation boundary remains explicit
 
 JSON result mode refuses every other operation, including an `up` without

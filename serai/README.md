@@ -255,6 +255,53 @@ git push origin HEAD:refs/heads/deploy
 The remote then accepts only forward moves. Protecting `deploy` against
 force-pushes adds a layer under the ancestry check.
 
+## The identity provider: `serai idp`
+
+```sh
+serai idp --plan              # what would change in Pocket ID; exits 2 when something would
+serai idp                     # apply it, after confirmation (--yes to skip)
+serai idp --plan --json       # the plan as a result (operation idp.plan)
+serai idp --export --url https://id.example.org > idp.sexp   # adopt a running instance
+```
+
+`idp.sexp`, beside `logging.sexp`, declares Pocket ID's groups, users, OIDC
+clients and APIs: memberships, custom claims, callback URLs, allowed groups,
+token lifetimes, API permissions, CIMD access and client grants. See
+`example/idp.sexp`. `serai idp` compares it with the live server and
+applies the difference, the way `serai edge` does for the edge host.
+
+- Over HTTPS with an admin API key in `SERAI_IDP_API_KEY`, set for the one
+  command, for example from a password manager:
+  `SERAI_IDP_API_KEY="$(pass show pocket-id/serai-idp | head -n1)" serai idp --plan`.
+  Never `export` it in a shell's startup file. The key never reaches a
+  command line: curl reads it from its config on stdin. Create the key in
+  Pocket ID's admin UI; it expires, so renew it there.
+- Resources are matched by group name, username, client ID and API
+  audience. A client's ID is declared, so it survives a rebuild of the
+  database.
+- Within a declared resource the declaration is complete: a membership,
+  claim, callback URL, permission or grant it leaves out is removed. A
+  token lifetime it leaves out is left as it is live.
+- A resource that is live but not declared is reported and never deleted;
+  delete in the UI. Clients registered by CIMD and the static API key's
+  user are not resources here.
+- Never touched: passkeys and client secrets. When `serai idp` creates a
+  confidential client it deletes the secret Pocket ID makes, unread, and
+  says so: create one in the UI and put it in the app's env file.
+- It refuses a Pocket ID outside the minor version it was tested against
+  (2.19), because the admin API is unversioned.
+- It stops at the first failed request, with no rollback; `--plan` then
+  shows what remains.
+
+`--export` prints the live resources as `idp.sexp`, without secrets.
+`--url` names the server before `idp.sexp` exists; afterwards its `url` is
+used and `--url` is refused.
+
+After losing Pocket ID's database, the nightly backup restores everything,
+passkeys included. Without a backup: reinstall, create the first admin and
+an API key in the UI, run `serai idp`, then put new client secrets in the
+apps' env files and have each user register a passkey again.
+
 ## Native OCaml and guest artifacts
 
 An OCaml app uses its declared compiler in the disposable FreeBSD builder.

@@ -36,6 +36,9 @@ let usage_text =
   \  serai jail-test <app> --destroy [--yes]\n\
   \  serai rollout <app> [--edge] [--yes]\n\
   \  serai update [--plan] [--json]   (deploy what CI marked, if signed and newer; settings in ~/.config/serai/update.sexp)\n\
+  \  serai idp [--yes]   (Pocket ID's users, groups, clients and APIs to match idp.sexp; key in SERAI_IDP_API_KEY)\n\
+  \  serai idp --plan [--json]   (what idp would change; exits 2 when changes are pending)\n\
+  \  serai idp --export [--url <url>]   (the live resources as idp.sexp; --url only before idp.sexp exists)\n\
   \  serai update-version <app> [version]\n\
   \  serai run <app> <pipeline>\n\
   \  Add --progress=jsonl to stream phase/outcome events on stderr.\n"
@@ -411,6 +414,104 @@ let update argv =
       if log <> "" then (print_string "\n--- log ---\n"; print_string log);
       exit 1
 
+(* serai idp: Pocket ID's users, groups, clients and APIs against idp.sexp.
+   Runs on the controller over HTTPS only: no ssh, lock or host. *)
+let idp argv =
+  let usage () = prerr_string usage_text; exit 1 in
+  let rec parse ~plan ~json ~yes ~export ~url = function
+    | [] -> (plan, json, yes, export, url)
+    | "--plan" :: rest when not plan -> parse ~plan:true ~json ~yes ~export ~url rest
+    | "--json" :: rest when not json -> parse ~plan ~json:true ~yes ~export ~url rest
+    | "--yes" :: rest when not yes -> parse ~plan ~json ~yes:true ~export ~url rest
+    | "--export" :: rest when not export -> parse ~plan ~json ~yes ~export:true ~url rest
+    | "--url" :: value :: rest when url = None -> parse ~plan ~json ~yes ~export ~url:(Some value) rest
+    | _ -> usage () in
+  let plan, json, yes, export, url =
+    parse ~plan:false ~json:false ~yes:false ~export:false ~url:None (List.tl argv) in
+  (match () with
+   | () when export && (plan || json || yes) -> usage ()
+   | () when (not export) && url <> None -> usage ()
+   | () when json && not plan -> usage ()
+   | () when plan && yes -> usage ()
+   | () -> ());
+  let fail message = Printf.eprintf "idp: %s\n%!" message; exit 1 in
+  let curl_bin = getenv_default "CURL_BIN" "curl" in
+  let fetch_result url =
+    match Pocket_id.session ~url with
+    | Error message -> Error message
+    | Ok session ->
+        Result.map (fun live -> (session, live))
+          (Result.map_error Pocket_id.error_message (Proc.live (fun () -> Pocket_id.fetch ~curl_bin session))) in
+  let no_declaration layout =
+    Printf.sprintf "no %s: nothing is declared (start from the live state with serai idp --export --url https://<host> > idp.sexp)"
+      (Layout.idp layout) in
+  if json then begin
+    (* stdout carries exactly the one result, failures included. *)
+    let saved = Unix.dup Unix.stdout in
+    Unix.dup2 Unix.stderr Unix.stdout;
+    let pending = ref false in
+    let response = Fun.protect ~finally:(fun () -> flush stdout; Unix.dup2 saved Unix.stdout; Unix.close saved)
+      (fun () -> Agent_cli.respond ~operation:"idp.plan" (fun () ->
+         let layout = locate_layout () in
+         let declaration = match Idp_declaration.load ~layout with
+           | Ok (Some d) -> d | Ok None -> failwith (no_declaration layout) | Error message -> failwith message in
+         match fetch_result declaration.url with
+         | Error message -> failwith message
+         | Ok (_, live) ->
+             let t = Idp_plan.plan declaration live in
+             pending := Idp_plan.pending t;
+             Ok (Idp_plan.to_json t))) in
+    print_endline (Agent_cli.to_json response);
+    let code = Agent_cli.exit_code response in
+    exit (if code = 0 && !pending then 2 else code)
+  end;
+  let layout = locate_layout () in
+  let declared = match Idp_declaration.load ~layout with Ok d -> d | Error message -> fail message in
+  let fetch url = match fetch_result url with Ok x -> x | Error message -> fail message in
+  if export then begin
+    let url = match declared, url with
+      | Some _, Some _ -> fail "idp.sexp exists: --export reads its url; drop --url"
+      | Some d, None -> d.url
+      | None, Some url -> url
+      | None, None -> fail "no idp.sexp yet: give the server with --export --url https://<host>" in
+    let _, live = fetch url in
+    match Idp_plan.export ~url live with
+    | Error message -> fail message
+    | Ok declaration ->
+        Printf.printf "; Exported from %s by serai idp --export. Review it before committing.\n%s\n"
+          url (Sexplib.Sexp.to_string_hum (Idp_declaration.to_sexp declaration));
+        exit 0
+  end;
+  let declaration = match declared with Some d -> d | None -> fail (no_declaration layout) in
+  let session, live = fetch declaration.url in
+  let t = Idp_plan.plan declaration live in
+  List.iter print_endline (Idp_plan.lines t);
+  if plan then exit (if Idp_plan.pending t then 2 else 0);
+  if not (Idp_plan.pending t) then exit 0;
+  let count = List.length t.actions in
+  let confirmed =
+    yes
+    || (Unix.isatty Unix.stdin
+        && (Printf.printf "Apply %d change%s to %s? [y/N] %!" count (if count = 1 then "" else "s") declaration.url;
+            match In_channel.input_line stdin with
+            | Some answer -> List.mem (String.lowercase_ascii (String.trim answer)) [ "y"; "yes" ]
+            | None -> false)) in
+  if not confirmed then
+    fail (if Unix.isatty Unix.stdin then "not applied" else "needs confirmation but stdin is not a terminal; re-run with --yes");
+  let applied = Proc.live (fun () -> Pocket_id.apply ~curl_bin session live t) in
+  let done_count = List.length applied.completed in
+  match applied.failed with
+  | Some (_, error) ->
+      Printf.printf "applied %d of %d; stopped: %s\nRun serai idp --plan to see what remains.\n"
+        done_count count (Pocket_id.error_message error);
+      exit 1
+  | None ->
+      Printf.printf "applied %d change%s\n" done_count (if done_count = 1 then "" else "s");
+      List.iter (fun client ->
+          Printf.printf "client %s: create a secret for it in the UI and put it in the app's env file\n" client)
+        t.secrets_needed;
+      exit 0
+
 let acting_json argv =
   let run ?(assume_yes = false) operation workload f =
     Progress.start ~enabled:(List.mem "--progress=jsonl" argv) ~operation ~workload:(Some workload);
@@ -527,7 +628,7 @@ let dispatch (env, registry) argv =
 
 let () =
   let argv = List.tl (Array.to_list Sys.argv) in
-  (match argv with "update" :: _ -> update argv | _ -> ());
+  (match argv with "update" :: _ -> update argv | "idp" :: _ -> idp argv | _ -> ());
   if List.mem "--json" argv then acting_json argv;
   if List.mem "--json" argv then begin
     let args = List.filter (fun arg -> not (String.starts_with ~prefix:"--" arg)) argv in

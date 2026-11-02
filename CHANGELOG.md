@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-11-03: The identity provider as configuration, `serai idp`
+
+- `idp.sexp` declares Pocket ID's groups, users, OIDC clients and APIs,
+  with memberships, custom claims, allowed groups, token lifetimes, API
+  permissions, CIMD access and client grants. `serai validate` checks it.
+- `serai idp --plan [--json]` shows how the live Pocket ID differs, and
+  `serai idp [--yes]` applies it over HTTPS with the admin API key in
+  `SERAI_IDP_API_KEY`, which never reaches a command line. Undeclared
+  resources are reported and never deleted; passkeys and client secrets are
+  never touched. `serai idp --export` prints a running instance as
+  `idp.sexp`. Pocket ID 2.19.x only.
+- No new dependency: `Json` parses and prints JSON, and requests go
+  through curl.
+
 ## 2026-11-01: `serai update` leaves controller-built apps alone
 
 - An app that declares a `web_bundle` is no longer updated unattended. Only
