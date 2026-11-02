@@ -1,0 +1,7 @@
+{"data":[
+ {"id":"6f1d0c3e-0000-4000-8000-000000000001","friendlyName":"Admins","name":"admins",
+  "customClaims":[],"userCount":1,"ldapId":null,"createdAt":"2026-11-02T10:00:00Z"},
+ {"id":"6f1d0c3e-0000-4000-8000-000000000002","friendlyName":"Family","name":"family",
+  "customClaims":[{"key":"household","value":"north"}],"userCount":2,"ldapId":null,
+  "createdAt":"2026-11-02T10:00:00Z"}],
+ "pagination":{"totalPages":1,"totalItems":2,"currentPage":1,"itemsPerPage":100}}

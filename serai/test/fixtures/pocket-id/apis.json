@@ -1,0 +1,10 @@
+{"data":[
+ {"id":"5b3a9f20-0000-4000-8000-000000000001","name":"Ledger",
+  "resource":"https://ledger.example.org/mcp","createdAt":"2026-11-02T10:00:00Z",
+  "permissions":[
+   {"id":"7c4d2e10-0000-4000-8000-000000000001","key":"ledger:read","name":"Read the ledger",
+    "allowedForCimdClients":true},
+   {"id":"7c4d2e10-0000-4000-8000-000000000002","key":"ledger:write","name":"Write the ledger",
+    "description":"Create and change entries","allowedForCimdClients":false}],
+  "allowCimdClients":true}],
+ "pagination":{"totalPages":1,"totalItems":1,"currentPage":1,"itemsPerPage":100}}
