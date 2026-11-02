@@ -59,6 +59,18 @@ let () =
   check "make builds the same declaration"
     (make ~url:example.url ~groups:example.groups ~users:example.users ~clients:example.clients
        ~apis:example.apis = Ok example);
+  let accented = match make ~url:example.url
+      ~groups:[ { name = "family"; friendly_name = "Famille \xc3\xa9t\xc3\xa9 \xe2\x80\x93 \\ \"q\""; claims = [] } ]
+      ~users:[] ~clients:[] ~apis:[] with Ok t -> t | Error m -> failwith m in
+  let printed = to_string accented in
+  check "to_string writes UTF-8 as it is"
+    (let needle = "Famille \xc3\xa9t\xc3\xa9 \xe2\x80\x93" in
+     let n = String.length needle in
+     let rec at i = i + n <= String.length printed && (String.sub printed i n = needle || at (i + 1)) in
+     at 0);
+  check "to_string reads back the same, backslashes and quotes included"
+    (parse (Sexplib.Sexp.of_string printed) = Ok accented);
+  check "to_string of the example reads back" (parse (Sexplib.Sexp.of_string (to_string example)) = Ok example);
   check "make validates"
     (Result.is_error (make ~url:example.url ~groups:[] ~users:example.users ~clients:[] ~apis:[]));
 

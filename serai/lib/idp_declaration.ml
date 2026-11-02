@@ -360,3 +360,25 @@ let to_sexp t =
      @ section "clients" client t.clients @ section "apis" api t.apis)
 
 let make ~url ~groups ~users ~clients ~apis = parse (to_sexp { url; groups; users; clients; apis })
+
+(* Sexplib escapes every byte above 127 as a three-digit decimal escape
+   inside a quoted atom; its reader takes those bytes raw, so they are
+   written back raw. Escapes of bytes 0-127 (backslash, quote, control
+   characters) are kept. *)
+let to_string t =
+  let text = Sexplib.Sexp.to_string_hum (to_sexp t) in
+  let buffer = Buffer.create (String.length text) in
+  let n = String.length text in
+  let digit c = c >= '0' && c <= '9' in
+  let rec go i =
+    if i >= n then ()
+    else if text.[i] = '\\' && i + 1 < n && text.[i + 1] = '\\' then begin
+      Buffer.add_string buffer "\\\\"; go (i + 2)
+    end
+    else if text.[i] = '\\' && i + 3 < n && digit text.[i + 1] && digit text.[i + 2] && digit text.[i + 3]
+            && (let code = int_of_string (String.sub text (i + 1) 3) in code >= 128 && code <= 255) then begin
+      Buffer.add_char buffer (Char.chr (int_of_string (String.sub text (i + 1) 3))); go (i + 4)
+    end
+    else begin Buffer.add_char buffer text.[i]; go (i + 1) end in
+  go 0;
+  Buffer.contents buffer

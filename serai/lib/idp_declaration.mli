@@ -77,3 +77,7 @@ val load : layout:Layout.t -> (t option, string) result
 (** The declaration as idp.sexp writes it, leaving out defaults:
     [parse (to_sexp t) = Ok t]. *)
 val to_sexp : t -> Sexplib.Sexp.t
+
+(** [to_sexp], indented, with UTF-8 written as it is rather than as
+    Sexplib's [\ddd] escapes; it reads back the same. *)
+val to_string : t -> string

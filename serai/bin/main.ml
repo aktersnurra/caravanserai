@@ -481,7 +481,7 @@ let idp argv =
     | Error message -> fail message
     | Ok declaration ->
         Printf.printf "; Exported from %s by serai idp --export. Review it before committing.\n%s\n"
-          url (Sexplib.Sexp.to_string_hum (Idp_declaration.to_sexp declaration));
+          url (Idp_declaration.to_string declaration);
         exit 0
   end;
   let declaration = match load () with Some d -> d | None -> fail (no_declaration layout) in
