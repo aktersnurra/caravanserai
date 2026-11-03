@@ -39,6 +39,11 @@ val parse_signature : string -> (signature, string) result
     be full commit ids. *)
 val is_ancestor : jj_bin:string -> t -> ancestor:string -> descendant:string -> (bool, string) result
 
+(** The bookmark the remote's HEAD named when the mirror was cloned, as jj
+    recorded it (its [trunk()] alias). An error when none was recorded:
+    never a guess at [main] or [master]. *)
+val default_branch : jj_bin:string -> t -> (string, string) result
+
 (** The commit the remote bookmark [name]@origin points at, [None] when
     there is no such bookmark. *)
 val remote_bookmark : jj_bin:string -> t -> string -> (string option, string) result

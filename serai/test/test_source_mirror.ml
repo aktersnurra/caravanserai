@@ -43,6 +43,25 @@ let () = Proc.live @@ fun () ->
       (Source_mirror.resolve ~jj_bin:"jj" mirror ~revision:"main" = Ok first);
     check "full commit id resolves to itself"
       (Source_mirror.resolve ~jj_bin:"jj" mirror ~revision:first = Ok first);
+    (* The remote's default branch, as jj git clone recorded it. *)
+    check "default branch: the origin's main"
+      (Source_mirror.default_branch ~jj_bin:"jj" mirror = Ok "main");
+    check "default branch: resolves to the origin's commit"
+      (Result.bind (Source_mirror.default_branch ~jj_bin:"jj" mirror)
+         (fun revision -> Source_mirror.resolve ~jj_bin:"jj" mirror ~revision) = Ok first);
+    let other_origin = Filename.concat fixture "origin-master" in
+    jj [ "git"; "init"; "--colocate"; other_origin ];
+    write (Filename.concat other_origin "file.txt") "other";
+    jj [ "-R"; other_origin; "commit"; "-m"; "other" ];
+    jj [ "-R"; other_origin; "bookmark"; "set"; "master"; "-r"; "@-" ];
+    let other = match Source_mirror.sync ~jj_bin:"jj" ~cache ~name:"other-app" ~url:("file://" ^ other_origin) with
+      | Ok m -> m | Error e -> failwith e in
+    check "default branch: the origin's master"
+      (Source_mirror.default_branch ~jj_bin:"jj" other = Ok "master");
+    jj [ "--ignore-working-copy"; "-R"; Source_mirror.path other; "config"; "unset"; "--repo"; {|revset-aliases."trunk()"|} ];
+    check "default branch: none recorded is an error, not a guess"
+      (match Source_mirror.default_branch ~jj_bin:"jj" other with
+       | Error message -> String.length message > 0 | Ok _ -> false);
     let local_only = jj_output [ "-R"; Source_mirror.path mirror; "log"; "--no-graph"; "-r"; "@"; "-T"; "commit_id" ] in
     check "a commit that is not on the remote is refused"
       (Result.is_error (Source_mirror.resolve ~jj_bin:"jj" mirror ~revision:local_only));

@@ -107,6 +107,22 @@ let is_ancestor ~jj_bin mirror ~ancestor ~descendant =
   | Ok _ -> Error "source mirror: unexpected ancestry answer"
   | Error _ as error -> error
 
+(* jj git clone records the remote's HEAD as the mirror's own trunk()
+   alias, "<name>@origin", TOML-quoted. Read at repo scope only, so a user's
+   alias never stands in for the remote's. *)
+let default_branch ~jj_bin mirror =
+  let alias = {|revset-aliases."trunk()"|} in
+  let* value = jj jj_bin (path mirror) [ "config"; "list"; "--repo"; alias; "-T"; {|value ++ "\n"|} ] in
+  let suffix = "@origin\"" in
+  let name =
+    if String.length value > String.length suffix + 1 && value.[0] = '"' && String.ends_with ~suffix value
+    then Some (String.sub value 1 (String.length value - String.length suffix - 1)) else None in
+  match name with
+  | Some name when is_bookmark name -> Ok name
+  | Some _ | None when value = "" ->
+      Error "source mirror: the remote's default branch was not recorded when the mirror was cloned"
+  | Some _ | None -> Error (Printf.sprintf "source mirror: unexpected default branch %s" value)
+
 (* remote_bookmarks() is empty, not an error, when the bookmark is absent. *)
 let remote_bookmark ~jj_bin mirror name =
   if not (is_bookmark name) then Error ("source mirror: expected a bookmark name, got " ^ name)
