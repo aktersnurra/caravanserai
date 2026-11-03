@@ -51,10 +51,11 @@ let () =
     let live_ready = "jail-probe-root: present\njail-probe-running: hello 10.20.0.2\n\
                       jail-probe-configured: hello 10.20.0.2\njail-test-env: root:hello:640\n" in
     let live_probe = ref live_ready in
+    let source_commit = ref commit in
     let outputs (r : Proc.request) =
       if mentions "jail-test-existing" r then !probe
       else if mentions "jail-probe-root" r then !live_probe
-      else if r.prog = "jj" && mentions "/sources/" r then commit ^ "\n"
+      else if r.prog = "jj" && mentions "/sources/" r then !source_commit ^ "\n"
       else if r.prog = "jj" then String.make 40 'a' ^ " zzzz published\n"
       else if mentions "release_bin=" r then current ^ "\n"
       else "" in
@@ -135,6 +136,67 @@ let () =
     check "a failed public check is the check step's, after the release and edge are done"
       ((match outcome.result with Dispatcher.Step_failed (Dispatcher.Check, m) -> contains "curl exit 22" m | _ -> false)
        && statuses outcome = [ "jail", "skipped"; "build", "skipped"; "release", "done"; "edge", "done"; "check", "failed" ]);
+
+    (* Plan binding: an apply refuses any plan but the approved one. *)
+    let plan_of () =
+      Proc.Mock.run (Proc.Mock.create ~outputs ()) (fun () ->
+        Dispatcher.up_plan (env ~confirm:(fun _ -> true)) "hello" ~revision:"main" ~cache ~store) in
+    let plan = plan_of () in
+    let id = Dispatcher.up_plan_id plan in
+    check "the same plan twice has the same id" (Dispatcher.up_plan_id (plan_of ()) = id);
+    check "up_plan_id covers the plan's fields through up_plan_id_of"
+      (id = Dispatcher.up_plan_id_of ~app:plan.app ~host:plan.host ~source:plan.source ~commit:plan.commit
+              ~local:plan.local ~release:plan.release ~jail:plan.jail ~rehearsal:plan.rehearsal
+              ~public_url:plan.public_url);
+    let of_ ?(app = "hello") ?(host = "compute") ?(source = "https://git.example.org/hello.git") ?(commit = commit)
+        ?(local = false) ?(release = Dispatcher.Reuse "a1") ?(jail = Dispatcher.Jail_ready) ?(rehearsal = None)
+        ?(public_url = "https://hello.example.org/") () =
+      Dispatcher.up_plan_id_of ~app ~host ~source ~commit ~local ~release ~jail ~rehearsal ~public_url in
+    let differs field a b = check ("up's plan id covers " ^ field) (a <> b) in
+    let base = of_ () in
+    differs "app" base (of_ ~app:"counter" ());
+    differs "host" base (of_ ~host:"compute2" ());
+    differs "source" base (of_ ~source:"/home/op/hello" ());
+    differs "commit" base (of_ ~commit:(String.make 40 'd') ());
+    differs "local" base (of_ ~local:true ());
+    differs "the reused identity" base (of_ ~release:(Dispatcher.Reuse "a2") ());
+    differs "reuse or build" base (of_ ~release:(Dispatcher.Build { ip = "a1"; base_sha256 = "" }) ());
+    let build ip base_sha256 = of_ ~release:(Dispatcher.Build { ip; base_sha256 }) () in
+    differs "the builder ip" (build "10.20.0.11" "b1") (build "10.20.0.12" "b1");
+    differs "the build base" (build "10.20.0.11" "b1") (build "10.20.0.11" "b2");
+    differs "a jail to create" base (of_ ~jail:Dispatcher.Jail_create ());
+    differs "a jail without its env" base (of_ ~jail:(Dispatcher.Jail_needs_env "write it") ());
+    differs "the env message" (of_ ~jail:(Dispatcher.Jail_needs_env "write it") ())
+      (of_ ~jail:(Dispatcher.Jail_needs_env "write that") ());
+    let rehearse jail ip = of_ ~rehearsal:(Some (jail, ip)) () in
+    differs "a rehearsal" base (rehearse "hellotest" "10.20.0.9");
+    differs "the rehearsal jail" (rehearse "hellotest" "10.20.0.9") (rehearse "hellotest2" "10.20.0.9");
+    differs "the rehearsal ip" (rehearse "hellotest" "10.20.0.9") (rehearse "hellotest" "10.20.0.8");
+    differs "the public url" base (of_ ~public_url:"https://hi.example.org/" ());
+    let changes_host calls =
+      List.exists (fun (r : Proc.request) ->
+          r.prog = "rsync" || (r.prog = "ssh" && not (mentions "jail-probe-root" r))) calls in
+    let asked = ref 0 in
+    let bound expect_plan =
+      let mock = Proc.Mock.create ~outputs () in
+      let result =
+        try Ok (Proc.Mock.run mock (fun () ->
+          Dispatcher.up_run ~expect_plan (env ~confirm:(fun _ -> incr asked; true)) "hello" ~revision:"main" ~cache ~store))
+        with Agent_cli.Stale_plan message -> Error message in
+      result, Proc.Mock.calls mock in
+    (match bound id with
+     | Ok (_, outcome), _ -> check "the approved plan is applied" (outcome.result = Dispatcher.Deployed identity)
+     | Error m, _ -> failwith ("the approved plan was refused: " ^ m));
+    asked := 0;
+    source_commit := String.make 40 'd';
+    (match bound id with
+     | Error message, calls ->
+         check "a moved bookmark is a stale plan, naming both ids"
+           (contains ("approved " ^ Plan_id.to_string id) message && contains "run serai up hello --revision main --plan again" message);
+         check "refused before the prompt" (!asked = 0);
+         check "and before any change to a host" (not (changes_host calls))
+     | Ok _, _ -> check "a moved bookmark is refused" false);
+    source_commit := commit;
 
     (* Update: the existing jail only, never the edge. *)
     let touches_edge (r : Proc.request) =

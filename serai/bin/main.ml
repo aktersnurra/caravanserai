@@ -27,7 +27,8 @@ let usage_text =
   \  serai check <app>\n\
   \  serai up <app> --revision <bookmark|commit> [--source <checkout>] [--yes]   (create a new app's jail, or build or reuse, deploy, edge, check)\n\
   \  serai up <app> --revision <bookmark|commit> [--source <checkout>] --plan [--json]   (what up would do; changes no host)\n\
-  \  serai up <app> --revision <bookmark|commit> [--source <checkout>] --yes --json   (each step's outcome as JSON)\n\
+  \  serai up <app> --revision <bookmark|commit> [--source <checkout>] [--yes] --expect-plan <id>   (only the plan --plan named)\n\
+  \  serai up <app> --revision <bookmark|commit> [--source <checkout>] --yes --json --expect-plan <id>   (each step's outcome as JSON)\n\
   \  serai up <app> --revision <bookmark|commit> [--source <checkout>] --rehearse --ip <addr>   (the same into <app>test; no edge)\n\
   \  serai edge [--plan] [--yes]   (--plan exits 2 when changes are pending)\n\
   \  serai caddy-install [--yes]   (build if needed, unit, install, reload)\n\
@@ -217,13 +218,18 @@ let up_dirs () =
   List.iter make_private [ cache; store ];
   cache, store
 
-let up ?local_source ?target env app ~revision =
+let up ?local_source ?target ?expect_plan env app ~revision =
   let cache, store = up_dirs () in
-  Dispatcher.up ?local_source ?target env app ~revision ~cache ~store
+  Dispatcher.up ?local_source ?target ?expect_plan env app ~revision ~cache ~store
 
-let up_run ?local_source env app ~revision =
+let up_run ?local_source ?expect_plan env app ~revision =
   let cache, store = up_dirs () in
-  Dispatcher.up_run ?local_source env app ~revision ~cache ~store
+  Dispatcher.up_run ?local_source ?expect_plan env app ~revision ~cache ~store
+
+(* A plan id from the command line; a malformed one is refused before
+   anything else happens. *)
+let expected_plan text =
+  match Plan_id.parse text with Ok id -> id | Error message -> raise (Agent_cli.Bad_request message)
 
 let up_plan ?local_source env app ~revision =
   let cache, store = up_dirs () in
@@ -261,7 +267,8 @@ let up_plan_json (plan : Dispatcher.up_plan) =
       | Dispatcher.Reuse identity -> Object [ "action", Text "reuse"; "identity", Text identity ]
       | Build { ip; base_sha256 } ->
           Object [ "action", Text "build"; "builder_ip", Text ip; "base_sha256", Text base_sha256 ]);
-    "public_url", Text plan.public_url; "host_inspected", Bool true; "applied", Bool false ])
+    "public_url", Text plan.public_url; "plan_id", Text (Plan_id.to_string (Dispatcher.up_plan_id plan));
+    "host_inspected", Bool true; "applied", Bool false ])
 
 let step_status (status : Dispatcher.step_status) =
   Agent_cli.(match status with
@@ -583,6 +590,13 @@ let acting_json argv =
     let code = Agent_cli.exit_code response in
     Progress.finish (if code = 0 then Progress.Succeeded else if code = 130 then Progress.Interrupted else Progress.Failed);
     exit code in
+  (* Refused before the repository is loaded or anything is contacted. *)
+  let refuse operation message =
+    let response = Agent_cli.respond ~operation (fun () -> raise (Agent_cli.Bad_request message)) in
+    print_endline (Agent_cli.to_json response);
+    exit (Agent_cli.exit_code response) in
+  let checked operation text =
+    match Plan_id.parse text with Ok id -> id | Error message -> refuse operation message in
   match List.filter (fun arg -> arg <> "--json" && arg <> "--progress=jsonl") argv with
   | [ "new"; app; "--kind"; kind; "--repo"; repo ] ->
       run "new" app (fun env -> Ok (new_json (new_app env app ~kind ~repo) app))
@@ -592,12 +606,18 @@ let acting_json argv =
       run "up.plan" app (fun env -> Ok (up_plan_json (up_plan env app ~revision)))
   | [ "up"; app; "--revision"; revision; "--source"; checkout; "--plan" ] ->
       run "up.plan" app (fun env -> Ok (up_plan_json (up_plan ~local_source:checkout env app ~revision)))
-  (* Applies only with --yes: there is no terminal to ask in. *)
-  | [ "up"; app; "--revision"; revision; "--yes" ] ->
-      run ~assume_yes:true "up" app (fun env -> up_json app ~revision (up_run env app ~revision))
-  | [ "up"; app; "--revision"; revision; "--source"; checkout; "--yes" ] ->
+  (* Applies only with --yes, there being no terminal to ask in, and only
+     the plan the operator approved. *)
+  | [ "up"; app; "--revision"; revision; "--yes"; "--expect-plan"; id ] ->
+      let expect_plan = checked "up" id in
+      run ~assume_yes:true "up" app (fun env -> up_json app ~revision (up_run ~expect_plan env app ~revision))
+  | [ "up"; app; "--revision"; revision; "--source"; checkout; "--yes"; "--expect-plan"; id ] ->
+      let expect_plan = checked "up" id in
       run ~assume_yes:true "up" app (fun env ->
-        up_json app ~revision (up_run ~local_source:checkout env app ~revision))
+        up_json app ~revision (up_run ~local_source:checkout ~expect_plan env app ~revision))
+  | [ "up"; _; "--revision"; _; "--yes" ] | [ "up"; _; "--revision"; _; "--source"; _; "--yes" ] ->
+      refuse "up" "serai up --yes --json requires --expect-plan <id>, the plan_id of the approved serai up --plan --json"
+
   | _ -> ()
 
 let dispatch (env, registry) argv =
@@ -665,6 +685,10 @@ let dispatch (env, registry) argv =
   | [ "up"; app; "--revision"; revision ] -> up env app ~revision
   | [ "up"; app; "--revision"; revision; "--source"; checkout ] ->
       up ~local_source:checkout env app ~revision
+  | [ "up"; app; "--revision"; revision; "--expect-plan"; id ] ->
+      up ~expect_plan:(expected_plan id) env app ~revision
+  | [ "up"; app; "--revision"; revision; "--source"; checkout; "--expect-plan"; id ] ->
+      up ~local_source:checkout ~expect_plan:(expected_plan id) env app ~revision
   | [ "up"; app; "--revision"; revision; "--rehearse"; "--ip"; ip ] ->
       up ~target:(Dispatcher.Rehearse ip) env app ~revision
   | [ "up"; app; "--revision"; revision; "--source"; checkout; "--rehearse"; "--ip"; ip ] ->
@@ -753,7 +777,7 @@ let () =
       Progress.outcome_unknown ();
       Progress.finish Progress.Interrupted;
       exit 130
-  | Failure msg ->
+  | Failure msg | Agent_cli.Stale_plan msg | Agent_cli.Bad_request msg ->
       Printf.eprintf "%s\n%!" msg;
       Progress.finish Progress.Failed;
       exit 1

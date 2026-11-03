@@ -1774,6 +1774,19 @@ let step_index = function Jail -> 0 | Build -> 1 | Release -> 2 | Edge -> 3 | Ch
 let step_name = function
   | Jail -> "jail" | Build -> "build" | Release -> "release" | Edge -> "edge" | Check -> "check"
 
+(* Everything the apply acts on, in a fixed order. *)
+let up_plan_id_of ~app ~host ~source ~commit ~local ~release ~jail ~rehearsal ~public_url =
+  Plan_id.make ~operation:"up"
+    ([ app; host; source; commit; string_of_bool local ]
+     @ (match release with Reuse identity -> [ "reuse"; identity ] | Build { ip; base_sha256 } -> [ "build"; ip; base_sha256 ])
+     @ (match jail with Jail_ready -> [ "ready" ] | Jail_create -> [ "create" ] | Jail_needs_env m -> [ "needs_env"; m ])
+     @ (match rehearsal with None -> [ "live" ] | Some (jail, ip) -> [ "rehearsal"; jail; ip ])
+     @ [ public_url ])
+
+let up_plan_id (p : up_plan) =
+  up_plan_id_of ~app:p.app ~host:p.host ~source:p.source ~commit:p.commit ~local:p.local ~release:p.release
+    ~jail:p.jail ~rehearsal:p.rehearsal ~public_url:p.public_url
+
 let print_up_plan ?(target = Live) plan =
   (match plan.rehearsal with
    | None -> announce "up %s on %s" plan.app plan.host
@@ -1795,7 +1808,9 @@ let print_up_plan ?(target = Live) plan =
          plan.app plan.public_url
    | Some (jail, ip) ->
        Printf.printf "    then     install and start %s in %s and check it at %s (no edge, no public URL)\n%!"
-         plan.app jail ip)
+         plan.app jail ip);
+  if target = Live && plan.rehearsal = None then
+    Printf.printf "plan %s\n%!" (Plan_id.to_string (up_plan_id plan))
 
 (* Everything up decides before asking: the jail's state, the source
    commit and whether the release is reused or built. [apply] does the rest
@@ -1931,9 +1946,15 @@ let prepare_up ?local_source ?(target = Live) ~plan_only env app_name ~revision 
 let up_plan ?local_source env app_name ~revision ~cache ~store =
   fst (prepare_up ?local_source ~plan_only:true env app_name ~revision ~cache ~store)
 
-let up_run ?local_source ?target env app_name ~revision ~cache ~store =
+let up_run ?local_source ?target ?expect_plan env app_name ~revision ~cache ~store =
   let plan, apply = prepare_up ?local_source ?target ~plan_only:false env app_name ~revision ~cache ~store in
   print_up_plan ?target plan;
+  Option.iter (fun expected ->
+      let current = up_plan_id plan in
+      if current <> expected then
+        raise (Agent_cli.Stale_plan (Printf.sprintf
+                 "up: stale plan: approved %s, now %s; run serai up %s --revision %s --plan again"
+                 (Plan_id.to_string expected) (Plan_id.to_string current) app_name revision))) expect_plan;
   let question = match plan.jail, target with
     | Jail_needs_env message, Some Update -> failwith ("update: " ^ message)
     | Jail_create, Some Update ->
@@ -1945,8 +1966,8 @@ let up_run ?local_source ?target env app_name ~revision ~cache ~store =
   (* One confirmation covers the whole sequence. *)
   plan, apply { (app_env env app_name) with confirm = (fun _ -> true) }
 
-let up ?local_source ?target env app_name ~revision ~cache ~store =
-  let plan, outcome = up_run ?local_source ?target env app_name ~revision ~cache ~store in
+let up ?local_source ?target ?expect_plan env app_name ~revision ~cache ~store =
+  let plan, outcome = up_run ?local_source ?target ?expect_plan env app_name ~revision ~cache ~store in
   match outcome.result, plan.rehearsal with
   | Deployed identity, Some (jail, ip) ->
       announce "%s is up in %s at %s (%s); destroy it when done: serai jail-test %s --destroy"

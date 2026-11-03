@@ -131,7 +131,7 @@ type up_target =
       (** the app's existing jail only: a missing jail or env is refused
           before anything changes, and the edge is skipped *)
 
-val up : ?local_source:string -> ?target:up_target -> env -> string -> revision:string ->
+val up : ?local_source:string -> ?target:up_target -> ?expect_plan:Plan_id.t -> env -> string -> revision:string ->
   cache:string -> store:string -> unit
 
 (** What [up] decides before it asks. *)
@@ -160,6 +160,15 @@ type up_plan = private {
     probed, the source mirror fetched and the store searched. *)
 val up_plan : ?local_source:string -> env -> string -> revision:string -> cache:string -> store:string -> up_plan
 
+(** Names exactly what [up] would act on: every field of the plan. *)
+val up_plan_id : up_plan -> Plan_id.t
+
+(** [up_plan_id] over the fields themselves, so each can be varied. *)
+val up_plan_id_of :
+  app:string -> host:string -> source:string -> commit:string -> local:bool -> release:up_release ->
+  jail:up_jail -> rehearsal:(string * string) option -> public_url:string -> Plan_id.t
+
+(** Ends with the line [plan <id>] for a live target. *)
 val print_up_plan : ?target:up_target -> up_plan -> unit
 
 type up_step = Jail | Build | Release | Edge | Check
@@ -176,8 +185,11 @@ type up_outcome = { steps : (up_step * step_status) list; result : up_result }
 val step_name : up_step -> string
 
 (** [up] without its reporting: the plan and the outcome of each step. A
-    [Failure] means nothing changed: the plan was refused or not confirmed. *)
-val up_run : ?local_source:string -> ?target:up_target -> env -> string -> revision:string ->
+    [Failure] means nothing changed: the plan was refused or not confirmed.
+    With [expect_plan], a plan with another id raises
+    [Agent_cli.Stale_plan] before the prompt: only the read-only probes the
+    plan makes have reached a host. *)
+val up_run : ?local_source:string -> ?target:up_target -> ?expect_plan:Plan_id.t -> env -> string -> revision:string ->
   cache:string -> store:string -> up_plan * up_outcome
 
 (** The variables _lib/check.sh's check_app reads, from the declaration:
