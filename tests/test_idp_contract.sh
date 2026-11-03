@@ -85,7 +85,7 @@ test "$(api GET /api/users/me | field 'd["id"]')" = 00000000-0000-0000-0000-0000
 
 # 1. The first apply creates; a second plan is empty.
 test "$(status --plan)" = 2 || { cat "$TMP/error"; fail "the first plan did not exit 2"; }
-! grep -v ': create\|: CIMD on\|: grant ' "$TMP/output" || fail "the first plan holds more than creates"
+! grep -v ': create\|: CIMD on\|: grant \|^plan [0-9a-f]\{16\}$' "$TMP/output" || fail "the first plan holds more than creates"
 test "$(status --yes)" = 0 || { cat "$TMP/output" "$TMP/error"; fail "the first apply failed"; }
 grep -Fq 'client logs: create a secret for it in the UI' "$TMP/output" || fail "no secret reminder for logs"
 test "$(status --plan)" = 0 || { cat "$TMP/output" "$TMP/error"; fail "the plan after applying is not empty"; }
@@ -117,7 +117,7 @@ json_body PUT "/api/custom-claims/user-group/$ADMINS" '[{"key":"tier","value":"g
 python3 -c 'import base64, sys; open(sys.argv[1], "wb").write(base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg=="))' "$TMP/logo.png"
 api POST /api/oidc/clients/hello/logo -F "file=@$TMP/logo.png;type=image/png" >/dev/null
 test "$(status --plan)" = 2 || fail "hand-made drift was not planned"
-diff -u - "$TMP/output" <<'EOF' || fail "the drift plan"
+diff -u - <(grep -v '^plan [0-9a-f]\{16\}$' "$TMP/output") <<'EOF' || fail "the drift plan"
 group admins: update claims (-tier=gold)
 user bob: update groups (-admins)
 client hello: update name
@@ -157,4 +157,59 @@ test "$(status --export)" = 0 || { cat "$TMP/error"; fail "--export failed"; }
 cp "$TMP/output" "$TMP/config/idp.sexp"
 test "$(status --plan)" = 0 || { cat "$TMP/output" "$TMP/error"; fail "the export does not plan to nothing"; }
 
-echo "ok - idp contract: apply, re-plan, no orphan secret, drift, removals, undeclared, export (Pocket ID $VERSION)"
+# 7. Plan binding: an apply names the plan it was approved for.
+plan_id() { sed -n 's/^plan \([0-9a-f]\{16\}\)$/\1/p' "$TMP/output"; }
+set_ops() { # set_ops <friendly name>: declare the group ops with this name
+  python3 - "$TMP/config/idp.sexp" "$1" <<'PY'
+import re, sys
+p, name = sys.argv[1], sys.argv[2]
+s = open(p).read()
+if re.search(r'\(ops \(friendly_name', s):
+    s, n = re.subn(r'\(ops \(friendly_name (?:"[^"]*"|[^)]*)\)\)', '(ops (friendly_name "%s"))' % name, s)
+else:
+    s, n = re.subn(r'\(groups\s*\(', '(groups ((ops (friendly_name "%s")) ' % name, s, count=1)
+assert n == 1, "could not declare ops"
+open(p, "w").write(s)
+PY
+}
+set_ops Ops
+test "$(status --plan)" = 2 || { cat "$TMP/output" "$TMP/error"; fail "a new group was not planned"; }
+ID="$(plan_id)"
+test -n "$ID" || { cat "$TMP/output"; fail "the plan printed no id"; }
+test "$(status --plan)" = 2 && test "$(plan_id)" = "$ID" || fail "the same plan twice printed two ids"
+test "$(status --yes --expect-plan "$ID")" = 0 || { cat "$TMP/output" "$TMP/error"; fail "the approved plan was not applied"; }
+test "$(status --plan)" = 0 || { cat "$TMP/output"; fail "the approved plan left drift"; }
+
+# 8. A change made outside serai between plan and apply: the apply refuses
+# and changes nothing; a fresh plan shows it and applies.
+set_ops Operations
+test "$(status --plan)" = 2 || fail "renaming ops was not planned"
+APPROVED="$(plan_id)"
+json_body PUT "/api/user-groups/$FAMILY" '{"friendlyName":"Kin","name":"family"}' >/dev/null
+test "$(status --yes --expect-plan "$APPROVED")" = 1 || fail "a plan that changed since approval was applied"
+grep -Fq "idp: stale plan: approved $APPROVED, now " "$TMP/error" || { cat "$TMP/error"; fail "no stale plan refusal"; }
+group_name() { api GET /api/user-groups | field "[g['friendlyName'] for g in d['data'] if g['name'] == '$1'][0]"; }
+test "$(group_name family)" = Kin || fail "the stale apply reverted the outside change"
+test "$(group_name ops)" = Ops || fail "the stale apply renamed ops"
+test "$(status --plan)" = 2 || fail "the fresh plan is empty"
+grep -Fxq 'group family: update friendly_name' "$TMP/output" || { cat "$TMP/output"; fail "the fresh plan does not revert the outside change"; }
+FRESH="$(plan_id)"
+test "$FRESH" != "$APPROVED" || fail "the plan id did not change with the live state"
+test "$(status --yes --expect-plan "$FRESH")" = 0 || { cat "$TMP/output" "$TMP/error"; fail "the fresh plan was not applied"; }
+test "$(group_name family)" = Family && test "$(group_name ops)" = Operations || fail "the fresh plan was not what applied"
+test "$(status --plan)" = 0 || fail "the fresh plan left drift"
+
+# 9. The JSON apply.
+set_ops "Op Team"
+test "$(status --plan --json)" = 2 || { cat "$TMP/output"; fail "the JSON plan did not exit 2"; }
+JSON_ID="$(field 'd["data"]["plan_id"]' <"$TMP/output")"
+test "$(status --yes --json --expect-plan "$JSON_ID")" = 0 || { cat "$TMP/output"; fail "idp.apply failed"; }
+test "$(field 'd["operation"] + " " + d["status"]' <"$TMP/output")" = "idp.apply succeeded" || { cat "$TMP/output"; fail "idp.apply's envelope"; }
+test "$(field '[(a["action"], a["name"]) for a in d["data"]["completed"]]' <"$TMP/output")" = "[('update', 'ops')]" \
+  || { cat "$TMP/output"; fail "idp.apply's completed actions"; }
+test "$(field 'd["data"]["failed"]' <"$TMP/output")" = None || fail "idp.apply reported a failure"
+test "$(status --yes --json --expect-plan "$JSON_ID")" = 1 || fail "an applied plan applied twice"
+test "$(field 'd["error"]["code"]' <"$TMP/output")" = stale_plan && grep -Fq 'now nothing to do' "$TMP/output" \
+  || { cat "$TMP/output"; fail "re-applying an applied plan is not stale_plan"; }
+
+echo "ok - idp contract: apply, re-plan, no orphan secret, drift, removals, undeclared, export, plan binding (Pocket ID $VERSION)"
