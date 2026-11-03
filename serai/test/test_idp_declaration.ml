@@ -71,6 +71,15 @@ let () =
   check "to_string reads back the same, backslashes and quotes included"
     (parse (Sexplib.Sexp.of_string printed) = Ok accented);
   check "to_string of the example reads back" (parse (Sexplib.Sexp.of_string (to_string example)) = Ok example);
+  check "each resource prints as to_sexp prints it"
+    (let section name xs = if xs = [] then [] else [ Sexplib.Sexp.List [ Sexplib.Sexp.Atom name; Sexplib.Sexp.List xs ] ] in
+     to_sexp example
+     = Sexplib.Sexp.List
+         (Sexplib.Sexp.List [ Sexplib.Sexp.Atom "url"; Sexplib.Sexp.Atom example.url ]
+          :: section "groups" (List.map group_to_sexp example.groups)
+          @ section "users" (List.map user_to_sexp example.users)
+          @ section "clients" (List.map client_to_sexp example.clients)
+          @ section "apis" (List.map api_to_sexp example.apis)));
   check "make validates"
     (Result.is_error (make ~url:example.url ~groups:[] ~users:example.users ~clients:[] ~apis:[]));
 

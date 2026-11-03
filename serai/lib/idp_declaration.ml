@@ -311,26 +311,30 @@ let load ~layout =
 
 (* Printing, leaving out defaults so an export reads like a hand-written file. *)
 
-let to_sexp t =
-  let open Sexplib.Sexp in
-  let field name value = List [ Atom name; value ] in
-  let atoms xs = List (Stdlib.List.map (fun x -> Atom x) xs) in
-  let text name s = if s = "" then [] else [ field name (Atom s) ] in
-  let some name f = function None -> [] | Some v -> [ field name (f v) ] in
-  let flag name b = if b then [ List [ Atom name ] ] else [] in
-  let nonempty name f xs = if xs = [] then [] else [ field name (f xs) ] in
-  let entry key fields = List (Atom key :: fields) in
+module Print = struct
+  open Sexplib.Sexp
+
+  let field name value = List [ Atom name; value ]
+  let atoms xs = List (Stdlib.List.map (fun x -> Atom x) xs)
+  let text name s = if s = "" then [] else [ field name (Atom s) ]
+  let some name f = function None -> [] | Some v -> [ field name (f v) ]
+  let flag name b = if b then [ List [ Atom name ] ] else []
+  let nonempty name f xs = if xs = [] then [] else [ field name (f xs) ]
+  let entry key fields = List (Atom key :: fields)
   let claims = nonempty "claims"
-      (fun cs -> List (Stdlib.List.map (fun (c : claim) -> List [ Atom c.key; Atom c.value ]) cs)) in
-  let group (g : group) = entry g.name (field "friendly_name" (Atom g.friendly_name) :: claims g.claims) in
+      (fun cs -> List (Stdlib.List.map (fun (c : claim) -> List [ Atom c.key; Atom c.value ]) cs))
+  let minutes name = some name (fun n -> Atom (string_of_int n))
+
+  let group (g : group) = entry g.name (field "friendly_name" (Atom g.friendly_name) :: claims g.claims)
+
   let user (u : user) =
     entry u.username
       (some "email" (fun e -> Atom e) u.email
        @ text "first_name" u.first_name @ text "last_name" u.last_name
        @ text "display_name" u.display_name @ flag "admin" u.admin @ flag "disabled" u.disabled
        @ some "locale" (fun l -> Atom l) u.locale @ nonempty "groups" atoms u.groups
-       @ claims u.claims) in
-  let minutes name = some name (fun n -> Atom (string_of_int n)) in
+       @ claims u.claims)
+
   let client (c : client) =
     entry c.id
       (field "name" (Atom c.name) :: text "description" c.description
@@ -341,23 +345,35 @@ let to_sexp t =
        @ flag "public" c.public @ flag "pkce" c.pkce @ flag "skip_consent" c.skip_consent
        @ nonempty "allowed_groups" atoms c.allowed_groups
        @ minutes "access_token_minutes" c.access_token_minutes
-       @ minutes "refresh_token_minutes" c.refresh_token_minutes) in
+       @ minutes "refresh_token_minutes" c.refresh_token_minutes)
+
   let permission (p : permission) =
-    entry p.key (field "name" (Atom p.name) :: some "description" (fun d -> Atom d) p.description) in
+    entry p.key (field "name" (Atom p.name) :: some "description" (fun d -> Atom d) p.description)
+
   let grant g =
     entry g.client (some "user_delegated" atoms g.user_delegated
-                    @ some "client_credentials" atoms g.client_credentials) in
+                    @ some "client_credentials" atoms g.client_credentials)
+
   let api (a : api) =
     entry a.resource
       (field "name" (Atom a.name)
        :: nonempty "permissions" (fun ps -> List (Stdlib.List.map permission ps)) a.permissions
        @ some "cimd" atoms a.cimd
-       @ nonempty "grants" (fun gs -> List (Stdlib.List.map grant gs)) a.grants) in
-  let section name f xs = nonempty name (fun xs -> List (Stdlib.List.map f xs)) xs in
-  List
-    (field "url" (Atom t.url)
-     :: section "groups" group t.groups @ section "users" user t.users
-     @ section "clients" client t.clients @ section "apis" api t.apis)
+       @ nonempty "grants" (fun gs -> List (Stdlib.List.map grant gs)) a.grants)
+
+  let section name f xs = nonempty name (fun xs -> List (Stdlib.List.map f xs)) xs
+end
+
+let group_to_sexp = Print.group
+let user_to_sexp = Print.user
+let client_to_sexp = Print.client
+let api_to_sexp = Print.api
+
+let to_sexp t =
+  Sexplib.Sexp.List
+    (Print.field "url" (Sexplib.Sexp.Atom t.url)
+     :: Print.section "groups" Print.group t.groups @ Print.section "users" Print.user t.users
+     @ Print.section "clients" Print.client t.clients @ Print.section "apis" Print.api t.apis)
 
 let make ~url ~groups ~users ~clients ~apis = parse (to_sexp { url; groups; users; clients; apis })
 

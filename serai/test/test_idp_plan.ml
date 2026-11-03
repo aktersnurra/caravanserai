@@ -65,8 +65,10 @@ let () =
         { live with key_owner = Idp_live.static_api_key_user }).lockout = None);
 
   (* One changed field, one action naming it: every declared field. *)
+  let one_change_ids = ref [] in
   let one_change name declaration ~expect =
     let t = Idp_plan.plan declaration live in
+    one_change_ids := (name, t.plan_id) :: !one_change_ids;
     match t.actions with
     | [ action ] when expect action -> Printf.printf "ok - one change: %s\n%!" name
     | actions ->
@@ -123,6 +125,32 @@ let () =
     ~expect:(function Idp_plan.Set_grant { grant = { client = "logs"; _ }; _ } -> true | _ -> false);
   one_change "api grant removed" (with_api (fun a -> { a with grants = [] }))
     ~expect:(function Idp_plan.Remove_grant { client = "hello"; _ } -> true | _ -> false);
+
+  (* Plan ids: one per distinct plan. *)
+  let ids = List.map snd !one_change_ids in
+  check "every one-field change has a plan id" (List.for_all Option.is_some ids);
+  check "and no two of them are the same"
+    (List.length (List.sort_uniq compare ids) = List.length ids
+     || (List.iter (fun (n, id) -> Printf.printf "%s %s\n" n (Option.fold ~none:"-" ~some:Plan_id.to_string id))
+           !one_change_ids; false));
+  check "in sync, no plan id" (in_sync.plan_id = None);
+  check "undeclared resources alone give no plan id"
+    ((Idp_plan.plan (declare ~users:(List.filter (fun (u : user) -> u.username <> "bob") example.users) ()) live).plan_id = None);
+  let bob_email e = Idp_plan.plan (with_user "bob" (fun u -> { u with email = Some e })) live in
+  check "the same plan twice has the same id"
+    ((bob_email "robert@example.org").plan_id = (bob_email "robert@example.org").plan_id);
+  check "the same field changed to another value is another plan"
+    ((bob_email "robert@example.org").plan_id <> (bob_email "rob@example.org").plan_id);
+  let live_bob_reborn =
+    { live with users = List.map (fun (u : _ Idp_live.with_id) ->
+          if (fst u.value).username = "bob" then { u with id = "2c5e7a10-0000-4000-8000-0000000000ff" } else u) live.users } in
+  check "the same update to another live record is another plan"
+    ((bob_email "robert@example.org").plan_id <> (Idp_plan.plan (with_user "bob" (fun u -> { u with email = Some "robert@example.org" })) live_bob_reborn).plan_id);
+  check "another server is another plan"
+    ((bob_email "robert@example.org").plan_id
+     <> (Idp_plan.plan (match make ~url:"https://id.example.net" ~groups:example.groups
+                               ~users:(map_named (fun (u : user) -> u.username) "bob" (fun u -> { u with email = Some "robert@example.org" }) example.users)
+                               ~clients:example.clients ~apis:example.apis with Ok t -> t | Error m -> failwith m) live).plan_id);
 
   (* What is not a change. *)
   let no_change name declaration =

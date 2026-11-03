@@ -78,6 +78,13 @@ val load : layout:Layout.t -> (t option, string) result
     [parse (to_sexp t) = Ok t]. *)
 val to_sexp : t -> Sexplib.Sexp.t
 
+(** One resource as [to_sexp] prints it, its key first: two different
+    records never print the same. *)
+val group_to_sexp : group -> Sexplib.Sexp.t
+val user_to_sexp : user -> Sexplib.Sexp.t
+val client_to_sexp : client -> Sexplib.Sexp.t
+val api_to_sexp : api -> Sexplib.Sexp.t
+
 (** [to_sexp], indented, with UTF-8 written as it is rather than as
     Sexplib's [\ddd] escapes; it reads back the same. *)
 val to_string : t -> string

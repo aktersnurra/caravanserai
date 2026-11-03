@@ -21,6 +21,7 @@ type t = {
   undeclared : (kind * string) list;
   secrets_needed : string list;
   lockout : string option;
+  plan_id : Plan_id.t option;
 }
 
 let sorted xs = List.sort_uniq compare xs
@@ -92,6 +93,44 @@ let undeclared kind ~key ~live declared =
   List.filter_map (fun l ->
       if List.exists (fun d -> key d = key l) declared then None else Some (kind, key l)) live
 
+(* What the plan id covers: the server, then every action with what it
+   sends and the live record it targets. Lists are count-prefixed, so the
+   parts read back one way only. *)
+let plan_id_of ~url (live : Idp_live.t) actions =
+  let list xs = string_of_int (List.length xs) :: xs in
+  let keys = function None -> [ "none" ] | Some ks -> "some" :: list ks in
+  let sexp s = Sexplib.Sexp.to_string s in
+  let change = function
+    | Value field -> [ "value"; field ]
+    | Set { field; added; removed } -> ("set" :: field :: list added) @ list removed in
+  let changes cs = string_of_int (List.length cs) :: List.concat_map change cs in
+  let id_of key xs = match List.find_opt key xs with Some (x : _ Idp_live.with_id) -> x.id | None -> "" in
+  let group_id name = id_of (fun (g : group Idp_live.with_id) -> g.value.name = name) live.groups in
+  let user_id name = id_of (fun (u : _ Idp_live.with_id) -> (fst u.value).username = name) live.users in
+  let client_id id = id_of (fun (c : _ Idp_live.with_id) -> c.id = id) live.clients in
+  let api_id resource = id_of (fun (a : Idp_live.api Idp_live.with_id) -> a.value.api.resource = resource) live.apis in
+  let action = function
+    | Create_group g -> [ "create_group"; g.name; ""; sexp (group_to_sexp g) ]
+    | Update_group { group; changes = cs } ->
+        [ "update_group"; group.name; group_id group.name; sexp (group_to_sexp group) ] @ changes cs
+    | Create_user u -> [ "create_user"; u.username; ""; sexp (user_to_sexp u) ]
+    | Update_user { user; changes = cs } ->
+        [ "update_user"; user.username; user_id user.username; sexp (user_to_sexp user) ] @ changes cs
+    | Create_client c -> [ "create_client"; c.id; ""; sexp (client_to_sexp c) ]
+    | Update_client { client; changes = cs } ->
+        [ "update_client"; client.id; client_id client.id; sexp (client_to_sexp client) ] @ changes cs
+    | Create_api a -> [ "create_api"; a.resource; ""; sexp (api_to_sexp a) ]
+    | Update_api { api; changes = cs } ->
+        [ "update_api"; api.resource; api_id api.resource; sexp (api_to_sexp api) ] @ changes cs
+    | Set_cimd { resource; permissions } -> [ "set_cimd"; resource; api_id resource ] @ keys permissions
+    | Set_grant { resource; grant } ->
+        [ "set_grant"; resource; api_id resource; grant.client ]
+        @ keys grant.user_delegated @ keys grant.client_credentials
+    | Remove_grant { resource; client } -> [ "remove_grant"; resource; api_id resource; client ] in
+  match actions with
+  | [] -> None
+  | actions -> Some (Plan_id.make ~operation:"idp" (url :: List.concat_map action actions))
+
 let plan (d : Idp_declaration.t) (live : Idp_live.t) =
   let values xs = List.map (fun (x : _ Idp_live.with_id) -> x.value) xs in
   let live_groups = values live.groups in
@@ -158,7 +197,7 @@ let plan (d : Idp_declaration.t) (live : Idp_live.t) =
     | Some u when u.disabled -> refuse u "disabling it"
     | Some u when not u.admin -> refuse u "removing its admin flag"
     | _ -> None in
-  { actions; undeclared; secrets_needed; lockout }
+  { actions; undeclared; secrets_needed; lockout; plan_id = plan_id_of ~url:d.url live actions }
 
 let pending t = t.actions <> []
 
@@ -201,7 +240,7 @@ let lines t =
   @ List.map (fun (kind, name) -> Printf.sprintf "undeclared: %s %s (left alone)" (kind_name kind) name)
       t.undeclared
 
-let to_json t =
+let action_to_json =
   let open Agent_cli in
   let strings xs = Array (List.map (fun x -> Text x) xs) in
   let change = function
@@ -226,10 +265,17 @@ let to_json t =
         entry "set_grant" Api resource
           [ ("client", Text grant.client); ("user_delegated", keys grant.user_delegated);
             ("client_credentials", keys grant.client_credentials) ]
-    | Remove_grant { resource; client } -> entry "remove_grant" Api resource [ ("client", Text client) ] in
+    | Remove_grant { resource; client } -> entry "remove_grant" Api resource [ ("client", Text client) ]
+  in
+  action
+
+let to_json t =
+  let open Agent_cli in
+  let strings xs = Array (List.map (fun x -> Text x) xs) in
   Object
     [ ("pending", Bool (pending t));
-      ("actions", Array (List.map action t.actions));
+      ("plan_id", match t.plan_id with Some id -> Text (Plan_id.to_string id) | None -> Null);
+      ("actions", Array (List.map action_to_json t.actions));
       ("undeclared", Array (List.map (fun (kind, name) ->
            Object [ ("kind", Text (kind_name kind)); ("name", Text name) ]) t.undeclared));
       ("secrets_needed", strings t.secrets_needed) ]

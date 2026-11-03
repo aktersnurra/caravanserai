@@ -12,6 +12,7 @@ type response = { operation : string; status : status; data : json;
 type request = Validate | Inspect | Plan of string * string option
 exception Refusal of error_code * string
 exception Stale_plan of string
+exception Bad_request of string
 
 let code = function
   | Invalid_request -> "invalid_request" | Unsupported_operation -> "unsupported_operation"
@@ -153,5 +154,6 @@ let respond ~operation f =
   | Error (data, message) -> {operation; status=Failed; data; error=Some (Step_failed, message)}
   | exception Failure message -> error Refused Not_applied message
   | exception Stale_plan message -> error Refused Stale_plan message
+  | exception Bad_request message -> error Refused Invalid_request message
   | exception Sys.Break -> error Cancelled Interrupted "interrupted"
   | exception exn -> error Failed Internal_error (Printexc.to_string exn)

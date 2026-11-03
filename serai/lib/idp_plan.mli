@@ -34,6 +34,10 @@ type t = {
       (** Why the plan must not be applied: it removes the admin flag from,
           or disables, the user the API key acts as. Pocket ID would then
           refuse the key, and serai idp could not undo the change. *)
+  plan_id : Plan_id.t option;
+      (** Names exactly this plan: the server, each action with the record
+          it sends, its changes and the live record it targets. None without
+          actions; undeclared resources are not covered. *)
 }
 
 (** Within a declared resource the declaration is complete: a group, claim,
@@ -49,6 +53,9 @@ val pending : t -> bool
 val lines : t -> string list
 
 val to_json : t -> Agent_cli.json
+
+(** One action as [to_json] lists it. *)
+val action_to_json : action -> Agent_cli.json
 
 (** The live state as a declaration, validated as idp.sexp is. Token
     lifetimes equal to Pocket ID's defaults are left out. *)

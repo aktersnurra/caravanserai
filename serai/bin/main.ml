@@ -36,7 +36,8 @@ let usage_text =
   \  serai jail-test <app> --destroy [--yes]\n\
   \  serai rollout <app> [--edge] [--yes]\n\
   \  serai update [--plan] [--json]   (deploy what CI marked, if signed and newer; settings in ~/.config/serai/update.sexp)\n\
-  \  serai idp [--yes]   (Pocket ID's users, groups, clients and APIs to match idp.sexp; key in SERAI_IDP_API_KEY)\n\
+  \  serai idp [--yes] [--expect-plan <id>]   (Pocket ID's users, groups, clients and APIs to match idp.sexp; key in SERAI_IDP_API_KEY)\n\
+  \  serai idp --yes --json --expect-plan <id>   (apply only the approved plan, as JSON)\n\
   \  serai idp --plan [--json]   (what idp would change; exits 2 when changes are pending)\n\
   \  serai idp --export [--url <url>]   (the live resources as idp.sexp; without --url, idp.sexp's url)\n\
   \  serai update-version <app> [version]\n\
@@ -418,21 +419,23 @@ let update argv =
    Runs on the controller over HTTPS only: no ssh, lock or host. *)
 let idp argv =
   let usage () = prerr_string usage_text; exit 1 in
-  let rec parse ~plan ~json ~yes ~export ~url = function
-    | [] -> (plan, json, yes, export, url)
-    | "--plan" :: rest when not plan -> parse ~plan:true ~json ~yes ~export ~url rest
-    | "--json" :: rest when not json -> parse ~plan ~json:true ~yes ~export ~url rest
-    | "--yes" :: rest when not yes -> parse ~plan ~json ~yes:true ~export ~url rest
-    | "--export" :: rest when not export -> parse ~plan ~json ~yes ~export:true ~url rest
-    | "--url" :: value :: rest when url = None -> parse ~plan ~json ~yes ~export ~url:(Some value) rest
+  let rec parse ~plan ~json ~yes ~export ~url ~expect = function
+    | [] -> (plan, json, yes, export, url, expect)
+    | "--plan" :: rest when not plan -> parse ~plan:true ~json ~yes ~export ~url ~expect rest
+    | "--json" :: rest when not json -> parse ~plan ~json:true ~yes ~export ~url ~expect rest
+    | "--yes" :: rest when not yes -> parse ~plan ~json ~yes:true ~export ~url ~expect rest
+    | "--export" :: rest when not export -> parse ~plan ~json ~yes ~export:true ~url ~expect rest
+    | "--url" :: value :: rest when url = None -> parse ~plan ~json ~yes ~export ~url:(Some value) ~expect rest
+    | "--expect-plan" :: value :: rest when expect = None ->
+        parse ~plan ~json ~yes ~export ~url ~expect:(Some value) rest
     | _ -> usage () in
-  let plan, json, yes, export, url =
-    parse ~plan:false ~json:false ~yes:false ~export:false ~url:None (List.tl argv) in
+  let plan, json, yes, export, url, expect =
+    parse ~plan:false ~json:false ~yes:false ~export:false ~url:None ~expect:None (List.tl argv) in
   (match () with
-   | () when export && (plan || json || yes) -> usage ()
+   | () when export && (plan || json || yes || expect <> None) -> usage ()
    | () when (not export) && url <> None -> usage ()
-   | () when json && not plan -> usage ()
-   | () when plan && yes -> usage ()
+   | () when json && not (plan || yes) -> usage ()
+   | () when plan && (yes || expect <> None) -> usage ()
    | () -> ());
   let fail message = Printf.eprintf "idp: %s\n%!" message; exit 1 in
   let curl_bin = getenv_default "CURL_BIN" "curl" in
@@ -445,6 +448,48 @@ let idp argv =
   let no_declaration layout =
     Printf.sprintf "no %s: nothing is declared (start from the live state with serai idp --export --url https://<host> > idp.sexp)"
       (Layout.idp layout) in
+  let stale expected (current : Plan_id.t option) =
+    Printf.sprintf "idp: stale plan: approved %s, now %s; run serai idp --plan again"
+      (Plan_id.to_string expected)
+      (match current with Some id -> Plan_id.to_string id | None -> "nothing to do") in
+  if json && yes then begin
+    (* stdout carries exactly the one result, failures included. *)
+    let saved = Unix.dup Unix.stdout in
+    Unix.dup2 Unix.stderr Unix.stdout;
+    let response = Fun.protect ~finally:(fun () -> flush stdout; Unix.dup2 saved Unix.stdout; Unix.close saved)
+      (fun () -> Agent_cli.respond ~operation:"idp.apply" (fun () ->
+         let expected = match expect with
+           | None -> raise (Agent_cli.Bad_request "serai idp --yes --json requires --expect-plan <id>, the plan_id of the approved serai idp --plan --json")
+           | Some text -> (match Plan_id.parse text with Ok id -> id | Error m -> raise (Agent_cli.Bad_request m)) in
+         let layout = locate_layout () in
+         let declaration = match Idp_declaration.load ~layout with
+           | Ok (Some d) -> d | Ok None -> failwith (no_declaration layout) | Error message -> failwith message in
+         match fetch_result declaration.url with
+         | Error message -> failwith message
+         | Ok (session, live) ->
+             let t = Idp_plan.plan declaration live in
+             Option.iter failwith t.lockout;
+             if t.plan_id <> Some expected then raise (Agent_cli.Stale_plan (stale expected t.plan_id));
+             let applied = Proc.live (fun () -> Pocket_id.apply ~curl_bin session live t) in
+             let open Agent_cli in
+             let optional_int = function Some n -> Int n | None -> Null in
+             let optional_text = function Some s -> Text s | None -> Null in
+             let failed = match applied.failed with
+               | None -> Null
+               | Some (action, (error : Pocket_id.error)) ->
+                   Object [ ("action", Idp_plan.action_to_json action); ("request", Text error.request);
+                            ("status", optional_int error.status); ("code", optional_text error.code);
+                            ("message", Text error.message) ] in
+             let data = Object [
+                 ("completed", Array (List.map Idp_plan.action_to_json applied.completed));
+                 ("failed", failed);
+                 ("secrets_needed", Array (List.map (fun c -> Text c) t.secrets_needed)) ] in
+             match applied.failed with
+             | None -> Ok data
+             | Some (_, error) -> Error (data, Pocket_id.error_message error))) in
+    print_endline (Agent_cli.to_json response);
+    exit (Agent_cli.exit_code response)
+  end;
   if json then begin
     (* stdout carries exactly the one result, failures included. *)
     let saved = Unix.dup Unix.stdout in
@@ -485,12 +530,19 @@ let idp argv =
           url (Idp_declaration.to_string declaration);
         exit 0
   end;
+  let expected = Option.map (fun text ->
+      match Plan_id.parse text with Ok id -> id | Error message -> fail message) expect in
   let declaration = match load () with Some d -> d | None -> fail (no_declaration layout) in
   let session, live = fetch declaration.url in
   let t = Idp_plan.plan declaration live in
   List.iter print_endline (Idp_plan.lines t);
+  if plan then Option.iter (fun id -> Printf.printf "plan %s\n" (Plan_id.to_string id)) t.plan_id;
   Option.iter (fun reason -> fail ("refused: " ^ reason)) t.lockout;
   if plan then exit (if Idp_plan.pending t then 2 else 0);
+  Option.iter (fun expected ->
+      if t.plan_id <> Some expected then begin
+        Printf.eprintf "%s\n%!" (stale expected t.plan_id); exit 1
+      end) expected;
   if not (Idp_plan.pending t) then exit 0;
   let count = List.length t.actions in
   let confirmed =

@@ -88,10 +88,13 @@ test "$(head -n1 "$TMP/log")" = "GET /api/version/current" || fail "the version 
 test "$(status)" = 0 || fail "in sync apply did not exit 0"
 test ! -s "$TMP/output"
 ! grep -qv '^GET ' "$TMP/log" || fail "in sync apply changed something"
+test "$(status --yes --expect-plan 0123456789abcdef)" = 1 || fail "applied an approved plan that is now empty"
+grep -Fq 'idp: stale plan: approved 0123456789abcdef, now nothing to do' "$TMP/error" || { cat "$TMP/error"; fail "no stale refusal for an empty plan"; }
 test "$(status --plan --json)" = 0 || fail "in sync --plan --json did not exit 0"
 test "$(wc -l <"$TMP/output")" -eq 1
 grep -Fq '"operation":"idp.plan"' "$TMP/output"
 grep -Fq '"pending":false' "$TMP/output"
+grep -Fq '"plan_id":null' "$TMP/output" || fail "an empty plan has an id"
 
 # Drift: bob changes address and joins a new group.
 python3 - "$TMP/config/idp.sexp" <<'EOF'
@@ -104,19 +107,44 @@ s = s.replace("(bob (email bob@example.org) (first_name Bob) (groups (family)))"
 open(p, "w").write(s)
 EOF
 test "$(status --plan)" = 2 || { cat "$TMP/error"; fail "drift --plan did not exit 2"; }
-diff -u - "$TMP/output" <<'EOF'
+diff -u - <(grep -v '^plan ' "$TMP/output") <<'EOF'
 group guests: create
 user bob: update email, groups (+guests)
 EOF
+PLAN_ID="$(sed -n 's/^plan \([0-9a-f]\{16\}\)$/\1/p' "$TMP/output")"
+test -n "$PLAN_ID" && test "$(tail -n1 "$TMP/output")" = "plan $PLAN_ID" || { cat "$TMP/output"; fail "no plan id as the last line"; }
 test "$(status --plan --json)" = 2 || fail "drift --plan --json did not exit 2"
 grep -Fq '"pending":true' "$TMP/output"
 grep -Fq '{"action":"create","kind":"group","name":"guests"}' "$TMP/output"
+grep -Fq "\"plan_id\":\"$PLAN_ID\"" "$TMP/output" || fail "the JSON plan has another id"
+
+# Binding: the apply must be the approved plan.
+test "$(status --plan --expect-plan "$PLAN_ID")" = 1 || fail "--expect-plan accepted with --plan"
+grep -q '^usage:' "$TMP/error"
+test "$(status --export --expect-plan "$PLAN_ID")" = 1 || fail "--expect-plan accepted with --export"
+test "$(status --yes --expect-plan NOTANID)" = 1 || fail "a malformed plan id was accepted"
+grep -Fq 'is not a plan id' "$TMP/error"
+test ! -e "$TMP/log" || fail "requested with a malformed plan id"
+test "$(status --yes --expect-plan 0000000000000000)" = 1 || fail "applied a plan that was not approved"
+grep -Fq "idp: stale plan: approved 0000000000000000, now $PLAN_ID; run serai idp --plan again" "$TMP/error" \
+  || { cat "$TMP/error"; fail "no stale plan refusal"; }
+! grep -qv '^GET ' "$TMP/log" || fail "a stale plan changed something"
+test "$(status --yes --json)" = 1 || fail "a JSON apply without --expect-plan was accepted"
+grep -Fq '"code":"invalid_request"' "$TMP/output" && grep -Fq -- '--expect-plan' "$TMP/output" || { cat "$TMP/output"; fail "no invalid_request"; }
+test ! -e "$TMP/log" || fail "a JSON apply without --expect-plan made a request"
+test "$(status --yes --json --expect-plan NOTANID)" = 1 || fail "a JSON apply with a malformed id was accepted"
+grep -Fq '"code":"invalid_request"' "$TMP/output"
+test ! -e "$TMP/log" || fail "a JSON apply with a malformed id made a request"
+test "$(status --yes --json --expect-plan 0000000000000000)" = 1 || fail "a stale JSON apply was accepted"
+grep -Fq '"operation":"idp.apply"' "$TMP/output" && grep -Fq '"code":"stale_plan"' "$TMP/output" || { cat "$TMP/output"; fail "no stale_plan"; }
+! grep -qv '^GET ' "$TMP/log" || fail "a stale JSON apply changed something"
+test "$(status --json --expect-plan "$PLAN_ID")" = 1 || fail "--json without --plan or --yes was accepted"
 
 test "$(status)" = 1 || fail "applied without a terminal or --yes"
 grep -Fq 'needs confirmation but stdin is not a terminal; re-run with --yes' "$TMP/error"
 ! grep -qv '^GET ' "$TMP/log" || fail "changed something without confirmation"
 
-test "$(status --yes)" = 0 || { cat "$TMP/error" "$TMP/output"; fail "drift --yes did not exit 0"; }
+test "$(status --yes --expect-plan "$PLAN_ID")" = 0 || { cat "$TMP/error" "$TMP/output"; fail "the approved plan was not applied"; }
 grep -Fxq 'applied 2 changes' "$TMP/output"
 BOB=2c5e7a10-0000-4000-8000-000000000002
 diff -u - <(grep -v '^GET ' "$TMP/log") <<EOF
@@ -128,11 +156,23 @@ EOF
 grep -Fq "PUT /api/users/$BOB/user-groups {\"userGroupIds\":[\"6f1d0c3e-0000-4000-8000-000000000002\",\"created-" "$TMP/log.bodies" \
   || fail "the new group's id was not used"
 
+# The JSON apply (the fake server keeps nothing, so the plan is unchanged).
+test "$(status --yes --json --expect-plan "$PLAN_ID")" = 0 || { cat "$TMP/output" "$TMP/error"; fail "the JSON apply failed"; }
+test "$(wc -l <"$TMP/output")" -eq 1 || fail "the JSON apply wrote more than its result"
+grep -Fq '"operation":"idp.apply","status":"succeeded"' "$TMP/output" || { cat "$TMP/output"; fail "idp.apply did not succeed"; }
+grep -Fq '"completed":[{"action":"create","kind":"group","name":"guests"},{"action":"update","kind":"user","name":"bob"' "$TMP/output" \
+  || { cat "$TMP/output"; fail "idp.apply's completed actions"; }
+grep -Fq '"failed":null,"secrets_needed":[]' "$TMP/output" || { cat "$TMP/output"; fail "idp.apply's failed and secrets_needed"; }
+
 # A failure stops the run and says what is left.
 printf '{"error":"Group already exists","code":"already_in_use"}' >"$TMP/responses/POST_api_user-groups.json"
 echo 400 >"$TMP/responses/POST_api_user-groups.status"
 test "$(status --yes)" = 1 || fail "a failed apply did not exit 1"
 grep -Fq 'applied 0 of 2; stopped: POST /api/user-groups (HTTP 400): Group already exists [already_in_use]' "$TMP/output"
+test "$(status --yes --json --expect-plan "$PLAN_ID")" = 1 || fail "a failed JSON apply did not exit 1"
+grep -Fq '"status":"failed"' "$TMP/output" && grep -Fq '"code":"step_failed"' "$TMP/output" \
+  && grep -Fq '"completed":[],"failed":{"action":{"action":"create","kind":"group","name":"guests"},"request":"POST /api/user-groups","status":400,"code":"already_in_use","message":"Group already exists"}' "$TMP/output" \
+  || { cat "$TMP/output"; fail "a failed JSON apply's result"; }
 rm "$TMP/responses/POST_api_user-groups.json" "$TMP/responses/POST_api_user-groups.status"
 
 # The key's owner (alice in the fixtures) losing admin: refused before any change.

@@ -24,3 +24,7 @@ val respond : operation:string -> (unit -> (json, json * string) result) -> resp
 (** An apply's plan is not the one approved: [respond] reports it refused
     with code [stale_plan]. Raised before anything changes. *)
 exception Stale_plan of string
+
+(** The request itself is unusable (a missing or malformed argument):
+    [respond] reports it refused with code [invalid_request]. *)
+exception Bad_request of string
