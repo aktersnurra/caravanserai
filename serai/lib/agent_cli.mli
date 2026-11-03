@@ -20,3 +20,7 @@ type json = Null | Bool of bool | Int of int | Text of string
     raise only before they change anything. Ctrl-C is interrupted and
     anything else failed. *)
 val respond : operation:string -> (unit -> (json, json * string) result) -> response
+
+(** An apply's plan is not the one approved: [respond] reports it refused
+    with code [stale_plan]. Raised before anything changes. *)
+exception Stale_plan of string

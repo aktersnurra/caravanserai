@@ -4,13 +4,14 @@ type json = Null | Bool of bool | Int of int | Text of string
 
 type error_code = Invalid_request | Unsupported_operation | Input_unavailable
   | Invalid_declaration | Invalid_plan | Unknown_workload | Render_failed
-  | Internal_error | Interrupted | Not_applied | Step_failed
+  | Internal_error | Interrupted | Not_applied | Step_failed | Stale_plan
 
 type status = Succeeded | Refused | Failed | Cancelled
 type response = { operation : string; status : status; data : json;
                   error : (error_code * string) option }
 type request = Validate | Inspect | Plan of string * string option
 exception Refusal of error_code * string
+exception Stale_plan of string
 
 let code = function
   | Invalid_request -> "invalid_request" | Unsupported_operation -> "unsupported_operation"
@@ -18,6 +19,7 @@ let code = function
   | Invalid_plan -> "invalid_plan" | Unknown_workload -> "unknown_workload"
   | Render_failed -> "render_failed" | Internal_error -> "internal_error"
   | Interrupted -> "interrupted" | Not_applied -> "not_applied" | Step_failed -> "step_failed"
+  | Stale_plan -> "stale_plan"
 
 let quote text =
   let b = Buffer.create (String.length text + 2) in
@@ -150,5 +152,6 @@ let respond ~operation f =
   | Ok data -> {operation; status=Succeeded; data; error=None}
   | Error (data, message) -> {operation; status=Failed; data; error=Some (Step_failed, message)}
   | exception Failure message -> error Refused Not_applied message
+  | exception Stale_plan message -> error Refused Stale_plan message
   | exception Sys.Break -> error Cancelled Interrupted "interrupted"
   | exception exn -> error Failed Internal_error (Printexc.to_string exn)
