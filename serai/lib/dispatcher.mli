@@ -202,8 +202,25 @@ val check_environment : App_config.t -> (string * string) list
 val check : env -> string -> unit
 val update_version : env -> string -> string -> unit
 val unlock : env -> string -> unit
-val plan_edge : env -> bool
-val edge : env -> unit
+
+(** What [serai edge] would install: each pending component as (name,
+    host), in apply order, and the plan id over each one's name, host and
+    the exact diff printed. No components, no id. *)
+type edge_plan = { components : (string * string) list; plan_id : Plan_id.t option }
+
+(** The components installed, and the one that failed with its message. *)
+type edge_outcome = { applied : (string * string) list; failed : (string * string * string) option }
+
+val plan_edge : env -> edge_plan
+
+(** Stages, diffs, and installs what is pending once confirmed; applied
+    records only when every install succeeded. With [expect_plan], under
+    the session's locks and before the prompt, any other plan raises
+    [Agent_cli.Stale_plan]. *)
+val edge_run : ?expect_plan:Plan_id.t -> env -> edge_outcome
+
+(** [edge_run], failing with the failed install's message. *)
+val edge : ?expect_plan:Plan_id.t -> env -> unit
 val caddy_install : env -> unit
 
 (** Central logging's senders, each under its host's lock. [Recovery_check]

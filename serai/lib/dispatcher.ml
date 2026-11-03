@@ -1323,14 +1323,19 @@ let stage_edge env local =
    operator reads the plan as it is computed. *)
 let edge_jobs env = List.map (fun compute -> compute, Pf) (compute_envs env) @ [env, Acl; env, Caddy]
 
+(* Each pending component with the diff it printed: captured, printed, and
+   kept, since the plan id names exactly what the operator read. *)
 let diff_components env =
-  List.filter
+  List.filter_map
     (fun (env, component) ->
       let target, command = edge_command env ~diff_only:true component in
       announce "plan %s" (edge_component_label component);
-      match ssh_run env [ target; command ] with
-      | 0 -> false
-      | code when code = changes_pending_exit -> true
+      let code, diff = ssh_capture env [ target; command ] in
+      print_string diff;
+      flush stdout;
+      match code with
+      | 0 -> None
+      | code when code = changes_pending_exit -> Some (env, component, diff)
       | code ->
           failwith
             (Printf.sprintf "edge: diff for %s failed (exit %d)"
@@ -1339,6 +1344,21 @@ let diff_components env =
 
 let component_host = function Pf -> Compute_host | Acl | Caddy -> Edge_host
 let component_name = function Pf -> "pf" | Acl -> "acl" | Caddy -> "caddy"
+
+type edge_plan = { components : (string * string) list; plan_id : Plan_id.t option }
+type edge_outcome = { applied : (string * string) list; failed : (string * string * string) option }
+
+let component_entry (env, component) = (component_name component, host_target env (component_host component))
+
+let edge_plan_of pending =
+  { components = List.map (fun (env, component, _) -> component_entry (env, component)) pending;
+    plan_id =
+      (match pending with
+       | [] -> None
+       | pending ->
+           Some (Plan_id.make ~operation:"edge"
+                   (List.concat_map (fun (env, component, diff) ->
+                        let name, host = component_entry (env, component) in [ name; host; diff ]) pending))) }
 
 (* Only edge hosts carry an applied record; component_host never names a
    guest. *)
@@ -1400,11 +1420,11 @@ let plan_edge env =
       match diff_components env with
       | [] ->
           announce "edge: no changes";
-          false
+          edge_plan_of []
       | pending ->
           announce "edge: changes pending for %s"
-            (String.concat ", " (List.map (fun (env,c) -> edge_component_label c ^ " [" ^ host_target env (component_host c) ^ "]") pending));
-          true)
+            (String.concat ", " (List.map (fun (env,c,_) -> edge_component_label c ^ " [" ^ host_target env (component_host c) ^ "]") pending));
+          edge_plan_of pending)
 
 (* Keeps the order the bash ./ops edge used -- pf, then the ACL before
    Caddy so a vhost never proxies to a port the policy still blocks -- but
@@ -1412,29 +1432,53 @@ let plan_edge env =
    install goes through its script's validated <X>_SOURCE mode rather than
    writing live files from here. The staged files are still in place from
    the plan when installs run: nothing between the two re-stages them. *)
-let edge env =
+let edge_run ?expect_plan env =
   let env = edge_env env in
   announce "update edge";
   with_edge_session env ~command:"edge" (fun revision ->
-      match diff_components env with
-      | [] -> announce "edge: already current"
+      let pending = diff_components env in
+      (* Under the locks, on what was just staged and diffed: the approved
+         plan or nothing. *)
+      Option.iter (fun expected ->
+          let current = (edge_plan_of pending).plan_id in
+          if current <> Some expected then
+            raise (Agent_cli.Stale_plan (Printf.sprintf
+                     "edge: stale plan: approved %s, now %s; run serai edge --plan again"
+                     (Plan_id.to_string expected)
+                     (match current with Some id -> Plan_id.to_string id | None -> "nothing to do"))))
+        expect_plan;
+      match pending with
+      | [] -> announce "edge: already current"; { applied = []; failed = None }
       | pending ->
-          let summary = String.concat ", " (List.map (fun (env,c) -> edge_component_label c ^ " [" ^ host_target env (component_host c) ^ "]") pending) in
+          let summary = String.concat ", " (List.map (fun (env,c,_) -> edge_component_label c ^ " [" ^ host_target env (component_host c) ^ "]") pending) in
           if not (env.confirm (Printf.sprintf "apply changes to %s?" summary)) then
             failwith "edge: not applied";
-          List.iter
-            (fun (env, component) ->
-              let target, command = edge_command env ~diff_only:false component in
-              announce "apply %s" (edge_component_label component);
-              ssh_checked env [ target; command ])
-            pending;
-          List.iter
-            (fun (context, host) ->
-              let target = host_target context host in
-              match List.filter (fun (e,c) -> host_target e (component_host c) = target) pending with
-              | [] -> ()
-              | installed -> write_applied_record context ~revision host (List.map snd installed))
-            (List.map (fun compute -> compute, Compute_host) (compute_envs env) @ [env, Edge_host]))
+          let rec install applied = function
+            | [] -> Ok (List.rev applied)
+            | (env, component, _) :: rest ->
+                let target, command = edge_command env ~diff_only:false component in
+                announce "apply %s" (edge_component_label component);
+                (match ssh_checked env [ target; command ] with
+                 | () -> install ((env, component) :: applied) rest
+                 | exception Failure message -> Error (List.rev applied, (env, component), message)) in
+          match install [] pending with
+          | Error (applied, failed, message) ->
+              let name, host = component_entry failed in
+              { applied = List.map component_entry applied; failed = Some (name, host, message) }
+          | Ok installed ->
+              List.iter
+                (fun (context, host) ->
+                  let target = host_target context host in
+                  match List.filter (fun (e,c) -> host_target e (component_host c) = target) installed with
+                  | [] -> ()
+                  | installed -> write_applied_record context ~revision host (List.map snd installed))
+                (List.map (fun compute -> compute, Compute_host) (compute_envs env) @ [env, Edge_host]);
+              { applied = List.map component_entry installed; failed = None })
+
+let edge ?expect_plan env =
+  match (edge_run ?expect_plan env).failed with
+  | None -> ()
+  | Some (_, _, message) -> failwith message
 
 (* What edge does not do: edge/02-caddy's unconditional run, which builds
    the binary if needed (or always, under CADDY_FORCE_BUILD=1), writes the

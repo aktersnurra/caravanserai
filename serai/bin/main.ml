@@ -30,7 +30,8 @@ let usage_text =
   \  serai up <app> --revision <bookmark|commit> [--source <checkout>] [--yes] --expect-plan <id>   (only the plan --plan named)\n\
   \  serai up <app> --revision <bookmark|commit> [--source <checkout>] --yes --json --expect-plan <id>   (each step's outcome as JSON)\n\
   \  serai up <app> --revision <bookmark|commit> [--source <checkout>] --rehearse --ip <addr>   (the same into <app>test; no edge)\n\
-  \  serai edge [--plan] [--yes]   (--plan exits 2 when changes are pending)\n\
+  \  serai edge [--plan] [--yes] [--expect-plan <id>]   (--plan exits 2 when changes are pending)\n\
+  \  serai edge --plan --json | --yes --json --expect-plan <id>   (the plan, or only the approved plan, as JSON)\n\
   \  serai caddy-install [--yes]   (build if needed, unit, install, reload)\n\
   \  serai unlock <host-id|guest>\n\
   \  serai jail-test <app> --ip <addr> [--yes]   (generated script on jail <app>test)\n\
@@ -269,6 +270,22 @@ let up_plan_json (plan : Dispatcher.up_plan) =
           Object [ "action", Text "build"; "builder_ip", Text ip; "base_sha256", Text base_sha256 ]);
     "public_url", Text plan.public_url; "plan_id", Text (Plan_id.to_string (Dispatcher.up_plan_id plan));
     "host_inspected", Bool true; "applied", Bool false ])
+
+let component_json (name, host) = Agent_cli.(Object [ "component", Text name; "host", Text host ])
+
+let edge_plan_json (plan : Dispatcher.edge_plan) =
+  Agent_cli.(Object [
+    "pending", Bool (plan.plan_id <> None);
+    "plan_id", (match plan.plan_id with Some id -> Text (Plan_id.to_string id) | None -> Null);
+    "components", Array (List.map component_json plan.components) ])
+
+let edge_outcome_json (outcome : Dispatcher.edge_outcome) =
+  Agent_cli.(Object [
+    "applied", Array (List.map component_json outcome.applied);
+    "failed", (match outcome.failed with
+      | None -> Null
+      | Some (name, host, message) ->
+          Object [ "component", Text name; "host", Text host; "message", Text message ]) ])
 
 let step_status (status : Dispatcher.step_status) =
   Agent_cli.(match status with
@@ -576,7 +593,7 @@ let idp argv =
       exit 0
 
 let acting_json argv =
-  let run ?(assume_yes = false) operation workload f =
+  let run ?(assume_yes = false) ?(pending = ref false) operation workload f =
     Progress.start ~enabled:(List.mem "--progress=jsonl" argv) ~operation ~workload:(Some workload);
     Sys.catch_break true;
     (* stdout carries exactly the one result: what the run prints, its
@@ -588,7 +605,9 @@ let acting_json argv =
          Proc.live (fun () -> f (fst (build_env ~assume_yes ()))))) in
     print_endline (Agent_cli.to_json response);
     let code = Agent_cli.exit_code response in
-    Progress.finish (if code = 0 then Progress.Succeeded else if code = 130 then Progress.Interrupted else Progress.Failed);
+    let code = if code = 0 && !pending then 2 else code in
+    Progress.finish (if code = 0 then Progress.Succeeded else if code = 2 then Progress.Changes_pending
+                     else if code = 130 then Progress.Interrupted else Progress.Failed);
     exit code in
   (* Refused before the repository is loaded or anything is contacted. *)
   let refuse operation message =
@@ -617,6 +636,22 @@ let acting_json argv =
         up_json app ~revision (up_run ~local_source:checkout ~expect_plan env app ~revision))
   | [ "up"; _; "--revision"; _; "--yes" ] | [ "up"; _; "--revision"; _; "--source"; _; "--yes" ] ->
       refuse "up" "serai up --yes --json requires --expect-plan <id>, the plan_id of the approved serai up --plan --json"
+  | [ "edge"; "--plan" ] ->
+      let pending = ref false in
+      run ~pending "edge.plan" "edge" (fun env ->
+        let plan = Dispatcher.plan_edge env in
+        pending := plan.plan_id <> None;
+        Ok (edge_plan_json plan))
+  | [ "edge"; "--yes"; "--expect-plan"; id ] ->
+      let expect_plan = checked "edge" id in
+      run ~assume_yes:true "edge" "edge" (fun env ->
+        let outcome = Dispatcher.edge_run ~expect_plan env in
+        let data = edge_outcome_json outcome in
+        match outcome.failed with None -> Ok data | Some (_, _, message) -> Error (data, message))
+  | [ "edge"; "--yes" ] ->
+      refuse "edge" "serai edge --yes --json requires --expect-plan <id>, the plan_id of the approved serai edge --plan --json"
+  | "edge" :: _ ->
+      refuse "edge" "serai edge --json takes --plan, or --yes --expect-plan <id>"
 
   | _ -> ()
 
@@ -693,7 +728,11 @@ let dispatch (env, registry) argv =
       up ~target:(Dispatcher.Rehearse ip) env app ~revision
   | [ "up"; app; "--revision"; revision; "--source"; checkout; "--rehearse"; "--ip"; ip ] ->
       up ~local_source:checkout ~target:(Dispatcher.Rehearse ip) env app ~revision
-  | [ "edge"; "--plan" ] -> if Dispatcher.plan_edge env then raise (Cli_exit 2)
+  | [ "edge"; "--plan" ] ->
+      (match (Dispatcher.plan_edge env).plan_id with
+       | Some id -> Printf.printf "plan %s\n%!" (Plan_id.to_string id); raise (Cli_exit 2)
+       | None -> ())
+  | [ "edge"; "--expect-plan"; id ] -> Dispatcher.edge ~expect_plan:(expected_plan id) env
   | [ "caddy-install" ] -> Dispatcher.caddy_install env
   | [ "unlock"; host ] -> Dispatcher.unlock env host
   | [ "jail-test"; app; "--ip"; ip ] -> Dispatcher.jail_test env app ~ip

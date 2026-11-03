@@ -262,12 +262,14 @@ let is_diff (r : Proc.request) = contains ~needle:"_DIFF_ONLY=1" (String.concat 
 
 (* answers 10 ("changes pending") for the diff commands whose text contains
    one of [pending], 0 for everything else *)
-let run_edge ?(pending = []) ?(confirm = fun _ -> true) f =
+let run_edge ?(pending = []) ?(confirm = fun _ -> true) ?(outputs = fixture_outputs) ?(failing = fun _ -> false) f =
   let exit_codes (r : Proc.request) =
     let cmd = String.concat " " r.args in
-    if is_diff r && List.exists (fun needle -> contains ~needle cmd) pending then 10 else 0
+    if is_diff r && List.exists (fun needle -> contains ~needle cmd) pending then 10
+    else if failing r then 1
+    else 0
   in
-  let mock = Proc.Mock.create ~exit_codes ~outputs:fixture_outputs () in
+  let mock = Proc.Mock.create ~exit_codes ~outputs () in
   let env = { (make_env ()) with confirm } in
   let result = try Ok (Proc.Mock.run mock (fun () -> f env)) with Failure msg -> Error msg in
   (result, without_bookkeeping (Proc.Mock.calls mock))
@@ -354,9 +356,80 @@ let () =
 let () =
   let result, calls = run_edge ~pending:[ "PF" ] (fun env -> Dispatcher.plan_edge env) in
   check "plan_edge: reports pending, installs nothing, never prompts"
-    (result = Ok true && List.length calls = 9);
+    ((match result with
+      | Ok { components = [ ("pf", "compute-test") ]; plan_id = Some _ } -> true | _ -> false)
+     && List.length calls = 9);
   let result, _ = run_edge (fun env -> Dispatcher.plan_edge env) in
-  check "plan_edge: nothing pending -> false" (result = Ok false)
+  check "plan_edge: nothing pending -> no components, no plan id"
+    (result = Ok { Dispatcher.components = []; plan_id = None })
+
+(* Plan binding: the edge plan id names each pending component's diff. *)
+let () =
+  let diff_text version (r : Proc.request) =
+    let cmd = String.concat " " r.args in
+    if is_diff r then
+      List.fold_left (fun acc name -> if contains ~needle:(name ^ "_DIFF_ONLY") cmd then
+                         Printf.sprintf "--- live\n+++ staged/%s\n+%s %s\n" name name version else acc) "" [ "PF"; "POLICY"; "CADDY" ]
+    else fixture_outputs r in
+  let plan ?(pending = [ "PF"; "POLICY" ]) version =
+    match run_edge ~pending ~outputs:(diff_text version) (fun env -> Dispatcher.plan_edge env) with
+    | Ok p, _ -> p | Error m, _ -> failwith m in
+  let p1 = plan "v1" in
+  check "edge plan: the pending components in apply order"
+    (p1.components = [ ("pf", "compute-test"); ("acl", "edge-test") ]);
+  check "edge plan: the same diffs give the same id" ((plan "v1").plan_id = p1.plan_id);
+  check "edge plan: another diff is another plan" ((plan "v2").plan_id <> p1.plan_id);
+  check "edge plan: other pending components are another plan" ((plan ~pending:[ "PF" ] "v1").plan_id <> p1.plan_id);
+  let id = Option.get p1.plan_id in
+  let prompted = ref false in
+  let apply ?(failing = fun _ -> false) version =
+    run_edge ~pending:[ "PF"; "POLICY" ] ~outputs:(diff_text version) ~failing
+      ~confirm:(fun _ -> prompted := true; true)
+      (fun env -> try Ok (Dispatcher.edge_run ~expect_plan:id env) with Agent_cli.Stale_plan m -> Error m) in
+  let installs calls = List.filter (fun (r : Proc.request) -> r.prog = "ssh" && not (is_diff r)
+                                                             && contains ~needle:"_SOURCE=" (String.concat " " r.args)) calls in
+  (match apply "v1" with
+   | Ok (Ok outcome), calls ->
+       check "edge_run: the approved plan installs exactly its components"
+         (outcome = { Dispatcher.applied = [ ("pf", "compute-test"); ("acl", "edge-test") ]; failed = None }
+          && List.length (installs calls) = 2)
+   | _ -> check "edge_run: the approved plan applies" false);
+  (* The positive control for "writes no applied record" below. *)
+  let mock = Proc.Mock.create
+      ~exit_codes:(fun r -> let cmd = String.concat " " r.args in
+                    if is_diff r && (contains ~needle:"PF_" cmd || contains ~needle:"POLICY_" cmd) then 10 else 0)
+      ~outputs:(diff_text "v1") () in
+  ignore (Proc.Mock.run mock (fun () -> Dispatcher.edge_run ~expect_plan:id (make_env ())));
+  check "edge_run: a full apply writes its applied records"
+    (List.exists (fun (r : Proc.request) -> contains ~needle:"/var/lib/infra/applied" (String.concat " " r.args)
+                                            && contains ~needle:"applied_at" (String.concat " " r.args))
+       (Proc.Mock.calls mock));
+  prompted := false;
+  (match apply "v2" with
+   | Ok (Error message), calls ->
+       check "edge_run: a changed diff is a stale plan, naming the approved id"
+         (contains ~needle:("edge: stale plan: approved " ^ Plan_id.to_string id) message
+          && contains ~needle:"run serai edge --plan again" message);
+       check "edge_run: refused before the prompt and any install" ((not !prompted) && installs calls = [])
+   | _ -> check "edge_run: a changed diff is refused" false);
+  (match run_edge ~outputs:(diff_text "v1")
+           (fun env -> try Ok (Dispatcher.edge_run ~expect_plan:id env) with Agent_cli.Stale_plan m -> Error m) with
+   | Ok (Error message), _ -> check "edge_run: an approved plan with nothing left to do is stale" (contains ~needle:"now nothing to do" message)
+   | _ -> check "edge_run: nothing left to do is refused" false);
+  let mock = Proc.Mock.create
+      ~exit_codes:(fun r ->
+          let cmd = String.concat " " r.args in
+          if is_diff r && (contains ~needle:"PF_" cmd || contains ~needle:"POLICY_" cmd) then 10
+          else if (not (is_diff r)) && contains ~needle:"POLICY_SOURCE=" cmd then 1 else 0)
+      ~outputs:(diff_text "v1") () in
+  let outcome = Proc.Mock.run mock (fun () -> Dispatcher.edge_run ~expect_plan:id (make_env ())) in
+  check "edge_run: a failed install stops, saying what was applied before it"
+    (outcome.applied = [ ("pf", "compute-test") ]
+     && (match outcome.failed with Some ("acl", "edge-test", _) -> true | _ -> false));
+  check "edge_run: and writes no applied record"
+    (not (List.exists (fun (r : Proc.request) -> contains ~needle:"/var/lib/infra/applied" (String.concat " " r.args)
+                                                 && contains ~needle:"applied_at" (String.concat " " r.args))
+            (Proc.Mock.calls mock)))
 
 let () =
   let mock = Proc.Mock.create ~exit_codes:(fun r -> if is_diff r then 1 else 0) ~outputs:fixture_outputs () in
@@ -565,7 +638,8 @@ let lock_connections calls host =
 let () =
   let result, calls = run_raw (fun () -> Dispatcher.plan_edge (make_env ())) in
   check "lock: edge --plan makes exactly 2 lock connections per host (lock, release)"
-    (result = Ok false && lock_connections calls "compute-test" = 2 && lock_connections calls "edge-test" = 2);
+    (result = Ok { Dispatcher.components = []; plan_id = None }
+     && lock_connections calls "compute-test" = 2 && lock_connections calls "edge-test" = 2);
   check "lock: the acquire runs the locks/ stage guard in the same script"
     (List.for_all
        (fun (r : Proc.request) ->
@@ -626,7 +700,7 @@ let () =
   let result, text = capture_stdout (fun () -> Proc.Mock.run mock (fun () -> Dispatcher.plan_edge (make_env ()))) in
   check "record: no record on the host -> never applied" (contains ~needle:"==> compute: never applied by serai" text);
   check "record: a parsed record is summarised"
-    (result = false
+    (result.Dispatcher.plan_id = None
     && contains ~needle:"==> edge: last applied 0123456789ab (local only, not pushed) 2026-09-20T10:00:00Z by someone@laptop" text);
   check "record: shown before staging"
     (match (index_of ~needle:"==> edge: last applied" text, index_of ~needle:"==> stage compute" text) with
