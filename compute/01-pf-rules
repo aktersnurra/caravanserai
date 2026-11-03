@@ -129,7 +129,9 @@ install_rules() {
   # PF_DIFF_ONLY=1: show what an install would change, change nothing. Exit
   # 10 is "changes pending" so a caller can tell it from success and error.
   if [ "${PF_DIFF_ONLY:-0}" = 1 ]; then
-    diff -u "$PF_CONF" "$candidate" || true
+    # Labels, not the candidate's temporary path and the files' times: the
+    # same change prints the same diff, which serai names in its plan id.
+    diff -u -L "$PF_CONF" -L staged/pf.conf "$PF_CONF" "$candidate" || true
     exit 10
   fi
 

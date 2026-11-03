@@ -15,7 +15,7 @@ CADDY_DIR="${CADDY_DIR:-/etc/caddy}"
 SECRETS_FILE="${SECRETS_FILE:-${CADDY_DIR}/secrets.env}"
 CADDY_UNIT_FILE="${CADDY_UNIT_FILE:-/etc/systemd/system/caddy.service}"
 
-log() { echo "==> $*"; }
+log() { echo "==> $*" >&2; }
 
 # Nothing here renders the templates any more, so without a rendered tree
 # there is nothing to install. Checked first, before secrets, build or setup.
@@ -146,9 +146,19 @@ if [ "${CADDY_DIFF_ONLY:-0}" = 1 ]; then
   live_fragments="$CADDY_DIR/conf.d"
   # an empty stand-in inside the candidate dir, so the EXIT trap removes it
   [ -d "$live_fragments" ] || { live_fragments="$CANDIDATE_DIR/empty"; mkdir "$live_fragments"; }
+  # One labelled diff per file, over both sides' files in a fixed order:
+  # no temporary path and no file time, so the same change prints the
+  # same diff, which serai names in its plan id.
   changed=0
-  diff -u "$live_root" "$CANDIDATE_DIR/Caddyfile" || changed=1
-  diff -ruN "$live_fragments" "$CANDIDATE_DIR/conf.d" || changed=1
+  diff -u -L "$CADDY_DIR/Caddyfile" -L staged/Caddyfile "$live_root" "$CANDIDATE_DIR/Caddyfile" || changed=1
+  while IFS= read -r name; do
+    live_file="$live_fragments/$name"
+    [ -f "$live_file" ] || live_file=/dev/null
+    staged_file="$CANDIDATE_DIR/conf.d/$name"
+    [ -f "$staged_file" ] || staged_file=/dev/null
+    diff -u -L "$CADDY_DIR/conf.d/$name" -L "staged/conf.d/$name" "$live_file" "$staged_file" || changed=1
+  done < <({ (cd "$live_fragments" && find . -type f); (cd "$CANDIDATE_DIR/conf.d" && find . -type f); } |
+    sed 's|^\./||' | LC_ALL=C sort -u)
   if [ "$changed" = 0 ]; then
     log "Caddy config already current in $CADDY_DIR"
     exit 0

@@ -63,7 +63,9 @@ if [ "${POLICY_DIFF_ONLY:-0}" = 1 ]; then
     log "Policy already current at ${POLICY_FILE}"
     exit 0
   fi
-  diff -u "$live" "$CANDIDATE" || true
+  # Labels, not the candidate's temporary path and the files' times: the
+  # same change prints the same diff, which serai names in its plan id.
+  diff -u -L "$POLICY_FILE" -L staged/acls.hujson "$live" "$CANDIDATE" || true
   exit 10
 fi
 

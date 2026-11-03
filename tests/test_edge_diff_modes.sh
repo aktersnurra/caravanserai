@@ -34,6 +34,21 @@ quiet_plan() {
   ! grep -Eq 'Installing|rendered by the caller|"level"|validated|Tailscale address|not building' "$tmp/out" "$tmp/err" ||
     fail "$1: plan mode printed install chatter: $(cat "$tmp/out" "$tmp/err")"
 }
+# The same change prints the same diff: serai hashes it into the plan id.
+# Labels name each side; no temporary path, no file time.
+same_twice() { # same_twice <description> <command...>
+  local what=$1
+  shift
+  "$@" >"$tmp/out1" 2>/dev/null || true
+  "$@" >"$tmp/out2" 2>/dev/null || true
+  cmp -s "$tmp/out1" "$tmp/out2" || fail "$what: the same change printed two different diffs: $(diff "$tmp/out1" "$tmp/out2")"
+  ! grep -Eq '/var/tmp|XXXXXX|[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}' "$tmp/out1" ||
+    fail "$what: the diff carries a temporary path or a time: $(cat "$tmp/out1")"
+}
+header() { # header <description> <file> <live label> <staged label>
+  grep -Fxq -- "--- $3" "$2" && grep -Fxq -- "+++ $4" "$2" ||
+    fail "$1: headers are not --- $3 / +++ $4: $(grep -E '^(---|\+\+\+) ' "$2")"
+}
 expect_exit() { # expect_exit <code> <description> <command...>
   local want=$1 what=$2 got=0
   shift 2
@@ -54,6 +69,8 @@ quiet_plan pf
 expect_exit 10 'pf: changed rules' pf "$tmp/rules.new"
 grep -Fq '+pass in on $ts_if proto tcp from 100.64.0.1 to 10.40.0.2 port 4001' "$tmp/out" || fail 'pf: diff missing the added rule'
 cmp -s "$tmp/pf.conf" "$tmp/pf.conf.orig" || fail 'pf: diff-only mode modified pf.conf'
+header pf "$tmp/out" "$tmp/pf.conf" staged/pf.conf
+same_twice pf pf "$tmp/rules.new"
 
 # Several rules in the anchored block: the shape that broke on the compute host.
 two='pass in on $ts_if proto tcp from __EDGE__ to 10.40.0.3 port 4001 keep state  # board'
@@ -79,6 +96,8 @@ quiet_plan policy
 expect_exit 10 'policy: changed' policy "$tmp/policy.new"
 grep -Fq '"action": "accept"' "$tmp/out" || fail 'policy: diff missing the new rule'
 cmp -s "$tmp/acls.yaml" "$tmp/acls.yaml.orig" || fail 'policy: diff-only mode modified the policy'
+header policy "$tmp/out" "$tmp/acls.yaml" staged/acls.hujson
+same_twice policy policy "$tmp/policy.new"
 
 # --- caddy --------------------------------------------------------------
 mkdir -p "$tmp/caddy/conf.d" "$tmp/source/conf.d"
@@ -96,5 +115,29 @@ grep -Fq '+    respond "new"' "$tmp/out" || fail 'caddy: diff missing the change
 [ ! -e "$tmp/unit" ] || fail 'caddy: diff-only mode wrote the systemd unit'
 ls "$tmp" | grep -q 'caddy.backup' && fail 'caddy: diff-only mode wrote a backup'
 grep -Fxq 'demo.example.org {' "$tmp/caddy/conf.d/40-demo.caddy" && ! grep -q respond "$tmp/caddy/conf.d/40-demo.caddy" || fail 'caddy: diff-only mode modified live config'
+header 'caddy: changed fragment' "$tmp/out" "$tmp/caddy/conf.d/40-demo.caddy" staged/conf.d/40-demo.caddy
+same_twice caddy caddy_diff
+
+# A fragment added, one removed, the root changed, and a file left on the
+# edge by hand in a subdirectory (the install replaces conf.d wholesale, so
+# it goes): each under its own labels.
+mkdir -p "$tmp/caddy/conf.d/sites"
+printf '%s\n' 'old.example.org {' '}' >"$tmp/caddy/conf.d/30-old.caddy"
+printf '%s\n' 'new.example.org {' '}' >"$tmp/source/conf.d/50-new.caddy"
+printf '%s\n' 'nested.example.org {' '}' >"$tmp/caddy/conf.d/sites/60-nested.caddy"
+printf '%s\n' 'import conf.d/*.caddy' '# root changed' >"$tmp/source/Caddyfile"
+expect_exit 10 'caddy: added, removed, nested and root changes' caddy_diff
+header 'caddy: root' "$tmp/out" "$tmp/caddy/Caddyfile" staged/Caddyfile
+header 'caddy: removed fragment' "$tmp/out" "$tmp/caddy/conf.d/30-old.caddy" staged/conf.d/30-old.caddy
+grep -Fxq -- '-old.example.org {' "$tmp/out" || fail 'caddy: the removed fragment is not shown removed'
+header 'caddy: added fragment' "$tmp/out" "$tmp/caddy/conf.d/50-new.caddy" staged/conf.d/50-new.caddy
+grep -Fxq -- '+new.example.org {' "$tmp/out" || fail 'caddy: the added fragment is not shown added'
+header 'caddy: a hand-placed nested file' "$tmp/out" "$tmp/caddy/conf.d/sites/60-nested.caddy" staged/conf.d/sites/60-nested.caddy
+grep -Fxq -- '-nested.example.org {' "$tmp/out" || fail 'caddy: the hand-placed nested file is not shown removed'
+order=$(grep -E '^\+\+\+ ' "$tmp/out" | tr '\n' ' ')
+[ "$order" = "+++ staged/Caddyfile +++ staged/conf.d/30-old.caddy +++ staged/conf.d/40-demo.caddy +++ staged/conf.d/50-new.caddy +++ staged/conf.d/sites/60-nested.caddy " ] ||
+  fail "caddy: files are not diffed in sorted order: $order"
+! grep -q '^==>' "$tmp/out" || fail 'caddy: a log line on stdout in diff mode'
+same_twice 'caddy: several changes' caddy_diff
 
 echo 'edge diff modes: PASS'
