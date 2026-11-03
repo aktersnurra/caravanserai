@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-11-03: Plan binding
+
+- `serai up`, `serai edge` and `serai idp` name each plan with a plan id,
+  printed as `plan <id>` and returned as `plan_id`. An apply given
+  `--expect-plan <id>` plans again and refuses, before changing anything,
+  any other plan: code `stale_plan` in JSON. A JSON apply requires it, so
+  `serai up --yes --json` now needs `--expect-plan`.
+- New JSON operations: `edge.plan`, `edge` (the apply) and `idp.apply`.
+- The edge diffs print the same for the same change: labelled sides, no
+  temporary paths or file times, and Caddy's `conf.d` file by file.
+
 ## 2026-11-03: The identity provider as configuration, `serai idp`
 
 - `idp.sexp` declares Pocket ID's groups, users, OIDC clients and APIs,

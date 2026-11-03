@@ -51,6 +51,12 @@ still renders. Review the files, then commit them before `serai up`.
 serai up hello --revision main
 ```
 
+`--plan` shows what it would do, ending with `plan <id>`; `--expect-plan
+<id>` then applies only that plan, refusing before the prompt if the
+commit, release, jail or anything else it covers has changed (see "Plan
+binding" in [the agent contract](../docs/AGENT-INTERFACE.md)). A JSON
+apply requires it.
+
 Everything else comes from the declarations. The app's `strategy_config`
 names its git remote (`(source (git <url>))`) and, for OCaml, a pinned
 opam repository; the compute host in `serai.sexp` names the builder
@@ -258,9 +264,11 @@ force-pushes adds a layer under the ancestry check.
 ## The identity provider: `serai idp`
 
 ```sh
-serai idp --plan              # what would change in Pocket ID; exits 2 when something would
+serai idp --plan              # what would change in Pocket ID, ending with plan <id>; exits 2 when something would
 serai idp                     # apply it, after confirmation (--yes to skip)
+serai idp --yes --expect-plan <id>   # apply only the plan --plan named, or refuse
 serai idp --plan --json       # the plan as a result (operation idp.plan)
+serai idp --yes --json --expect-plan <id>   # apply it as a result (operation idp.apply)
 serai idp --export --url https://id.example.org > idp.sexp   # adopt a running instance
 ```
 
@@ -355,8 +363,10 @@ the serai-operations skill a configuration carries in `.agents/skills/`, not MCP
 Read-only commands `inspect --json`, `validate --json`, and
 `artifact plan <workload> [--revision <revision>] --json` return a versioned JSON
 result on stdout, and so do `new ... --json` (writes the declaration only),
-`up ... --plan --json` (reads the compute host, changes nothing) and `up ... --yes
---json` (deploys, reporting each step's outcome). See [the contract](../docs/AGENT-INTERFACE.md) for fields,
+the plans `up ... --plan --json`, `edge --plan --json` and `idp --plan
+--json` (changing nothing), and their applies `up ... --yes --json`,
+`edge --yes --json` and `idp --yes --json`, each of which requires
+`--expect-plan <plan_id>` and refuses any plan but the approved one. See [the contract](../docs/AGENT-INTERFACE.md) for fields,
 error codes and limits. Inventory is declared configuration, not live state;
 artifact plans are design previews, not immutable identities or apply approvals.
 Other operations with `--json` refuse before host work. Structured mutation
@@ -794,7 +804,11 @@ existing validated mode: `PF_SOURCE` (`compute/01-pf-rules`), `POLICY_SOURCE`
 (`edge/01-headscale-policy`) and `CADDY_SOURCE` (`edge/02-caddy`).
 
 `serai edge --plan` stages the rendered files and has each script print a
-diff of its live config against them, changing nothing. It exits 2 when
+diff of its live config against them, changing nothing, then `plan <id>`.
+Each diff labels its sides with the live path and `staged/<name>`, so the
+same change always prints the same diff; the plan id names those diffs, and
+`serai edge --expect-plan <id>` refuses, under the locks and before the
+question, unless they are still exactly what it would install. It exits 2 when
 changes are pending, so it doubles as a drift check. `serai edge` runs the
 same plan, asks before applying, and installs only the pieces that changed;
 `--yes` skips the question. Declining exits 1, so in a `rollout-edge`

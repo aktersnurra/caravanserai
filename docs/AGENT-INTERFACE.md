@@ -43,8 +43,8 @@ prevent a result from being delivered; missing/invalid JSON is not success.
 
 Stable error codes are `invalid_request`, `unsupported_operation`,
 `input_unavailable`, `invalid_declaration`, `unknown_workload`, `invalid_plan`,
-`render_failed`, `internal_error`, `interrupted`, `not_applied` and
-`step_failed`.
+`render_failed`, `internal_error`, `interrupted`, `not_applied`,
+`step_failed` and `stale_plan`.
 
 ### Inspect
 
@@ -88,19 +88,22 @@ touches no host; `data` names the `app`, its `ip`, `port`, `hostname` and the
 addresses other jails hold, the env file's owner, never its contents), then
 returns the `commit`, `jail.action` (`none`, `create`, or `refused` with a
 `message`), `release.action` (`reuse` with an `identity`, or `build` with the
-`builder_ip` and `base_sha256`) and `public_url`, with `host_inspected` true and `applied`
-false. Either refused or failed means nothing was written or changed:
+`builder_ip` and `base_sha256`), `public_url` and `plan_id` (see "Plan
+binding"), with `host_inspected` true and `applied` false. Either refused or failed means nothing was written or changed:
 `not_applied`, with the reason as the message.
 
 ## Deploying
 
 ```sh
-serai up hello --revision master --yes --json
+serai up hello --revision master --yes --json --expect-plan <plan_id>
 ```
 
 Operation `up`. It applies only with `--yes`, because there is no terminal
 to ask in: without it the request is refused as unsupported, and `--yes` is
-the operator's approval, never the agent's. Everything the run prints goes
+the operator's approval, never the agent's. It applies only the plan the
+operator approved: `--expect-plan` is required, in this order after
+`--yes`, and a plan that changed since is `stale_plan` (see "Plan
+binding"). Everything the run prints goes
 to stderr; stdout holds the one result. A refusal before anything changed
 (the plan's checks, a held address, a jail without its env) is `not_applied`
 with null data. Otherwise `data` holds the `app`, `commit`, `local_source`,
@@ -169,12 +172,12 @@ Operation `idp.plan`, read-only, with the key in `SERAI_IDP_API_KEY` (see
 `idp.sexp`, without a usable key, or when Pocket ID refuses or is
 unreachable, the result is `not_applied` with the reason. So is a plan
 that would remove `(admin)` from the API key's owner or disable them, which
-`serai idp` refuses to apply. Applying has no
-JSON form.
+`serai idp` refuses to apply.
 
 `data` holds:
 
 - `pending`: whether there are actions. Undeclared resources alone are not.
+- `plan_id`: the plan's id, or null when there are no actions.
 - `actions`: in apply order, each `{action, kind, name, ...}`, where `kind`
   is `group`, `user`, `client` or `api` and `name` is its group name,
   username, client ID or audience:
@@ -191,10 +194,67 @@ JSON form.
 - `secrets_needed`: confidential clients the plan creates; each needs a
   secret made in the UI.
 
+```sh
+serai idp --yes --json --expect-plan <plan_id>
+```
+
+Operation `idp.apply`, applying only the approved plan. `data` holds
+`completed` (the actions applied, as in `idp.plan`), `failed` (null, or
+`{action, request, status, code, message}` with Pocket ID's status and
+error code) and `secrets_needed`. A failure partway is `failed` with code
+`step_failed` and the data; nothing is rolled back, and `idp.plan` shows
+what remains.
+
+## The edge
+
+```sh
+serai edge --plan --json
+serai edge --yes --json --expect-plan <plan_id>
+```
+
+Operation `edge.plan` stages the rendered pf rules, Headscale policy and
+Caddy tree on the hosts, under their locks, and diffs each against what is
+live, changing nothing. The diffs go to stderr. `data` holds `pending`,
+`plan_id` (null when nothing is pending) and `components`, each
+`{component, host}` with `component` `pf`, `acl` or `caddy`, in apply
+order. It exits 2 when pending.
+
+Operation `edge` installs only the approved plan. `data` holds `applied`
+(the components installed) and `failed` (null, or `{component, host,
+message}`). A failure partway is `failed` with code `step_failed`; the
+components before it stay installed and no applied record is written.
+Every other `serai edge --json` form is `invalid_request`.
+
+## Plan binding
+
+An agent's plan and its apply are separate runs, and anything can change
+between them: a moved bookmark, a change made in a UI, a host edited by
+hand. So every plan has a `plan_id`, 16 lowercase hex characters, and a
+JSON apply must name the id of the plan the operator approved:
+
+1. Run the plan (`up ... --plan --json`, `edge --plan --json`,
+   `idp --plan --json`) and show it to the operator with its `plan_id`.
+2. On approval, apply with `--expect-plan <plan_id>`.
+3. The apply plans again and, before changing anything, compares. Any other
+   plan, or nothing left to do, is refused: status `refused`, code
+   `stale_plan`, exit 1, nothing changed. Plan again and have the new plan
+   approved; never apply it on the old approval.
+
+What an id covers: for `up`, the app, compute host, source, commit, local or
+pushed, release (reused identity, or builder and base), jail action,
+rehearsal and public URL; for `edge`, each pending component's name, host
+and exact diff; for `idp`, the server and each action with the record it
+sends, its changes and the live record it targets. `edge` compares under
+the hosts' locks, on what it just staged; `up` compares where it plans,
+before the prompt. Without `--expect-plan`, or with a malformed id, a JSON
+apply is `invalid_request` before the repository is loaded. Plain-text
+runs print `plan <id>` after the plan and take `--expect-plan` optionally.
+
 ## Mutation boundary remains explicit
 
 JSON result mode refuses every other operation, including an `up` without
-`--yes`, **before repository loading or remote work**. `update` is the one
+`--yes` and any JSON apply without `--expect-plan`, **before repository
+loading or remote work**. `update` is the one
 exception, because its authority is the signed commit, as above. `--yes`,
 extra arguments and duplicate `--json` are not silently accepted by the
 supported read-only requests. Do not automatically remove a
@@ -205,8 +265,9 @@ shell/SSH credentials or prevent calling non-JSON operations. Tool and host
 permissions remain separate controls; procedural approval guidance is not access
 control.
 
-Structured mutation outcomes, stale-plan/precondition checks and reconciliation
-will be attached to verified lifecycle operations, not implemented as a wrapper
+The JSON applies (`up`, `edge`, `idp`) are each bound to an approved plan
+id, as above. Further structured outcomes and reconciliation will be
+attached to verified lifecycle operations, not implemented as a wrapper
 that treats every caught exception as safe to retry. The procedural skill does
 not grant authority or replace enforcement. A Phoenix app's rc-pointer upgrade now has
 a fixture-tested `--expect-current <active-identity>` precondition under its host
