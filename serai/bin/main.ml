@@ -31,6 +31,7 @@ let usage_text =
   \  serai up <app> --revision <bookmark|commit> [--source <checkout>] --yes --json --expect-plan <id>   (each step's outcome as JSON)\n\
   \  serai up <app> --revision <bookmark|commit> [--source <checkout>] --rehearse --ip <addr>   (the same into <app>test; no edge)\n\
   \  serai edge [--plan] [--yes] [--expect-plan <id>]   (--plan exits 2 when changes are pending)\n\
+  \  serai drift [--json]   (where the live system differs from the declaration; exits 2 when it does, 1 when a part can't be checked)\n\
   \  serai edge --plan --json | --yes --json --expect-plan <id>   (the plan, or only the approved plan, as JSON)\n\
   \  serai caddy-install [--yes]   (build if needed, unit, install, reload)\n\
   \  serai unlock <host-id|guest>\n\
@@ -286,6 +287,71 @@ let edge_outcome_json (outcome : Dispatcher.edge_outcome) =
       | None -> Null
       | Some (name, host, message) ->
           Object [ "component", Text name; "host", Text host; "message", Text message ]) ])
+
+let short commit = String.sub commit 0 (min 12 (String.length commit))
+
+let drift_apply_command app (plan : Dispatcher.up_plan) =
+  Printf.sprintf "serai up %s --revision %s --yes --json --expect-plan %s"
+    app plan.commit (Plan_id.to_string (Dispatcher.up_plan_id plan))
+
+let drift_json (t : Drift.t) =
+  let open Agent_cli in
+  let section to_fields = function
+    | Drift.Checked value -> Object (("state", Text "checked") :: to_fields value)
+    | Unavailable message -> Object [ "state", Text "unavailable"; "message", Text message ]
+    | Not_declared -> Object [ "state", Text "not_declared" ] in
+  let fields = function Object fields -> fields | json -> [ "plan", json ] in
+  let app = function
+    | Drift.App_checked { app; state; live; target; plan } ->
+        Object ([ "app", Text app; "state", Text (Drift_app.state_to_string state);
+                  "live", (match live with Some commit -> Text commit | None -> Null);
+                  "target", Text target.commit; "target_revision", Text target.revision ]
+                @ match plan with
+                  | Some plan -> [ "plan", up_plan_json plan; "apply", Text (drift_apply_command app plan) ]
+                  | None -> [])
+    | App_unavailable { app; message } -> Object [ "app", Text app; "state", Text "unavailable"; "message", Text message ]
+    | App_not_covered app -> Object [ "app", Text app; "state", Text "not_covered" ] in
+  Object [
+    "drifted", Bool (Drift.drifted t); "complete", Bool (Drift.complete t);
+    "edge", section (fun plan -> fields (edge_plan_json plan)) t.edge;
+    "idp", section (fun (plan : Idp_plan.t) ->
+        fields (Idp_plan.to_json plan)
+        @ [ "lockout", (match plan.lockout with Some message -> Text message | None -> Null) ]) t.idp;
+    "apps", Array (List.map app t.apps) ]
+
+(* One line per section and app, after the edge's diffs. *)
+let print_drift (t : Drift.t) =
+  let unavailable what message = Printf.printf "%s: unavailable: %s\n" what message in
+  let plan_suffix = function Some id -> "; plan " ^ Plan_id.to_string id | None -> "" in
+  (match t.edge with
+   | Drift.Checked { components = []; _ } -> print_endline "edge: current"
+   | Checked { components; plan_id } ->
+       Printf.printf "edge: pending %s%s\n"
+         (String.concat ", " (List.map (fun (name, host) -> Printf.sprintf "%s [%s]" name host) components))
+         (plan_suffix plan_id)
+   | Unavailable message -> unavailable "edge" message
+   | Not_declared -> print_endline "edge: not declared");
+  (match t.idp with
+   | Drift.Checked plan when plan.plan_id = None -> print_endline "idp: current"
+   | Checked plan ->
+       Printf.printf "idp: pending %d action%s%s%s\n" (List.length plan.actions)
+         (if List.length plan.actions = 1 then "" else "s") (plan_suffix plan.plan_id)
+         (match plan.lockout with Some message -> "; refused: " ^ message | None -> "")
+   | Unavailable message -> unavailable "idp" message
+   | Not_declared -> print_endline "idp: not declared");
+  List.iter (function
+      | Drift.App_checked { app; state; live; target; plan } ->
+          let from = match live with Some commit -> short commit ^ " -> " | None -> "" in
+          Printf.printf "app %s: %s %s%s (%s)%s\n" app (Drift_app.state_to_string state) from (short target.commit)
+            target.revision (plan_suffix (Option.map Dispatcher.up_plan_id plan))
+      | App_unavailable { app; message } -> unavailable ("app " ^ app) message
+      | App_not_covered app -> Printf.printf "app %s: not covered\n" app)
+    t.apps;
+  flush stdout
+
+let drift env =
+  let cache, store = up_dirs () in
+  Drift.run env ~cache ~store
 
 let step_status (status : Dispatcher.step_status) =
   Agent_cli.(match status with
@@ -593,7 +659,7 @@ let idp argv =
       exit 0
 
 let acting_json argv =
-  let run ?(assume_yes = false) ?(pending = ref false) operation workload f =
+  let run ?(assume_yes = false) ?(pending = ref false) ?(incomplete = ref false) operation workload f =
     Progress.start ~enabled:(List.mem "--progress=jsonl" argv) ~operation ~workload:(Some workload);
     Sys.catch_break true;
     (* stdout carries exactly the one result: what the run prints, its
@@ -605,7 +671,7 @@ let acting_json argv =
          Proc.live (fun () -> f (fst (build_env ~assume_yes ()))))) in
     print_endline (Agent_cli.to_json response);
     let code = Agent_cli.exit_code response in
-    let code = if code = 0 && !pending then 2 else code in
+    let code = if code = 0 && !pending then 2 else if code = 0 && !incomplete then 1 else code in
     Progress.finish (if code = 0 then Progress.Succeeded else if code = 2 then Progress.Changes_pending
                      else if code = 130 then Progress.Interrupted else Progress.Failed);
     exit code in
@@ -652,6 +718,14 @@ let acting_json argv =
       refuse "edge" "serai edge --yes --json requires --expect-plan <id>, the plan_id of the approved serai edge --plan --json"
   | "edge" :: _ ->
       refuse "edge" "serai edge --json takes --plan, or --yes --expect-plan <id>"
+  | [ "drift" ] ->
+      let pending = ref false and incomplete = ref false in
+      run ~pending ~incomplete "drift" "drift" (fun env ->
+        let t = drift env in
+        pending := Drift.drifted t;
+        incomplete := not (Drift.complete t);
+        Ok (drift_json t))
+  | "drift" :: _ -> refuse "drift" "serai drift --json takes no other argument"
 
   | _ -> ()
 
@@ -733,6 +807,10 @@ let dispatch (env, registry) argv =
        | Some id -> Printf.printf "plan %s\n%!" (Plan_id.to_string id); raise (Cli_exit 2)
        | None -> ())
   | [ "edge"; "--expect-plan"; id ] -> Dispatcher.edge ~expect_plan:(expected_plan id) env
+  | [ "drift" ] ->
+      let t = drift env in
+      print_drift t;
+      (match Drift.exit_code t with 0 -> () | code -> raise (Cli_exit code))
   | [ "caddy-install" ] -> Dispatcher.caddy_install env
   | [ "unlock"; host ] -> Dispatcher.unlock env host
   | [ "jail-test"; app; "--ip"; ip ] -> Dispatcher.jail_test env app ~ip
