@@ -33,8 +33,8 @@ let app ~endpoint ~hooks =
   | Ok app -> app
   | Error error -> failwith (Strategy_config.error_message error)
 
-let edge ?(operator = "ops") base_domain =
-  match Edge_config.create ~base_domain ~operator with
+let edge ?(operator = "ops") ?operator_edge_ports base_domain =
+  match Edge_config.create ?operator_edge_ports ~base_domain ~operator () with
   | Ok edge -> edge
   | Error error -> failwith (Edge_config.error_message error)
 

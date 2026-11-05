@@ -41,3 +41,6 @@ val field_names : string list
 
 (** Sexplib adapter: malformed fields raise Of_sexp_error at the input boundary. *)
 val of_fields : (string * Sexplib.Sexp.t) list -> t
+
+(** Sexplib adapter for one (port_name port) pair; edge.sexp reuses it. *)
+val named_port_of_sexp : Sexplib.Sexp.t -> named_port

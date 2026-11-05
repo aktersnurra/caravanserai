@@ -34,8 +34,27 @@ let garage_app : Network_endpoint.t =
   Test_declaration.endpoint ~name:"garage" ~ip:"10.40.0.4" ~hostname:"s3.example.org"
     ~tailnet_ports:[ { port_name = "s3"; port = 3900 } ] ~operator_ports:[ { port_name = "ssh"; port = 22 } ]
 
-let render ?operator endpoints =
-  Headscale_acl.render ~edge:(Test_declaration.edge ?operator "example.org") (Test_declaration.endpoints endpoints)
+let render ?operator ?operator_edge_ports endpoints =
+  Headscale_acl.render ~edge:(Test_declaration.edge ?operator ?operator_edge_ports "example.org")
+    (Test_declaration.endpoints endpoints)
+
+(* The operator's own devices reach the edge host's declared ports, e.g. the
+   mail server, in one rule after operator SSH; without any, the policy is
+   the golden one byte for byte (the next test). *)
+let () =
+  let ports : Network_endpoint.named_port list =
+    [ { port_name = "imaps"; port = 993 }; { port_name = "submission"; port = 587 } ] in
+  match render ~operator_edge_ports:ports [ board_app; garage_app ] with
+  | Error _ -> check "operator_edge_ports: rendered" false
+  | Ok generated ->
+      check "operator_edge_ports: one operator rule to the edge host's ports"
+        (contains ~needle:{|      "src":    ["ops@"],
+      "dst":    ["tag:vps:993",
+                 "tag:vps:587"]
+    },|} generated);
+      check "operator_edge_ports: the rest of the policy is unchanged"
+        (contains ~needle:{|"dst":    ["tag:vps:22", "tag:nuc:22"]|} generated
+        && contains ~needle:{|"dst":    ["10.40.0.4:22"]|} generated)
 
 let () =
   match render [ board_app; garage_app ] with

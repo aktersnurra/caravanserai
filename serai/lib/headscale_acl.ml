@@ -53,6 +53,24 @@ let operator_access_section ~operator operator_rules =
     },|}
         operator (render_destinations rules)
 
+(* Omitted when edge.sexp declares no operator_edge_ports, like the operator
+   section, so a policy without them renders exactly as before. *)
+let operator_edge_section ~operator (ports : Network_endpoint.named_port list) =
+  match ports with
+  | [] -> ""
+  | ports ->
+      Printf.sprintf
+        {|    // Operator -> services on the edge host itself that the operator's devices
+    // use directly over the tailnet (edge.sexp operator_edge_ports), e.g. mail.
+    {
+      "action": "accept",
+      "src":    ["%s"],
+      "dst":    [%s]
+    },|}
+        operator
+        (render_destinations
+           (List.map (fun (named : Network_endpoint.named_port) -> Printf.sprintf "tag:vps:%d" named.port) ports))
+
 let render ?proxy ~(edge : Edge_config.t) endpoints : (string, string) result =
   let operator = edge.operator ^ "@" in
   let endpoints = Network_endpoint.to_list endpoints in
@@ -63,7 +81,11 @@ let render ?proxy ~(edge : Edge_config.t) endpoints : (string, string) result =
       Error "no endpoint declared any tailnet_ports -- refusing to render an empty policy"
   | service_rules ->
       let operator_rules = destinations_for endpoints (fun e -> e.operator_ports) in
-      let operator_section = operator_access_section ~operator operator_rules in
+      let operator_section =
+        [ operator_edge_section ~operator edge.operator_edge_ports;
+          operator_access_section ~operator operator_rules ]
+        |> List.filter (fun section -> section <> "")
+        |> String.concat "\n" in
       Ok
         (Printf.sprintf
            {|{

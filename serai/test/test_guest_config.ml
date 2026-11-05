@@ -124,7 +124,23 @@ let () =
     [ ""; "Ops"; "ops@"; "a b"; "-ops"; String.make 64 'a' ];
   check "edge: unknown field rejected"
     (raises_with ~needle:"unknown field domain" (fun () ->
-         Edge_config.of_sexp (Sexplib.Sexp.of_string "((domain example.org))")))
+         Edge_config.of_sexp (Sexplib.Sexp.of_string "((domain example.org))")));
+  check "edge: operator_edge_ports is optional and empty when omitted"
+    (edge.operator_edge_ports = []);
+  let with_ports ports =
+    Edge_config.of_sexp (Sexplib.Sexp.of_string
+      ("((base_domain example.org) (operator ops) (operator_edge_ports " ^ ports ^ "))")) in
+  check "edge: operator_edge_ports parsed in declared order"
+    ((with_ports "((imaps 993) (submission 587))").operator_edge_ports
+     = [ { port_name = "imaps"; port = 993 }; { port_name = "submission"; port = 587 } ]);
+  List.iter (fun (label, ports) ->
+    check ("edge: operator_edge_ports rejects " ^ label)
+      (raises_with ~needle:"operator_edge_ports" (fun () -> with_ports ports)))
+    [ "port 0", "((imaps 0))";
+      "a port above 65535", "((imaps 65536))";
+      "an unsafe port name", "((IMAPS 993))";
+      "a duplicate port", "((imaps 993) (imap 993))";
+      "a duplicate port name", "((imaps 993) (imaps 994))" ]
 
 (* The example's files: ledger is the one guest, edge.sexp its domain, and
    apps + guests together pass validation. *)

@@ -799,7 +799,7 @@ serai/
   lib/network_endpoint.ml  the shared endpoint type (name, ip, hostname, named ports)
   lib/sexp_fields.ml       shared (key value) field-list parsing
   lib/guest_config.ml      sexp parsing for guests/<name>/guest.sexp (endpoint, login user, source checkout)
-  lib/edge_config.ml       sexp parsing for edge/edge.sexp (base_domain, operator)
+  lib/edge_config.ml       sexp parsing for edge/edge.sexp (base_domain, operator, operator_edge_ports)
   lib/headscale_acl.ml     Headscale ACL rendering
   lib/pf_rules.ml          compute host pf rule rendering
   lib/caddy_render.ml      fills the hand-written edge/caddy templates
