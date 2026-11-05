@@ -39,6 +39,10 @@ val parse_signature : string -> (signature, string) result
     be full commit ids. *)
 val is_ancestor : jj_bin:string -> t -> ancestor:string -> descendant:string -> (bool, string) result
 
+(** Whether the mirror has [commit] (a full commit id): false for one it
+    never fetched, or that a rewritten branch dropped. *)
+val has_commit : jj_bin:string -> t -> string -> (bool, string) result
+
 (** The bookmark the remote's HEAD named when the mirror was cloned, as jj
     recorded it (its [trunk()] alias). An error when none was recorded:
     never a guess at [main] or [master]. *)

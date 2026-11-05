@@ -325,4 +325,87 @@ let () =
                              && mentions "'\\''migrate'\\'' '\\''hello'\\''" r) calls);
     check "a rehearsal never reads the live release, touches the edge or checks the public URL"
       (not (List.exists (fun r -> mentions "release_bin=" r || mentions "01-pf-rules" r
-                                  || r.Proc.prog = "curl") calls)))
+                                  || r.Proc.prog = "curl") calls));
+
+    (* Drift: the live commit against the deploy bookmark or the default
+       branch, and a drifted app's up plan, with only read-only probes. *)
+    let live_commit = String.make 40 'd' in
+    let active = ref (Some identity) and recorded = ref (Some live_commit) in
+    let deploy = ref (Some commit) and known = ref true and descends = ref true in
+    let probe_fails = ref false in
+    let release_answer () =
+      Printf.sprintf "release-probe-active: %s\nrelease-probe-source: %s\nrelease-probe-previous: none\n"
+        (match !active with Some id -> ".infra-releases/hello/" ^ id | None -> "none")
+        (Option.value ~default:"none" !recorded) in
+    let drift_outputs (r : Proc.request) =
+      if mentions "release-probe-active" r then release_answer ()
+      else if r.prog = "jj" && mentions "revset-aliases" r then "\"main@origin\"\n"
+      else if r.prog = "jj" && mentions {|exact:"deploy"|} r then Option.value ~default:"" !deploy ^ "\n"
+      else if r.prog = "jj" && mentions "present(" r then (if !known then live_commit else "") ^ "\n"
+      else if r.prog = "jj" && mentions (live_commit ^ " & ::") r then (if !descends then live_commit else "") ^ "\n"
+      else outputs r in
+    let drift app =
+      let mock = Proc.Mock.create ~outputs:drift_outputs
+          ~exit_codes:(fun r -> if !probe_fails && mentions "release-probe-active" r then 1 else 0) () in
+      let result = Proc.Mock.run mock (fun () -> Drift.app (env ~confirm:(fun _ -> failwith "asked")) app ~cache ~store) in
+      result, Proc.Mock.calls mock in
+    let read_only calls =
+      List.for_all (fun (r : Proc.request) ->
+          r.prog <> "rsync" && (r.prog <> "ssh" || mentions "release-probe-active" r || mentions "jail-probe-root" r)) calls in
+    source_commit := commit;
+
+    let result, calls = drift "hello" in
+    let expected_id =
+      let mock = Proc.Mock.create ~outputs:drift_outputs () in
+      Dispatcher.up_plan_id (Proc.Mock.run mock (fun () ->
+          Dispatcher.up_plan (env ~confirm:(fun _ -> false)) "hello" ~revision:commit ~cache ~store)) in
+    (match result with
+     | Drift.App_checked { state = Drift_app.Behind; live = Some l; target = { revision = "deploy"; commit = t }; plan = Some plan; _ } ->
+         check "drift: the deploy bookmark descends from the live commit: behind, with its up plan"
+           (l = live_commit && t = commit && plan.commit = commit);
+         check "drift: the plan id is serai up --plan's for that commit" (Dispatcher.up_plan_id plan = expected_id)
+     | _ -> check "drift: hello is behind its deploy bookmark" false);
+    check "drift: the plan is for the target commit itself, not a bookmark that could move"
+      (List.exists (mentions ("(" ^ commit ^ ") & ::remote_bookmarks()")) calls
+       && not (List.exists (mentions "\"deploy\"@origin") calls));
+    check "drift: only read-only probes reach the host" (read_only calls);
+
+    recorded := Some commit;
+    let result, calls = drift "hello" in
+    check "drift: the live commit is the target: current, and no plan"
+      (match result with Drift.App_checked { state = Drift_app.Current; plan = None; _ } -> true | _ -> false);
+    check "drift: a current app runs no up plan" (not (List.exists (mentions "jail-probe-root") calls));
+
+    recorded := Some live_commit; deploy := None;
+    let result, _ = drift "hello" in
+    check "drift: without a deploy bookmark, the default branch is the target, named"
+      (match result with
+       | Drift.App_checked { state = Drift_app.Behind; target = { revision = "main"; commit = t }; _ } -> t = commit
+       | _ -> false);
+
+    deploy := Some commit; descends := false;
+    check "drift: a target not descending from the live commit: diverged, with a plan"
+      (match fst (drift "hello") with Drift.App_checked { state = Drift_app.Diverged; plan = Some _; _ } -> true | _ -> false);
+    descends := true; known := false;
+    let result, calls = drift "hello" in
+    check "drift: a live commit the mirror doesn't have: diverged, without asking ancestry"
+      ((match result with Drift.App_checked { state = Drift_app.Diverged; plan = Some _; _ } -> true | _ -> false)
+       && not (List.exists (mentions (live_commit ^ " & ::")) calls));
+    known := true;
+
+    active := None; recorded := None;
+    check "drift: no active release: not deployed, with a plan"
+      (match fst (drift "hello") with Drift.App_checked { state = Drift_app.Not_deployed; live = None; plan = Some _; _ } -> true | _ -> false);
+    active := Some identity;
+    check "drift: an active release without a source record: unknown, no plan"
+      (match fst (drift "hello") with Drift.App_checked { state = Drift_app.Unknown; plan = None; _ } -> true | _ -> false);
+    recorded := Some live_commit;
+
+    probe_fails := true;
+    check "drift: a failing probe makes the app unavailable, with the reason"
+      (match fst (drift "hello") with
+       | Drift.App_unavailable { app = "hello"; message } -> contains "probing hello's releases" message
+       | _ -> false);
+    probe_fails := false;
+    check "drift: a package workload is not covered, and nothing runs"
+      (drift "logs" = (Drift.App_not_covered "logs", [])))

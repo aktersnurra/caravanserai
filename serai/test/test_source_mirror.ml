@@ -43,6 +43,12 @@ let () = Proc.live @@ fun () ->
       (Source_mirror.resolve ~jj_bin:"jj" mirror ~revision:"main" = Ok first);
     check "full commit id resolves to itself"
       (Source_mirror.resolve ~jj_bin:"jj" mirror ~revision:first = Ok first);
+    check "has_commit: a fetched commit is there"
+      (Source_mirror.has_commit ~jj_bin:"jj" mirror first = Ok true);
+    check "has_commit: an unknown commit is not, and that's no error"
+      (Source_mirror.has_commit ~jj_bin:"jj" mirror (String.make 40 'f') = Ok false);
+    check "has_commit: only a full commit id"
+      (Result.is_error (Source_mirror.has_commit ~jj_bin:"jj" mirror "main"));
     (* The remote's default branch, as jj git clone recorded it. *)
     check "default branch: the origin's main"
       (Source_mirror.default_branch ~jj_bin:"jj" mirror = Ok "main");

@@ -107,6 +107,15 @@ let is_ancestor ~jj_bin mirror ~ancestor ~descendant =
   | Ok _ -> Error "source mirror: unexpected ancestry answer"
   | Error _ as error -> error
 
+(* present() is empty, not an error, for a commit the mirror lacks. *)
+let has_commit ~jj_bin mirror commit =
+  let* commit = full_commit ~what:"a commit" commit in
+  match jj jj_bin mirror [ "log"; "--no-graph"; "-r"; Printf.sprintf "present(%s)" commit; "-T"; "commit_id ++ \"\\n\"" ] with
+  | Ok "" -> Ok false
+  | Ok found when found = commit -> Ok true
+  | Ok _ -> Error "source mirror: unexpected answer for a commit"
+  | Error _ as error -> error
+
 (* jj git clone records the remote's HEAD as the mirror's own trunk()
    alias, "<name>@origin", TOML-quoted. Read at repo scope only, so a user's
    alias never stands in for the remote's. *)
