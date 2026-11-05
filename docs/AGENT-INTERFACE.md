@@ -225,6 +225,55 @@ message}`). A failure partway is `failed` with code `step_failed`; the
 components before it stay installed and no applied record is written.
 Every other `serai edge --json` form is `invalid_request`.
 
+## Drift
+
+```sh
+serai drift --json
+```
+
+Operation `drift`, read-only: where the live system differs from the
+declaration, with the plan that fixes each part. It plans the edge (staging
+and diffing under the hosts' locks, as `edge.plan` does), the identity
+provider and every app. Each section stands alone: one that can't be
+checked is `unavailable` with a `message`, and the rest still run.
+
+`data` holds:
+
+- `drifted`: an edge or idp plan is pending, or an app is `behind`,
+  `diverged` or `not_deployed`.
+- `complete`: every section and app was checked. `false` means unknown,
+  not clean.
+- `edge`, `idp`: `state` `checked`, `unavailable` or `not_declared`; a
+  checked section adds the fields of `edge.plan` or `idp.plan`, and the idp
+  section `lockout` (null, or why `serai idp` would refuse the plan). The
+  idp section is `unavailable` without `SERAI_IDP_API_KEY`; no request is
+  made.
+- `apps`: each declared app, then each guest, with `app` and `state`:
+
+| `state` | Meaning |
+| --- | --- |
+| `current` | The commit recorded beside the active release is the target. |
+| `behind` | The target descends from it. |
+| `diverged` | It doesn't, or the repository no longer has the live commit. |
+| `not_deployed` | No active release. |
+| `unknown` | An active release without a source record. |
+| `unavailable` | The app couldn't be checked; `message` says why. |
+| `not_covered` | A package, pinned-binary or guest workload, or an app that declares no source: no source commit to compare. |
+
+  A checked app has `live` (or null), `target` and `target_revision`:
+  `deploy` when the repository has that bookmark (CI-approved commits),
+  else the default branch's name. A drifted app adds `plan` (the `up.plan`
+  data for the target commit) and `apply`, the exact `serai up ... --yes
+  --json --expect-plan <plan_id>` command.
+
+It exits 2 when drifted, otherwise 1 when incomplete, otherwise 0, with
+status `succeeded` whenever it ran. An invalid declaration or any other
+argument is refused before anything is contacted.
+
+To fix drift, show the operator a drifted section's plan with its
+`plan_id`; on approval, apply it as that section's apply takes it (see
+"Plan binding"). Never apply several sections on one approval.
+
 ## Plan binding
 
 An agent's plan and its apply are separate runs, and anything can change
@@ -233,7 +282,8 @@ hand. So every plan has a `plan_id`, 16 lowercase hex characters, and a
 JSON apply must name the id of the plan the operator approved:
 
 1. Run the plan (`up ... --plan --json`, `edge --plan --json`,
-   `idp --plan --json`) and show it to the operator with its `plan_id`.
+   `idp --plan --json`, or a drifted section of `drift --json`) and show it
+   to the operator with its `plan_id`.
 2. On approval, apply with `--expect-plan <plan_id>`.
 3. The apply plans again and, before changing anything, compares. Any other
    plan, or nothing left to do, is refused: status `refused`, code

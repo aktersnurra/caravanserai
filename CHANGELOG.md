@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-11-05: `serai drift`
+
+- `serai drift [--json]` shows in one read-only call where the live system
+  differs from the declaration: the edge's and Pocket ID's pending plans,
+  and each app's live commit against its `deploy` bookmark or default
+  branch, with the plan id that fixes each part. A part that can't be
+  checked says why; exit 2 when drifted, 1 when incomplete.
+
 ## 2026-11-03: Plan binding
 
 - `serai up`, `serai edge` and `serai idp` name each plan with a plan id,

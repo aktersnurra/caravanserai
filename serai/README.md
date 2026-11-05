@@ -115,6 +115,26 @@ nothing until the jail and its env are in place:
 
 Destroy it when done: `serai jail-test <app> --destroy`.
 
+## Drift: `serai drift`
+
+```sh
+serai drift            # what differs, one line per section and app
+serai drift --json     # the same as a result (operation drift)
+```
+
+One read-only call over the edge (`serai edge --plan`), Pocket ID
+(`serai idp --plan`, when `idp.sexp` exists and `SERAI_IDP_API_KEY` is
+set) and every app built from a declared source; the rest are listed as
+not covered. An app compares the commit the compute
+host records beside its active release (`.infra-source`) with its target:
+the repository's `deploy` bookmark when it has one, else its default
+branch. It is `current`, `behind`, `diverged`, `not_deployed` or `unknown`
+(no source record); a drifted app gets the up plan for the target commit.
+Every drifted part ends with `plan <id>`, which its own apply takes with
+`--expect-plan`. A part that can't be checked (a held lock, no key, an
+unreachable host) says why and the rest still run. It exits 2 when
+anything drifted, otherwise 1 when a part couldn't be checked, otherwise 0.
+
 ## Unattended updates: `serai update`
 
 ```sh
