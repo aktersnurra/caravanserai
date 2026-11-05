@@ -19,3 +19,30 @@ type app_drift =
     commit the mirror lacks is [Diverged]. Any failure is [App_unavailable];
     package, pinned-binary and package-service workloads are not covered. *)
 val app : Dispatcher.env -> string -> cache:string -> store:string -> app_drift
+
+(** A section checked, one that couldn't be (with the reason), or one the
+    configuration doesn't declare. *)
+type 'a section = Checked of 'a | Unavailable of string | Not_declared
+
+type t = {
+  edge : Dispatcher.edge_plan section;
+  idp : Idp_plan.t section;
+  apps : app_drift list;  (** declared apps in order, then guests (not covered) *)
+}
+
+(** Plans the edge (staging and diffing under the hosts' locks), the
+    identity provider (without SERAI_IDP_API_KEY, no request is made) and
+    every app, each on its own: one that fails is [Unavailable] and the rest
+    still run. Installs nothing. An idp plan that would lock out the key's
+    owner stays [Checked] with its [lockout]. *)
+val run : Dispatcher.env -> cache:string -> store:string -> t
+
+(** An edge or idp plan is pending, or an app is behind, diverged or not
+    deployed. *)
+val drifted : t -> bool
+
+(** Nothing is [Unavailable]. *)
+val complete : t -> bool
+
+(** 2 when drifted, else 1 when incomplete, else 0. *)
+val exit_code : t -> int

@@ -41,3 +41,42 @@ let app (env : Dispatcher.env) name ~cache ~store =
     with
     | checked -> checked
     | exception Failure message -> App_unavailable { app = name; message }
+
+type 'a section = Checked of 'a | Unavailable of string | Not_declared
+
+type t = { edge : Dispatcher.edge_plan section; idp : Idp_plan.t section; apps : app_drift list }
+
+let idp (env : Dispatcher.env) =
+  match Idp_declaration.load ~layout:env.layout with
+  | Error message -> Unavailable message
+  | Ok None -> Not_declared
+  | Ok (Some declaration) -> (
+      match Pocket_id.session ~url:declaration.url with
+      | Error message -> Unavailable message
+      | Ok session -> (
+          match Pocket_id.fetch ~curl_bin:env.curl_bin session with
+          | Error error -> Unavailable (Pocket_id.error_message error)
+          | Ok live -> Checked (Idp_plan.plan declaration live)))
+
+let run (env : Dispatcher.env) ~cache ~store =
+  let edge = match Dispatcher.plan_edge env with
+    | plan -> Checked plan
+    | exception Failure message -> Unavailable message in
+  let idp = idp env in
+  let apps =
+    List.map (fun (a : App_config.t) -> app env a.endpoint.name ~cache ~store) env.config
+    @ List.map (fun guest -> App_not_covered guest) (Dispatcher.list_guests env) in
+  { edge; idp; apps }
+
+let drifted t =
+  let edge = match t.edge with Checked plan -> plan.plan_id <> None | Unavailable _ | Not_declared -> false in
+  let idp = match t.idp with Checked plan -> plan.plan_id <> None | Unavailable _ | Not_declared -> false in
+  edge || idp
+  || List.exists (function App_checked { state; _ } -> Drift_app.drifted state | App_unavailable _ | App_not_covered _ -> false) t.apps
+
+let complete t =
+  let available = function Unavailable _ -> false | Checked _ | Not_declared -> true in
+  available t.edge && available t.idp
+  && List.for_all (function App_unavailable _ -> false | App_checked _ | App_not_covered _ -> true) t.apps
+
+let exit_code t = if drifted t then 2 else if complete t then 0 else 1

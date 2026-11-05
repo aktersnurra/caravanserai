@@ -1519,3 +1519,34 @@ let () =
     exit 1
   end
   else print_endline "all assertions passed"
+
+(* Drift.run: every section checked on its own, so one that can't be
+   reached never hides the others. *)
+let () =
+  let env = { (make_env ()) with guests = [] } in
+  let held (r : Proc.request) = is_acquire r in
+  let mock = Proc.Mock.create ~exit_codes:(fun r -> if held r then 1 else 0) ~outputs:fixture_outputs () in
+  let t = Proc.Mock.run mock (fun () -> Drift.run env ~cache:"/nonexistent-cache" ~store:"/nonexistent-store") in
+  check "drift: a lock that can't be taken makes the edge unavailable"
+    (match t.edge with Drift.Unavailable _ -> true | _ -> false);
+  check "drift: no idp.sexp: the idp is not declared" (t.idp = Drift.Not_declared);
+  check "drift: every declared app is still checked, in declaration order"
+    (List.map (function
+         | Drift.App_checked { app; _ } | App_unavailable { app; _ } | App_not_covered app -> app) t.apps
+     = List.map (fun (a : App_config.t) -> a.endpoint.name) env.config);
+  check "drift: nothing is installed or released"
+    (not (List.exists (fun (r : Proc.request) ->
+         let cmd = String.concat " " r.args in
+         r.prog = "rsync" || (r.prog = "ssh" && contains ~needle:"_SOURCE=" cmd && not (is_diff r))
+         || contains ~needle:"artifact_apply" cmd) (Proc.Mock.calls mock)))
+
+let () =
+  let env = { (make_env ()) with layout = Repo_root.example () } in
+  Unix.putenv "SERAI_IDP_API_KEY" "";
+  let mock = Proc.Mock.create ~outputs:fixture_outputs () in
+  let t = Proc.Mock.run mock (fun () -> Drift.run env ~cache:"/nonexistent-cache" ~store:"/nonexistent-store") in
+  check "drift: an idp.sexp without a key: unavailable, saying how to set it"
+    (match t.idp with Drift.Unavailable message -> contains ~needle:"SERAI_IDP_API_KEY" message | _ -> false);
+  check "drift: and Pocket ID is never asked"
+    (not (List.exists (fun (r : Proc.request) -> r.prog = "curl" && contains ~needle:"/api/" (String.concat " " r.args))
+            (Proc.Mock.calls mock)))
