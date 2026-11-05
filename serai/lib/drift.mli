@@ -16,8 +16,9 @@ type app_drift =
 (** Checks one app: its releases probed read-only on the compute host, its
     mirror synced, the target resolved ([deploy], else the default branch),
     ancestry asked when they differ, and an up plan when it drifted. A live
-    commit the mirror lacks is [Diverged]. Any failure is [App_unavailable];
-    package, pinned-binary and package-service workloads are not covered. *)
+    commit the mirror lacks is [Diverged]. Any failure is [App_unavailable].
+    Package, pinned-binary and package-service workloads, and source-built
+    apps that declare no source, are not covered. *)
 val app : Dispatcher.env -> string -> cache:string -> store:string -> app_drift
 
 (** A section checked, one that couldn't be (with the reason), or one the

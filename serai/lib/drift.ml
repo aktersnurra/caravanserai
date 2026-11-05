@@ -10,9 +10,10 @@ type app_drift =
   | App_not_covered of string
 
 let app (env : Dispatcher.env) name ~cache ~store =
+  (* As serai update enrols them: built from a declared source. *)
   let source_built (app : App_config.t) =
     match app.strategy with
-    | Strategy_config.Freebsd_native_elixir _ | Freebsd_native_ocaml _ -> true
+    | Strategy_config.Freebsd_native_elixir { source; _ } | Freebsd_native_ocaml { source; _ } -> source <> None
     | Freebsd_package _ | Fetch_binary _ | Freebsd_package_service _ -> false in
   if not (source_built (Dispatcher.find_app env name)) then App_not_covered name
   else

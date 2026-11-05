@@ -408,4 +408,21 @@ let () =
        | _ -> false);
     probe_fails := false;
     check "drift: a package workload is not covered, and nothing runs"
-      (drift "logs" = (Drift.App_not_covered "logs", [])))
+      (drift "logs" = (Drift.App_not_covered "logs", []));
+    let unsourced = List.map (fun (a : App_config.t) ->
+        if a.endpoint.name <> "hello" then a
+        else
+          let path = Filename.concat (Layout.config d.layout) "apps/hello/app.sexp" in
+          let text = In_channel.with_open_bin path In_channel.input_all in
+          let line = "(source (git https://git.example.org/hello.git))" in
+          check "drift: the example declares hello's source" (contains line text);
+          let at = Option.get (List.find_index (fun i -> String.sub text i (String.length line) = line)
+                                 (List.init (String.length text - String.length line + 1) Fun.id)) in
+          App_config.of_sexp (Sexplib.Sexp.of_string
+            (String.sub text 0 at ^ String.sub text (at + String.length line) (String.length text - at - String.length line))))
+        d.apps in
+    let mock = Proc.Mock.create ~outputs:drift_outputs () in
+    let result = Proc.Mock.run mock (fun () ->
+        Drift.app { (env ~confirm:(fun _ -> false)) with config = unsourced } "hello" ~cache ~store) in
+    check "drift: a source-built app with no declared source is not covered, as serai update leaves it"
+      (result = Drift.App_not_covered "hello" && Proc.Mock.calls mock = []))
