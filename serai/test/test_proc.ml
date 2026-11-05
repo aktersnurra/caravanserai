@@ -50,7 +50,9 @@ let () =
 
 (* Ctrl-C while a child runs: Sys.Break is raised inside the live handler
    (waitpid or the read is interrupted), and must be passed on to the
-   suspended computation so its cleanup -- with_locks' release -- runs. *)
+   suspended computation so its cleanup -- with_locks' release -- runs.
+   The child waits before signalling: a signal that lands before the parent
+   blocks in waitpid is handled only after the child exits. *)
 let interrupted_while_running name perform =
   let finally_ran = ref false in
   Sys.catch_break true;
@@ -62,7 +64,7 @@ let interrupted_while_running name perform =
           Proc.live (fun () ->
               Fun.protect
                 ~finally:(fun () -> finally_ran := true)
-                (fun () -> perform "sh" [ "-c"; "kill -INT $PPID; sleep 1" ]));
+                (fun () -> perform "sh" [ "-c"; "sleep 0.05; kill -INT $PPID; sleep 1" ]));
           `Returned
         with Sys.Break -> `Break)
   in
@@ -197,18 +199,21 @@ let () =
     (result = "pipe-closed")
 
 (* Simulate a competing reaper: the original interrupt must not hide the
-   unexpected ECHILD from cleanup. This is not a supported production caller. *)
+   unexpected ECHILD from cleanup. This is not a supported production caller.
+   The child lives until the handler kills it: a child that exits right after
+   the signal can be reaped by Proc's waitpid before the handler runs. *)
 let () =
   let pid_file = Filename.temp_file "serai-proc-reaped-" ".pid" in
   let previous = Sys.signal Sys.sigint (Sys.Signal_handle (fun _ ->
       let pid = In_channel.with_open_text pid_file (fun channel ->
           int_of_string (In_channel.input_all channel)) in
+      Unix.kill pid Sys.sigkill;
       ignore (Unix.waitpid [] pid);
       raise Sys.Break)) in
   let outcome = Fun.protect
       ~finally:(fun () -> Sys.set_signal Sys.sigint previous; Sys.remove pid_file)
       (fun () ->
-        let script = Printf.sprintf "printf '%%s' $$ > %s; sleep 0.05; kill -INT $PPID; exit 0"
+        let script = Printf.sprintf "printf '%%s' $$ > %s; sleep 0.05; kill -INT $PPID; exec sleep 30"
             (Filename.quote pid_file) in
         try ignore (Proc.live (fun () -> Proc.run "sh" ["-c"; script])); None
         with exn -> Some exn) in
