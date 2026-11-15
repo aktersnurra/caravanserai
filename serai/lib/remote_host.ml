@@ -319,13 +319,15 @@ let uncertain_while retention f =
    returned or raised -- unless the outcome is uncertain, when the stage and
    lock stay and [retained] says so. A cleanup that fails is uncertain too,
    and both errors are kept. *)
-let with_retained_stage env ~command ~host ~retained ?(prepare = fun _ -> ()) ~cleanup body =
+let with_retained_stage env ~command ~host ~stage ~retained ?(prepare = fun _ -> ()) ~cleanup body =
   let retention = { uncertain = false } in
   ignore (acquire_lock env ~command host);
+  Run_state.changing ();
   Fun.protect
     ~finally:(fun () ->
       if retention.uncertain then begin
         Progress.outcome_unknown ();
+        Run_state.retain { host = host_label env host; stage; context = command };
         Printf.eprintf "%s\n%!" retained
       end else release_lock env host)
     (fun () ->
@@ -338,6 +340,24 @@ let with_retained_stage env ~command ~host ~retained ?(prepare = fun _ -> ()) ~c
       match body retention with
       | value -> cleanup (); value
       | exception primary -> Proc.reraise_after_cleanup primary cleanup)
+
+(* Asks for approval of [operation] on exactly [facts]. The plan id names
+   both, so an approval given for one plan is no approval of another: under
+   Plan_only the request is reported and nothing changes, under Expect any
+   other plan is stale. True means the change may begin. *)
+let approved env ~operation ~facts question =
+  let id = Plan_id.make ~operation (List.concat_map (fun (name, value) -> [ name; value ]) facts) in
+  let yes = match !Run_state.approval with
+    | Plan_only -> raise (Run_state.Planned { operation; id; question; facts })
+    | Expect expected when expected <> id ->
+        raise (Plan_id.Stale (Printf.sprintf "%s: stale plan: approved %s, now %s; run it with --plan again"
+                 operation (Plan_id.to_string expected) (Plan_id.to_string id)))
+    | Expect _ | Granted -> true
+    | Ask ->
+        Printf.printf "plan %s\n%!" (Plan_id.to_string id);
+        env.confirm question in
+  if yes then Run_state.changing ();
+  yes
 
 (* Removes a stage directory, refusing one that is missing or a symlink. *)
 let remove_stage_script ?marker stage =
@@ -353,6 +373,7 @@ let unlock env label =
   | None -> failwith "unlock: expected a configured host ID or guest name"
   | Some host ->
       announce "unlock %s" label;
+      Run_state.changing ();
       ssh_checked env
         (host_connection env host @ [ Remote_lock.unlock_script ~stage:env.remote_stage ])
 

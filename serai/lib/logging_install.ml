@@ -43,6 +43,7 @@ let install_compute_logging ?(mode = Converge) env =
   let relay = match Result.bind (logging_receiver env policy) (fun receiver -> Logging_relay.v ~receiver ~host ~guests) with
     | Ok relay -> relay | Error e -> failwith ("logging: " ^ Logging_relay.error_message e) in
   announce "install compute logging";
+  Run_state.changing ();
   with_locks env ~command:"install compute logging" [ Compute_host ] (fun _records ->
       secure_remote_stage env ~target:env.compute_target ~subtree:"compute/apps";
       rsync_checked env
@@ -98,5 +99,6 @@ let install_edge_logging_component ?(action = Normal_logging) env component =
               [ "-az"; "--no-owner"; "--no-group"; Filename.concat local "edge";
                 Printf.sprintf "%s:%s/" env.edge_target env.remote_stage ]);
       announce "install %s (edge)" script;
+      Run_state.changing ();
       ssh_checked env
         [ env.edge_target; Printf.sprintf "sudo bash %s/edge/%s%s" env.remote_stage script (logging_action_arg action) ])

@@ -28,6 +28,7 @@ let artifact_install env app_name ~identity ~archive ~sha256 =
   let stage = Printf.sprintf "%s/artifacts/%s/%s" env.remote_stage app.endpoint.name identity in
   let installer = Layout.lib_file env.layout "artifact_install.sh" in
   announce "install artifact %s %s (prepare only)" app.endpoint.name identity;
+  Run_state.changing ();
   with_locks env ~command:("artifact install " ^ app.endpoint.name) [ Compute_host ] (fun _records ->
       secure_remote_stage env ~target:env.compute_target
         ~subtree:("artifacts/" ^ app.endpoint.name ^ "/" ^ identity);
@@ -262,7 +263,7 @@ let artifact_build_candidate ?checkout ?opam_repository ?opam_snapshots env app_
             {|[ -d "$stage" ] && [ ! -L "$stage" ] || exit 1|};
             {|rm -rf -- "$stage"|};
             {|[ ! -e "$stage" ] && [ ! -L "$stage" ]|} ] in
-        with_retained_stage env ~command:("artifact build " ^ app.endpoint.name) ~host:Compute_host
+        with_retained_stage env ~command:("artifact build " ^ app.endpoint.name) ~host:Compute_host ~stage
           ~retained:(Printf.sprintf
             "artifact build: stage %s and host lock retained; inspect failed/uncertain build before serai unlock %s."
             stage (host_label env Compute_host))
@@ -417,7 +418,10 @@ let artifact_build_executable_store ?reuse env app_name ~ip ~base_archive ~base_
         then failwith "artifact reuse: requested inputs do not match stored artifact";
         identity
     | None ->
-    if not (env.confirm ("Build verified executable artifact for " ^ app_name ^ "?"))
+    if not (approved env ~operation:"artifact.build"
+              ~facts:[ "app", app_name; "host", host_label env Compute_host; "builder_ip", ip;
+                       "base_sha256", base_sha256; "recipe_sha256", recipe.sha256 ]
+              ("Build verified executable artifact for " ^ app_name ^ "?"))
     then failwith "artifact build: cancelled";
     let subtree = "artifact-executable/" ^ app_name ^ "/" ^ env.lock_token in
     let stage = env.remote_stage ^ "/" ^ subtree in
@@ -431,7 +435,7 @@ let artifact_build_executable_store ?reuse env app_name ~ip ~base_archive ~base_
       code in
     let refuse_exit code =
       if code <> 0 then failwith (Printf.sprintf "artifact build: remote exited %d" code) in
-    with_retained_stage env ~command:("artifact build " ^ app_name) ~host:Compute_host
+    with_retained_stage env ~command:("artifact build " ^ app_name) ~host:Compute_host ~stage
       ~retained:(Printf.sprintf
         "artifact build: stage %s and host lock retained; inspect failed/uncertain build before serai unlock %s."
         stage (host_label env Compute_host))
@@ -518,7 +522,7 @@ let run_artifact_helper env ~context ~label ~subtree ~files ~helpers ~assignment
   Fun.protect ~finally:(fun () -> remove_tree local) (fun () ->
     let scripts = snapshot_helpers env ~context ~local helpers in
     let stage = env.remote_stage ^ "/" ^ subtree in
-    with_retained_stage env ~command:label ~host:Compute_host
+    with_retained_stage env ~command:label ~host:Compute_host ~stage
       ~retained:(Printf.sprintf
         "%s: remote outcome uncertain; stage %s and host lock retained. Inspect before serai unlock %s."
         context stage (host_label env Compute_host))
@@ -591,7 +595,10 @@ let artifact_apply ?(convert=false) ?rehearse_ip env app_name ~store ~identity ~
   let url = Printf.sprintf "http://%s:%d%s" app.endpoint.ip port settings.check_path in
   let mode = if convert then "convert" else if rollback then "rollback" else "upgrade" in
   validate_stage env.remote_stage;
-  if not (env.confirm (Printf.sprintf "%s %s to %s (files only; no database rollback)?" mode jail identity))
+  if not (approved env ~operation:("artifact." ^ mode)
+            ~facts:[ "jail", jail; "host", host_label env Compute_host; "identity", identity;
+                     "archive_sha256", manifest.archive_sha256; "check", url ]
+            (Printf.sprintf "%s %s to %s (files only; no database rollback)?" mode jail identity))
   then failwith "artifact apply: cancelled";
   run_artifact_helper env ~context:"artifact apply" ~label:("artifact " ^ mode ^ " " ^ jail)
     ~subtree:("artifact-apply/" ^ jail ^ "/" ^ identity)
@@ -638,7 +645,9 @@ let revert env app_name =
     | { previous = None; _ } -> failwith (Printf.sprintf "revert: %s has no previous release on the host" app_name)
     | exception Failure message -> failwith ("revert: " ^ message) in
   let url = Printf.sprintf "http://%s:%d%s" app.endpoint.ip (check_port app.endpoint) settings.check_path in
-  if not (env.confirm (Printf.sprintf "revert %s to %s (files only)?" app_name previous)) then
+  if not (approved env ~operation:"revert"
+            ~facts:[ "app", app_name; "host", host_label env Compute_host; "identity", previous; "check", url ]
+            (Printf.sprintf "revert %s to %s (files only)?" app_name previous)) then
     failwith "revert: cancelled";
   (* The script checks .previous again under the lock. *)
   run_artifact_helper env ~context:"revert" ~label:("artifact revert " ^ app_name)

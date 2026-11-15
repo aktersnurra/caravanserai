@@ -396,7 +396,8 @@ let step_status (status : Dispatcher.step_status) =
     | Done -> [ "status", String "done" ]
     | Skipped -> [ "status", String "skipped" ]
     | Not_run -> [ "status", String "not_run" ]
-    | Failed message -> [ "status", String "failed"; "message", String message ])
+    | Failed message -> [ "status", String "failed"; "message", String message ]
+    | Pending message -> [ "status", String "pending"; "message", String message ])
 
 (* What the operator or agent does after a failed step. Nothing is undone
    automatically: a release may already have migrated. *)
@@ -418,6 +419,10 @@ let up_json app ~revision ((plan : Dispatcher.up_plan), (outcome : Dispatcher.up
   match outcome.result with
   | Deployed identity -> Ok (data [ "outcome", String "deployed"; "identity", String identity ] None)
   | Stopped_for_env message -> Ok (data [ "outcome", String "stopped_for_operator" ] (Some message))
+  | Stopped_for_edge id ->
+      Ok (data [ "outcome", String "stopped_for_operator"; "edge_plan_id", String (Plan_id.to_string id) ]
+            (Some (Printf.sprintf "serai edge --yes --json --expect-plan %s, then serai check %s --json"
+                     (Plan_id.to_string id) app)))
   | Step_failed (step, message) ->
       Error (data [ "outcome", String "failed" ] (Some (next_after app ~revision step)), message)
 

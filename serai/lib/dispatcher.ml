@@ -44,6 +44,7 @@ let update_version env app_name version =
   if not (App_config.supports app Update_version) then
     failwith "update-version is not supported for this app";
   announce "update-version %s" app.endpoint.name;
+  Run_state.changing ();
   Proc.run_checked (hook_path env app "update-version") [ version ]
     ~extra_env:[ ("CURL_BIN", env.curl_bin) ]
 

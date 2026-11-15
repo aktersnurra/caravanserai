@@ -80,7 +80,9 @@ let jail_test env app_name ~ip =
         test_name app.endpoint.name app.endpoint.name app.endpoint.name;
       if
         not
-          (env.confirm
+          (approved env ~operation:"jail-test"
+             ~facts:[ "jail", test_name; "ip", ip; "host", host_label env Compute_host;
+                      "script", Digest.to_hex (Digest.string script) ]
              (Printf.sprintf "create test jail %s (%s) on %s from %s's generated jail script?" test_name ip (host_label env Compute_host)
                 app.endpoint.name))
       then failwith "jail-test: not run";
@@ -117,7 +119,10 @@ let jail_test_destroy env app_name =
         test_name
         (match dataset with Some d -> ", zfs destroy -r " ^ d | None -> "")
         test_name;
-      if not (env.confirm (Printf.sprintf "destroy test jail %s on %s?" test_name (host_label env Compute_host))) then
+      if not (approved env ~operation:"jail-test.destroy"
+                ~facts:([ "jail", test_name; "host", host_label env Compute_host ]
+                        @ match dataset with Some d -> [ "dataset", d ] | None -> [])
+                (Printf.sprintf "destroy test jail %s on %s?" test_name (host_label env Compute_host))) then
         failwith "jail-test --destroy: not run";
       announce "destroy %s (compute)" test_name;
       ssh_checked env [ env.compute_target; "doas sh -c " ^ Shell.quote script ])

@@ -26,8 +26,12 @@ type up_plan = {
 let short = Hex.short
 
 type up_step = Jail | Build | Release | Edge | Check
-type step_status = Done | Skipped | Failed of string | Not_run
-type up_result = Deployed of string | Stopped_for_env of string | Step_failed of up_step * string
+type step_status = Done | Skipped | Failed of string | Pending of string | Not_run
+type up_result =
+  | Deployed of string
+  | Stopped_for_env of string
+  | Stopped_for_edge of Plan_id.t
+  | Step_failed of up_step * string
 type up_outcome = { steps : (up_step * step_status) list; result : up_result }
 
 let up_steps = [ Jail; Build; Release; Edge; Check ]
@@ -157,7 +161,7 @@ let prepare_up ?local_source ?(target = Live) ~plan_only env app_name ~revision 
   } in
   (* Each step's outcome is data, so up and up --json report the same run.
      A step that fails stops the run; the steps after it did not run. *)
-  let apply env =
+  let apply ~bound env =
     let statuses = Array.make (List.length up_steps) Not_run in
     let set step status = statuses.(step_index step) <- status in
     (* Any error a step raises is that step's outcome -- a retained lock's
@@ -197,6 +201,16 @@ let prepare_up ?local_source ?(target = Live) ~plan_only env app_name ~revision 
              so moving an app's revision cannot change it. *)
           let* () = match target with
             | Update -> Ok (set Edge Skipped)
+            (* An approved plan named no edge change, so it approves none:
+               pending ones are planned and left for their own approval. *)
+            | Live | Rehearse _ when bound ->
+                let* pending = run Edge (fun () -> (plan_edge env).plan_id) in
+                (match pending with
+                 | None -> Ok ()
+                 | Some id ->
+                     set Edge (Pending ("edge changes are pending; they need their own approval: plan "
+                                        ^ Plan_id.to_string id));
+                     Error (Stopped_for_edge id))
             | Live | Rehearse _ -> run Edge (fun () -> edge env) in
           let* () = run Check (fun () ->
               Progress.phase "check";
@@ -229,8 +243,11 @@ let up_run ?local_source ?target ?expect_plan env app_name ~revision ~cache ~sto
     | Jail_create, _ -> Printf.sprintf "create jail %s at %s?" app_name (find_app env app_name).endpoint.ip
     | Jail_ready, _ -> Printf.sprintf "deploy %s at %s?" app_name (short plan.commit) in
   if not (env.confirm question) then failwith "up: not applied";
-  (* One confirmation covers the whole sequence. *)
-  plan, apply { (app_env env app_name) with confirm = (fun _ -> true) }
+  Run_state.changing ();
+  (* One confirmation covers the whole sequence -- but under an approved
+     plan, not an edge change that plan never showed. *)
+  plan, Run_state.with_approval Granted (fun () ->
+    apply ~bound:(expect_plan <> None) { (app_env env app_name) with confirm = (fun _ -> true) })
 
 let up ?local_source ?target ?expect_plan env app_name ~revision ~cache ~store =
   let plan, outcome = up_run ?local_source ?target ?expect_plan env app_name ~revision ~cache ~store in
@@ -240,4 +257,9 @@ let up ?local_source ?target ?expect_plan env app_name ~revision ~cache ~store =
         app_name jail ip identity app_name
   | Deployed identity, None -> announce "%s is up at %s (%s)" app_name (short plan.commit) identity
   | Stopped_for_env message, _ -> failwith ("up: " ^ message)
+  | Stopped_for_edge id, _ ->
+      failwith (Printf.sprintf
+        "up: %s is released, but edge changes are pending and this plan did not cover them; \
+         approve them with serai edge --expect-plan %s, then serai check %s"
+        app_name (Plan_id.to_string id) app_name)
   | Step_failed (_, message), _ -> failwith message

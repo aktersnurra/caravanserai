@@ -5,8 +5,9 @@ type json = Json.t = Null | Bool of bool | Number of string | String of string
 type error_code = Invalid_request | Unsupported_operation | Input_unavailable
   | Invalid_declaration | Invalid_plan | Unknown_workload | Render_failed
   | Internal_error | Interrupted | Not_applied | Step_failed | Stale_plan
+  | Apply_failed | Outcome_unknown
 
-type status = Succeeded | Refused | Failed | Cancelled
+type status = Succeeded | Refused | Failed | Cancelled | Unknown
 type response = { operation : string; status : status; data : json;
                   error : (error_code * string) option }
 type request = Validate | Inspect | Plan of string * string option
@@ -19,19 +20,23 @@ let code = function
   | Invalid_plan -> "invalid_plan" | Unknown_workload -> "unknown_workload"
   | Render_failed -> "render_failed" | Internal_error -> "internal_error"
   | Interrupted -> "interrupted" | Not_applied -> "not_applied" | Step_failed -> "step_failed"
-  | Stale_plan -> "stale_plan"
+  | Stale_plan -> "stale_plan" | Apply_failed -> "apply_failed" | Outcome_unknown -> "outcome_unknown"
 
 let encode = Json.to_string
 
 let to_json response =
   let status = match response.status with Succeeded -> "succeeded" | Refused -> "refused"
-    | Failed -> "failed" | Cancelled -> "interrupted" in
+    | Failed -> "failed" | Cancelled -> "interrupted" | Unknown -> "unknown" in
   let error = match response.error with None -> Null | Some (kind,message) ->
     Object ["code",String (code kind); "message",String message] in
   encode (Object ["schema_version",Json.of_int 1; "operation",String response.operation;
     "status",String status; "data",response.data; "error",error])
 
-let exit_code response = match response.status with Succeeded -> 0 | Cancelled -> 130 | Refused | Failed -> 1
+let exit_code response = match response.status with
+  | Succeeded -> 0 | Cancelled -> 130 | Refused | Failed -> 1 | Unknown -> 3
+let is_plan response = match response.status, response.data with
+  | Succeeded, Object fields -> List.assoc_opt "applied" fields = Some (Bool false) && List.mem_assoc "plan_id" fields
+  | _ -> false
 let refuse kind message = raise (Refusal (kind,message))
 let strings values = Array (List.map (fun value -> String value) values)
 let optional = function None -> Null | Some value -> String value
@@ -133,13 +138,47 @@ let run ~layout argv =
   | Sys.Break -> error Cancelled Interrupted "interrupted before any host operation"
   | _ -> error Failed Internal_error "unexpected local error; no host operation was performed"
 
+(* A stage and lock the run left behind, and the command that clears the
+   lock once the host has been inspected. *)
+let retained_json () =
+  Array (List.map (fun (r : Run_state.retained) ->
+    Object [ "host", String r.host; "stage", String r.stage; "during", String r.context;
+             "inspect", strings [ "serai"; "locks"; "--json" ];
+             "unlock_after_inspection", strings [ "serai"; "unlock"; r.host ] ]) (Run_state.retained ()))
+
+let plan_json (p : Run_state.planned) =
+  Object [ "operation", String p.operation; "plan_id", String (Plan_id.to_string p.id);
+           "question", String p.question;
+           "facts", Object (List.map (fun (name, value) -> name, String value) p.facts);
+           "applied", Bool false ]
+
+(* Where the run stood when it ended decides what an error means: nothing
+   had changed (refused), a host may have (failed), or a stage and lock
+   were left because the outcome on a host is not known (unknown). *)
 let respond ~operation f =
-  let error status kind message = {operation; status; data=Null; error=Some (kind,message)} in
+  let with_retained data = match Run_state.retained (), data with
+    | [], data -> data
+    | _, Object fields -> Object (fields @ [ "retained", retained_json () ])
+    | _, _ -> Object [ "retained", retained_json () ] in
+  let ended ?(data = Null) ~refused message =
+    let status, kind = match Run_state.retained (), Run_state.has_changed () with
+      | _ :: _, _ -> Unknown, Outcome_unknown
+      | [], true -> Failed, Apply_failed
+      | [], false -> refused in
+    { operation; status; data = with_retained data; error = Some (kind, message) } in
   match f () with
-  | Ok data -> {operation; status=Succeeded; data; error=None}
-  | Error (data, message) -> {operation; status=Failed; data; error=Some (Step_failed, message)}
-  | exception Failure message -> error Refused Not_applied message
-  | exception Plan_id.Stale message -> error Refused Stale_plan message
-  | exception Bad_request message -> error Refused Invalid_request message
-  | exception Sys.Break -> error Cancelled Interrupted "interrupted"
-  | exception exn -> error Failed Internal_error (Printexc.to_string exn)
+  | Ok data when Run_state.retained () = [] -> { operation; status = Succeeded; data; error = None }
+  | Ok data -> ended ~data ~refused:(Refused, Not_applied) "the run left a stage and lock for inspection"
+  | Error (data, message) ->
+      (match ended ~data ~refused:(Failed, Step_failed) message with
+       | { status = Failed; _ } as response -> { response with error = Some (Step_failed, message) }
+       | response -> response)
+  | exception Run_state.Planned plan -> { operation; status = Succeeded; data = plan_json plan; error = None }
+  | exception Failure message -> ended ~refused:(Refused, Not_applied) message
+  | exception Plan_id.Stale message -> ended ~refused:(Refused, Stale_plan) message
+  | exception Bad_request message -> ended ~refused:(Refused, Invalid_request) message
+  | exception Sys.Break ->
+      (match ended ~refused:(Cancelled, Interrupted) "interrupted" with
+       | { status = Failed; _ } as response -> { response with status = Cancelled; error = Some (Interrupted, "interrupted") }
+       | response -> response)
+  | exception exn -> ended ~refused:(Failed, Internal_error) (Printexc.to_string exn)

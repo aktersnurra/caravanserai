@@ -22,6 +22,7 @@ let bootstrap env app_name =
   validate_stage env.remote_stage;
   let jail_script = render_jail_script ~command:"bootstrap" app in
   announce "bootstrap %s" app.endpoint.name;
+  Run_state.changing ();
   with_locks env ~command:("bootstrap " ^ app.endpoint.name) [ Compute_host ] (fun _records ->
       secure_remote_stage env ~target:env.compute_target ~subtree:"compute/apps";
       rsync_checked env
@@ -53,6 +54,7 @@ let deploy env app_name =
   if not (App_config.supports app Deploy) then
     failwith "deploy is not supported for this app";
   announce "deploy %s" app.endpoint.name;
+  Run_state.changing ();
   (* The hook runs from the configuration, so the engine's deploy library
      is handed to it rather than found beside it. *)
   Proc.run_checked (hook_path env app "deploy") [ env.compute_target ]

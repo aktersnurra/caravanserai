@@ -172,11 +172,19 @@ val up_plan_id_of :
 val print_up_plan : ?target:up_target -> up_plan -> unit
 
 type up_step = Jail | Build | Release | Edge | Check
-type step_status = Done | Skipped | Failed of string | Not_run
+type step_status =
+  | Done
+  | Skipped
+  | Failed of string
+  | Pending of string  (** waits for an approval of its own *)
+  | Not_run
 
 type up_result =
   | Deployed of string  (** this identity is active and healthy *)
   | Stopped_for_env of string  (** the jail was created; what the operator does next *)
+  | Stopped_for_edge of Plan_id.t
+      (** released under an approved plan, with edge changes pending that
+          the plan did not show: this edge plan needs its own approval *)
   | Step_failed of up_step * string
 
 (** Every step in order, with what happened to it. *)

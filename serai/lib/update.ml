@@ -105,6 +105,7 @@ let deploy paths env ~name ~commit ~migrate =
   | exception Failure message -> Not_applied { commit = Some commit; message }
   | _, { result = Deployed identity; _ } -> Deployed { commit; identity }
   | _, { result = Stopped_for_env _; _ } -> invalid_arg "update: up stopped for an env it never creates"
+  | _, { result = Stopped_for_edge _; _ } -> invalid_arg "update: up stopped for an edge it never touches"
   | _, { result = Step_failed (Release, message); _ } -> (
       (* Whether the switch happened decides between retrying and a final
          failure, and whether there is anything to revert. *)

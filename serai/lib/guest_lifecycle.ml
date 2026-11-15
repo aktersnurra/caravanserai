@@ -72,6 +72,7 @@ let guest_command env (guest : Guest_config.t) step =
        guest_ssh_options env @ ssh_args env [ host; "doas sysrc vm_list+=" ^ Shell.quote name ])
 
 let run_guest_step env guest step =
+  Run_state.changing ();
   let prog, args = guest_command env guest step in
   Proc.run_checked prog args
 
@@ -151,7 +152,9 @@ let artifact_build_guest_store ?reuse env name ~revision ~opam_repository:(repos
         then failwith "artifact reuse: requested inputs do not match stored artifact";
         Artifact_manifest.identity manifest
     | None ->
-    if not (env.confirm (Printf.sprintf "Build verified %s artifact in the Linux guest?" name)) then
+    if not (approved env ~operation:"artifact.build"
+              ~facts:[ "guest", name; "source_commit", source_commit; "recipe_sha256", recipe.sha256 ]
+              (Printf.sprintf "Build verified %s artifact in the Linux guest?" name)) then
       failwith "artifact build: cancelled";
     let subtree = "artifact-build/" ^ name ^ "/" ^ env.lock_token in
     let stage = env.remote_stage ^ "/" ^ subtree in
@@ -160,7 +163,7 @@ let artifact_build_guest_store ?reuse env name ~revision ~opam_repository:(repos
     let shell = String.concat " " ((env.ssh_bin :: guest_ssh_options env) @ guest_jump_options env guest) in
     let remote path = guest_target guest ^ ":" ^ stage ^ "/" ^ path in
     let ssh command = ssh_checked env (guest_connection env guest @ [command]) in
-    with_retained_stage env ~command:("artifact build " ^ name) ~host:(Guest guest)
+    with_retained_stage env ~command:("artifact build " ^ name) ~host:(Guest guest) ~stage
       ~retained:(Printf.sprintf
         "artifact build: %s stage %s and guest lock retained; inspect before serai unlock %s." name stage name)
       ~prepare:(fun retention ->
@@ -226,7 +229,10 @@ let artifact_apply_guest ?(convert=false) env name ~store ~identity ~rollback =
     | Some p -> p.port | None -> failwith "artifact apply: missing guest HTTP readiness port" in
   let url = Printf.sprintf "http://%s:%d/health" guest.endpoint.ip port in
   validate_stage env.remote_stage;
-  if not (env.confirm (Printf.sprintf "Apply %s artifact %s (files only; no database rollback)?" name identity)) then
+  if not (approved env
+            ~operation:("artifact." ^ if convert then "convert" else if rollback then "rollback" else "upgrade")
+            ~facts:[ "guest", name; "identity", identity; "archive_sha256", manifest.archive_sha256; "check", url ]
+            (Printf.sprintf "Apply %s artifact %s (files only; no database rollback)?" name identity)) then
     failwith "artifact apply: cancelled";
   let local = Filename.temp_dir "serai-guest-apply" "" in
   Fun.protect ~finally:(fun () -> remove_tree local) (fun () ->
@@ -237,7 +243,7 @@ let artifact_apply_guest ?(convert=false) env name ~store ~identity ~rollback =
     let stage = env.remote_stage ^ "/" ^ subtree in
     let shell = String.concat " " ((env.ssh_bin :: guest_ssh_options env) @ guest_jump_options env guest) in
     let ssh command = ssh_checked env (guest_connection env guest @ [command]) in
-    with_retained_stage env ~command:("artifact apply " ^ name) ~host:(Guest guest)
+    with_retained_stage env ~command:("artifact apply " ^ name) ~host:(Guest guest) ~stage
       ~retained:(Printf.sprintf
         "artifact apply: %s stage %s and guest lock retained; inspect before serai unlock %s." name stage name)
       ~prepare:(fun retention ->
