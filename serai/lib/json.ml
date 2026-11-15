@@ -150,6 +150,11 @@ let escape buffer s =
     | c -> Buffer.add_char buffer c) s;
   Buffer.add_char buffer '"'
 
+let quote s =
+  let buffer = Buffer.create (String.length s + 2) in
+  escape buffer s;
+  Buffer.contents buffer
+
 let to_string value =
   let buffer = Buffer.create 256 in
   let rec go = function

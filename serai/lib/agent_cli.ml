@@ -22,14 +22,7 @@ let code = function
   | Interrupted -> "interrupted" | Not_applied -> "not_applied" | Step_failed -> "step_failed"
   | Stale_plan -> "stale_plan"
 
-let quote text =
-  let b = Buffer.create (String.length text + 2) in
-  Buffer.add_char b '"';
-  String.iter (function
-    | '"' -> Buffer.add_string b "\\\"" | '\\' -> Buffer.add_string b "\\\\"
-    | c when Char.code c < 32 -> Buffer.add_string b (Printf.sprintf "\\u%04x" (Char.code c))
-    | c -> Buffer.add_char b c) text;
-  Buffer.add_char b '"'; Buffer.contents b
+let quote = Json.quote
 
 let rec encode = function
   | Null -> "null" | Bool value -> string_of_bool value | Int value -> string_of_int value

@@ -101,7 +101,7 @@ serai up hello --revision master --yes --json --expect-plan <plan_id>
 Operation `up`. It applies only with `--yes`, because there is no terminal
 to ask in: without it the request is refused as unsupported, and `--yes` is
 the operator's approval, never the agent's. It applies only the plan the
-operator approved: `--expect-plan` is required, in this order after
+operator approved: `--expect-plan` is required together with
 `--yes`, and a plan that changed since is `stale_plan` (see "Plan
 binding"). Everything the run prints goes
 to stderr; stdout holds the one result. A refusal before anything changed

@@ -13,6 +13,10 @@ val parse : string -> (t, string) result
     text, UTF-8 included, is written as it is. *)
 val to_string : t -> string
 
+(** One string as a JSON string, escaped as {!to_string} escapes. The one
+    encoder: the agent envelope and progress events use it too. *)
+val quote : string -> string
+
 (** {1 Decoding} Each returns an error naming what it expected. *)
 
 (** The first value under [key], or [None]. An error unless an object. *)

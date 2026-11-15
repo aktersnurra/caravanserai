@@ -38,7 +38,7 @@ let () =
     Progress.finish Progress.Succeeded) in
   assert (List.length events = 5);
   List.iter (fun line ->
-    assert (contains line "\"operation\":\"artifact.build\",\"workload\":\"quoted\\\"\\u000a\"");
+    assert (contains line "\"operation\":\"artifact.build\",\"workload\":\"quoted\\\"\\n\"");
     assert (contains line "\"reason\":")) events;
   List.iter (fun line ->
     let key = "\"duration_seconds\":" in

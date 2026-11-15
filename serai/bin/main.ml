@@ -56,6 +56,30 @@ let usage_and_exit () =
 let getenv_default name default =
   match Sys.getenv_opt name with Some v -> v | None -> default
 
+(* An XDG base directory: the variable, or [fallback] under HOME. *)
+let xdg name fallback =
+  match Sys.getenv_opt name with
+  | Some dir when dir <> "" -> dir
+  | _ ->
+      (match Sys.getenv_opt "HOME" with
+       | Some home when home <> "" -> Filename.concat home fallback
+       | _ -> failwith (Printf.sprintf "neither %s nor HOME is set" name))
+
+(* A yes/no question on the terminal; anything but y or yes is no. *)
+let ask question =
+  Printf.printf "%s [y/N] %!" question;
+  match In_channel.input_line stdin with
+  | Some answer -> List.mem (String.lowercase_ascii (String.trim answer)) [ "y"; "yes" ]
+  | None -> false
+
+(* Runs [f] with stdout pointed at stderr, so that --json's stdout carries
+   exactly the one result: what the run prints, its subprocesses included,
+   goes to stderr. *)
+let with_stdout_on_stderr f =
+  let saved = Unix.dup Unix.stdout in
+  Unix.dup2 Unix.stderr Unix.stdout;
+  Fun.protect ~finally:(fun () -> flush stdout; Unix.dup2 saved Unix.stdout; Unix.close saved) f
+
 (* The engine installed beside this binary, as install.sh lays it
    out: <prefix>/bin/serai and <prefix>/share/caravanserai. *)
 let installed_engine () =
@@ -109,12 +133,7 @@ let env_of_layout ~assume_yes layout : Dispatcher.env =
           if assume_yes then true
           else if not (Unix.isatty Unix.stdin) then
             failwith (question ^ ": needs confirmation but stdin is not a terminal; re-run with --yes")
-          else begin
-            Printf.printf "%s [y/N] %!" question;
-            match In_channel.input_line stdin with
-            | Some answer -> List.mem (String.lowercase_ascii (String.trim answer)) [ "y"; "yes" ]
-            | None -> false
-          end);
+          else ask question);
       operator =
         Printf.sprintf "%s@%s"
           (Option.value (Sys.getenv_opt "USER") ~default:"unknown")
@@ -209,9 +228,6 @@ let artifact_source_stage name ~revision ~out =
 (* Mirrors and base archives are reproducible downloads; the store holds
    verified artifacts worth keeping. Both are private to this user. *)
 let up_dirs () =
-  let home = Sys.getenv "HOME" in
-  let xdg name fallback = match Sys.getenv_opt name with
-    | Some dir when dir <> "" -> dir | _ -> Filename.concat home fallback in
   let cache = getenv_default "SERAI_CACHE" (Filename.concat (xdg "XDG_CACHE_HOME" ".cache") "serai") in
   let store = getenv_default "SERAI_STORE"
     (Filename.concat (Filename.concat (xdg "XDG_DATA_HOME" ".local/share") "serai") "store") in
@@ -236,6 +252,35 @@ let expected_plan text =
 let up_plan ?local_source env app ~revision =
   let cache, store = up_dirs () in
   Dispatcher.up_plan ?local_source env app ~revision ~cache ~store
+
+(* serai up's arguments, in any order, each flag at most once. *)
+type up_args = {
+  up_app : string;
+  up_revision : string;
+  up_source : string option;
+  up_plan : bool;
+  up_yes : bool;
+  up_expect : string option;
+  up_rehearse : bool;
+  up_ip : string option;
+}
+
+let parse_up = function
+  | "up" :: app :: flags when not (String.starts_with ~prefix:"--" app) ->
+      let rec go ~revision a = function
+        | [] -> Option.map (fun up_revision -> { a with up_revision }) revision
+        | "--revision" :: value :: rest when revision = None -> go ~revision:(Some value) a rest
+        | "--source" :: value :: rest when a.up_source = None -> go ~revision { a with up_source = Some value } rest
+        | "--expect-plan" :: value :: rest when a.up_expect = None -> go ~revision { a with up_expect = Some value } rest
+        | "--ip" :: value :: rest when a.up_ip = None -> go ~revision { a with up_ip = Some value } rest
+        | "--plan" :: rest when not a.up_plan -> go ~revision { a with up_plan = true } rest
+        | "--yes" :: rest when not a.up_yes -> go ~revision { a with up_yes = true } rest
+        | "--rehearse" :: rest when not a.up_rehearse -> go ~revision { a with up_rehearse = true } rest
+        | _ -> None in
+      go ~revision:None
+        { up_app = app; up_revision = ""; up_source = None; up_plan = false; up_yes = false; up_expect = None;
+          up_rehearse = false; up_ip = None } flags
+  | _ -> None
 
 let new_kind = function
   | "phoenix" -> Dispatcher.New_phoenix
@@ -386,9 +431,6 @@ let up_json app ~revision ((plan : Dispatcher.up_plan), (outcome : Dispatcher.up
 (* serai update: its settings and state live with the user running it, the
    configuration comes from a verified commit, not the working directory. *)
 let update_paths () =
-  let home = Sys.getenv "HOME" in
-  let xdg name fallback = match Sys.getenv_opt name with
-    | Some dir when dir <> "" -> dir | _ -> Filename.concat home fallback in
   let settings = Filename.concat (Filename.concat (xdg "XDG_CONFIG_HOME" ".config") "serai") "update.sexp" in
   let state_dir = Filename.concat (Filename.concat (xdg "XDG_STATE_HOME" ".local/state") "serai") "update" in
   let cache, store = up_dirs () in
@@ -470,10 +512,7 @@ let update argv =
     else `Run (Update.run (update_deps ()) config paths) in
   if json then begin
     let operation = if plan then "update.plan" else "update" in
-    (* stdout carries exactly the one result: what the run prints goes to stderr. *)
-    let saved = Unix.dup Unix.stdout in
-    Unix.dup2 Unix.stderr Unix.stdout;
-    let response = Fun.protect ~finally:(fun () -> flush stdout; Unix.dup2 saved Unix.stdout; Unix.close saved)
+    let response = with_stdout_on_stderr
       (fun () -> Agent_cli.respond ~operation (fun () ->
          match Proc.live act with
          | `Plan report ->
@@ -543,10 +582,7 @@ let idp argv =
       (Plan_id.to_string expected)
       (match current with Some id -> Plan_id.to_string id | None -> "nothing to do") in
   if json && yes then begin
-    (* stdout carries exactly the one result, failures included. *)
-    let saved = Unix.dup Unix.stdout in
-    Unix.dup2 Unix.stderr Unix.stdout;
-    let response = Fun.protect ~finally:(fun () -> flush stdout; Unix.dup2 saved Unix.stdout; Unix.close saved)
+    let response = with_stdout_on_stderr
       (fun () -> Agent_cli.respond ~operation:"idp.apply" (fun () ->
          let expected = match expect with
            | None -> raise (Agent_cli.Bad_request "serai idp --yes --json requires --expect-plan <id>, the plan_id of the approved serai idp --plan --json")
@@ -581,11 +617,8 @@ let idp argv =
     exit (Agent_cli.exit_code response)
   end;
   if json then begin
-    (* stdout carries exactly the one result, failures included. *)
-    let saved = Unix.dup Unix.stdout in
-    Unix.dup2 Unix.stderr Unix.stdout;
     let pending = ref false in
-    let response = Fun.protect ~finally:(fun () -> flush stdout; Unix.dup2 saved Unix.stdout; Unix.close saved)
+    let response = with_stdout_on_stderr
       (fun () -> Agent_cli.respond ~operation:"idp.plan" (fun () ->
          let layout = locate_layout () in
          let declaration = match Idp_declaration.load ~layout with
@@ -638,10 +671,7 @@ let idp argv =
   let confirmed =
     yes
     || (Unix.isatty Unix.stdin
-        && (Printf.printf "Apply %d change%s to %s? [y/N] %!" count (if count = 1 then "" else "s") declaration.url;
-            match In_channel.input_line stdin with
-            | Some answer -> List.mem (String.lowercase_ascii (String.trim answer)) [ "y"; "yes" ]
-            | None -> false)) in
+        && ask (Printf.sprintf "Apply %d change%s to %s?" count (if count = 1 then "" else "s") declaration.url)) in
   if not confirmed then
     fail (if Unix.isatty Unix.stdin then "not applied" else "needs confirmation but stdin is not a terminal; re-run with --yes");
   let applied = Proc.live (fun () -> Pocket_id.apply ~curl_bin session live t) in
@@ -662,11 +692,7 @@ let acting_json argv =
   let run ?(assume_yes = false) ?(pending = ref false) ?(incomplete = ref false) operation workload f =
     Progress.start ~enabled:(List.mem "--progress=jsonl" argv) ~operation ~workload:(Some workload);
     Sys.catch_break true;
-    (* stdout carries exactly the one result: what the run prints, its
-       subprocesses included, goes to stderr. *)
-    let saved = Unix.dup Unix.stdout in
-    Unix.dup2 Unix.stderr Unix.stdout;
-    let response = Fun.protect ~finally:(fun () -> flush stdout; Unix.dup2 saved Unix.stdout; Unix.close saved)
+    let response = with_stdout_on_stderr
       (fun () -> Agent_cli.respond ~operation (fun () ->
          Proc.live (fun () -> f (fst (build_env ~assume_yes ()))))) in
     print_endline (Agent_cli.to_json response);
@@ -687,21 +713,21 @@ let acting_json argv =
       run "new" app (fun env -> Ok (new_json (new_app env app ~kind ~repo) app))
   | [ "new"; app; "--kind"; kind; "--repo"; repo; "--hostname"; hostname ] ->
       run "new" app (fun env -> Ok (new_json (new_app ~hostname env app ~kind ~repo) app))
-  | [ "up"; app; "--revision"; revision; "--plan" ] ->
-      run "up.plan" app (fun env -> Ok (up_plan_json (up_plan env app ~revision)))
-  | [ "up"; app; "--revision"; revision; "--source"; checkout; "--plan" ] ->
-      run "up.plan" app (fun env -> Ok (up_plan_json (up_plan ~local_source:checkout env app ~revision)))
-  (* Applies only with --yes, there being no terminal to ask in, and only
-     the plan the operator approved. *)
-  | [ "up"; app; "--revision"; revision; "--yes"; "--expect-plan"; id ] ->
-      let expect_plan = checked "up" id in
-      run ~assume_yes:true "up" app (fun env -> up_json app ~revision (up_run ~expect_plan env app ~revision))
-  | [ "up"; app; "--revision"; revision; "--source"; checkout; "--yes"; "--expect-plan"; id ] ->
-      let expect_plan = checked "up" id in
-      run ~assume_yes:true "up" app (fun env ->
-        up_json app ~revision (up_run ~local_source:checkout ~expect_plan env app ~revision))
-  | [ "up"; _; "--revision"; _; "--yes" ] | [ "up"; _; "--revision"; _; "--source"; _; "--yes" ] ->
-      refuse "up" "serai up --yes --json requires --expect-plan <id>, the plan_id of the approved serai up --plan --json"
+  | "up" :: _ as up_argv ->
+      (match parse_up up_argv with
+       | Some { up_app = app; up_revision = revision; up_source = local_source; up_plan = true; up_yes = false;
+                up_expect = None; up_rehearse = false; up_ip = None } ->
+           run "up.plan" app (fun env -> Ok (up_plan_json (up_plan ?local_source env app ~revision)))
+       (* Applies only with --yes, there being no terminal to ask in, and only
+          the plan the operator approved. *)
+       | Some { up_app = app; up_revision = revision; up_source = local_source; up_plan = false; up_yes = true;
+                up_expect = Some id; up_rehearse = false; up_ip = None } ->
+           let expect_plan = checked "up" id in
+           run ~assume_yes:true "up" app (fun env ->
+             up_json app ~revision (up_run ?local_source ~expect_plan env app ~revision))
+       | Some { up_plan = false; up_yes = true; up_expect = None; up_rehearse = false; up_ip = None; _ } ->
+           refuse "up" "serai up --yes --json requires --expect-plan <id>, the plan_id of the approved serai up --plan --json"
+       | _ -> ())
   | [ "edge"; "--plan" ] ->
       let pending = ref false in
       run ~pending "edge.plan" "edge" (fun env ->
@@ -788,20 +814,19 @@ let dispatch (env, registry) argv =
   | [ "new"; app; "--kind"; kind; "--repo"; repo ] -> print_new (new_app env app ~kind ~repo) app
   | [ "new"; app; "--kind"; kind; "--repo"; repo; "--hostname"; hostname ] ->
       print_new (new_app ~hostname env app ~kind ~repo) app
-  | [ "up"; app; "--revision"; revision; "--plan" ] -> Dispatcher.print_up_plan (up_plan env app ~revision)
-  | [ "up"; app; "--revision"; revision; "--source"; checkout; "--plan" ] ->
-      Dispatcher.print_up_plan (up_plan ~local_source:checkout env app ~revision)
-  | [ "up"; app; "--revision"; revision ] -> up env app ~revision
-  | [ "up"; app; "--revision"; revision; "--source"; checkout ] ->
-      up ~local_source:checkout env app ~revision
-  | [ "up"; app; "--revision"; revision; "--expect-plan"; id ] ->
-      up ~expect_plan:(expected_plan id) env app ~revision
-  | [ "up"; app; "--revision"; revision; "--source"; checkout; "--expect-plan"; id ] ->
-      up ~local_source:checkout ~expect_plan:(expected_plan id) env app ~revision
-  | [ "up"; app; "--revision"; revision; "--rehearse"; "--ip"; ip ] ->
-      up ~target:(Dispatcher.Rehearse ip) env app ~revision
-  | [ "up"; app; "--revision"; revision; "--source"; checkout; "--rehearse"; "--ip"; ip ] ->
-      up ~local_source:checkout ~target:(Dispatcher.Rehearse ip) env app ~revision
+  | "up" :: _ ->
+      (* --yes was taken off before dispatch. *)
+      (match parse_up argv with
+       | Some { up_app = app; up_revision = revision; up_source = local_source; up_plan = true;
+                up_expect = None; up_rehearse = false; up_ip = None; _ } ->
+           Dispatcher.print_up_plan (up_plan ?local_source env app ~revision)
+       | Some { up_app = app; up_revision = revision; up_source = local_source; up_plan = false;
+                up_expect = None; up_rehearse = true; up_ip = Some ip; _ } ->
+           up ?local_source ~target:(Dispatcher.Rehearse ip) env app ~revision
+       | Some { up_app = app; up_revision = revision; up_source = local_source; up_plan = false;
+                up_expect; up_rehearse = false; up_ip = None; _ } ->
+           up ?local_source ?expect_plan:(Option.map expected_plan up_expect) env app ~revision
+       | _ -> usage_and_exit ())
   | [ "edge"; "--plan" ] ->
       (match (Dispatcher.plan_edge env).plan_id with
        | Some id -> Printf.printf "plan %s\n%!" (Plan_id.to_string id); raise (Cli_exit 2)

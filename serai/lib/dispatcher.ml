@@ -269,7 +269,12 @@ let acquire_lock env ~command host =
         label (Remote_lock.stale_after_seconds / 60))
   | code, _ when code = Remote_lock.stale_exit ->
       failwith
-        (Printf.sprintf "%s has a stale lock (holder above); if that run is dead: serai unlock %s" label label)
+        (* Age is all the host knows: nothing refreshes a lock, and a build
+           can outlast the threshold. So the holder is to be checked first. *)
+        (Printf.sprintf
+           "%s has been locked for over %d min (holder above). A long build can hold it that long: check on \
+            the holder's machine that its serai (the pid named) has ended, and only then: serai unlock %s"
+           label (Remote_lock.stale_after_seconds / 60) label)
   | code, _ when code = ssh_unreachable_exit -> failwith (Printf.sprintf "could not reach %s (%s)" label target)
   | code, _ -> failwith (Printf.sprintf "locking %s failed (exit %d)" label code)
 
