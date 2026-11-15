@@ -385,7 +385,7 @@ let () =
   let apply ?(failing = fun _ -> false) version =
     run_edge ~pending:[ "PF"; "POLICY" ] ~outputs:(diff_text version) ~failing
       ~confirm:(fun _ -> prompted := true; true)
-      (fun env -> try Ok (Dispatcher.edge_run ~expect_plan:id env) with Agent_cli.Stale_plan m -> Error m) in
+      (fun env -> try Ok (Dispatcher.edge_run ~expect_plan:id env) with Plan_id.Stale m -> Error m) in
   let installs calls = List.filter (fun (r : Proc.request) -> r.prog = "ssh" && not (is_diff r)
                                                              && contains ~needle:"_SOURCE=" (String.concat " " r.args)) calls in
   (match apply "v1" with
@@ -413,7 +413,7 @@ let () =
        check "edge_run: refused before the prompt and any install" ((not !prompted) && installs calls = [])
    | _ -> check "edge_run: a changed diff is refused" false);
   (match run_edge ~outputs:(diff_text "v1")
-           (fun env -> try Ok (Dispatcher.edge_run ~expect_plan:id env) with Agent_cli.Stale_plan m -> Error m) with
+           (fun env -> try Ok (Dispatcher.edge_run ~expect_plan:id env) with Plan_id.Stale m -> Error m) with
    | Ok (Error message), _ -> check "edge_run: an approved plan with nothing left to do is stale" (contains ~needle:"now nothing to do" message)
    | _ -> check "edge_run: nothing left to do is refused" false);
   let mock = Proc.Mock.create
@@ -1429,7 +1429,7 @@ esac
 |};
     Unix.chmod stat 0o700;
     let script = Dispatcher.secure_remote_stage_script ~stage:"/tmp/permission-stage" ~subtree:"new-subtree" in
-    let script = Caddy_render.substitute ~placeholders:["path=/tmp\n", "path=" ^ quote scratch ^ "\n"] script in
+    let script = Template.substitute ~placeholders:["path=/tmp\n", "path=" ^ quote scratch ^ "\n"] script in
     let path = Filename.concat scratch "guard" in write path script;
     let stage = Filename.concat scratch "permission-stage" in
     let leaf = Filename.concat stage "new-subtree" in

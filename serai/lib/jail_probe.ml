@@ -27,15 +27,8 @@ let script ~app =
 
 type state = Absent | Present of (unit, string) result
 
-let answers ~marker output =
-  String.split_on_char '\n' output
-  |> List.filter_map (fun line ->
-         if String.starts_with ~prefix:marker line then
-           Some (String.sub line (String.length marker) (String.length line - String.length marker))
-         else None)
-
 let pairs ~marker output =
-  answers ~marker output
+  Shell.answers ~marker output
   |> List.filter_map (fun answer ->
          match String.split_on_char ' ' answer with [ name; ip ] -> Some (name, ip) | _ -> None)
 
@@ -45,7 +38,7 @@ let check ~app ~ip output =
       (List.filter_map (fun (name, held_ip) -> if name <> app && held_ip = ip then Some name else None) held) in
   let own = List.sort_uniq String.compare
       (List.filter_map (fun (name, held_ip) -> if name = app then Some held_ip else None) held) in
-  match holders, answers ~marker:root_marker output, own with
+  match holders, Shell.answers ~marker:root_marker output, own with
   | _ :: _, _, _ ->
       Error (Printf.sprintf "%s is already held by jail %s; give %s another ip in %s"
                ip (String.concat ", " holders) app (Layout.Relative.app_file ~app "app.sexp"))

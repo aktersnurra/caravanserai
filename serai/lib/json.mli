@@ -13,6 +13,8 @@ val parse : string -> (t, string) result
     text, UTF-8 included, is written as it is. *)
 val to_string : t -> string
 
+val of_int : int -> t
+
 (** One string as a JSON string, escaped as {!to_string} escapes. The one
     encoder: the agent envelope and progress events use it too. *)
 val quote : string -> string

@@ -1,5 +1,5 @@
 (* An app's jail script and deploy hook. Part of Dispatcher. *)
-open! Remote_host
+open Remote_host
 
 (* bootstrap provisions the app's jail only. It deliberately does not push
    Headscale_acl/Pf_rules output: rollout falls through to bootstrap for

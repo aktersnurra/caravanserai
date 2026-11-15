@@ -187,7 +187,7 @@ val step_name : up_step -> string
 (** [up] without its reporting: the plan and the outcome of each step. A
     [Failure] means nothing changed: the plan was refused or not confirmed.
     With [expect_plan], a plan with another id raises
-    [Agent_cli.Stale_plan] before the prompt: only the read-only probes the
+    [Plan_id.Stale] before the prompt: only the read-only probes the
     plan makes have reached a host. *)
 val up_run : ?local_source:string -> ?target:up_target -> ?expect_plan:Plan_id.t -> env -> string -> revision:string ->
   cache:string -> store:string -> up_plan * up_outcome
@@ -216,7 +216,7 @@ val plan_edge : env -> edge_plan
 (** Stages, diffs, and installs what is pending once confirmed; applied
     records only when every install succeeded. With [expect_plan], under
     the session's locks and before the prompt, any other plan raises
-    [Agent_cli.Stale_plan]. *)
+    [Plan_id.Stale]. *)
 val edge_run : ?expect_plan:Plan_id.t -> env -> edge_outcome
 
 (** [edge_run], failing with the failed install's message. *)

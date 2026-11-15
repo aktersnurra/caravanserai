@@ -4,8 +4,7 @@ let scripts =
   [ "artifact_build_jail.sh"; "artifact_build_phoenix.sh"; "artifact_verify_source.sh";
     "artifact_resolve_packages.sh"; "artifact_build_assets.exs" ]
 
-let valid_sha256 value = String.length value = 64
-  && String.for_all (function '0' .. '9' | 'a' .. 'f' -> true | _ -> false) value
+let valid_sha256 = Hex.is_sha256
 
 let valid_release value = value <> "" && String.length value <= 128
   && String.for_all (function 'a' .. 'z' | '0' .. '9' | '_' -> true | _ -> false) value
@@ -38,8 +37,7 @@ let copy_and_hash source destination =
       flush output;
       Digestif.SHA256.(to_hex (get hash))))
 
-let valid_commit value = (String.length value = 40 || String.length value = 64)
-  && String.for_all (function '0' .. '9' | 'a' .. 'f' -> true | _ -> false) value
+let valid_commit = Hex.is_object_id
 
 (* Copies the builder scripts [names] into a new private [out] and hashes
    the recipe: [header], then each of [fields scripts] length-prefixed, in

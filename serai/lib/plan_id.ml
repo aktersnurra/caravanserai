@@ -17,3 +17,5 @@ let parse text =
   else Error (Printf.sprintf "%S is not a plan id: 16 lowercase hex characters, as --plan prints them" text)
 
 let to_string t = t
+
+exception Stale of string

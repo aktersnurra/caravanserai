@@ -22,17 +22,8 @@ let validate_stage stage =
 
 let ok_or_fail = function Ok value -> value | Error message -> failwith message
 
-let is_sha256 value =
-  String.length value = 64
-  && String.for_all (function '0' .. '9' | 'a' .. 'f' -> true | _ -> false) value
-
-(* Never follows a symlink: a link is removed, not what it names. *)
-let rec remove_tree path =
-  match (Unix.lstat path).Unix.st_kind with
-  | Unix.S_DIR ->
-      Array.iter (fun name -> remove_tree (Filename.concat path name)) (Sys.readdir path);
-      Unix.rmdir path
-  | _ -> Unix.unlink path
+let is_sha256 = Hex.is_sha256
+let remove_tree = Fs.remove_tree
 
 let write_private path contents =
   Out_channel.with_open_bin path (fun channel -> output_string channel contents);

@@ -253,33 +253,26 @@ let up_plan ?local_source env app ~revision =
   let cache, store = up_dirs () in
   Dispatcher.up_plan ?local_source env app ~revision ~cache ~store
 
-(* serai up's arguments, in any order, each flag at most once. *)
-type up_args = {
-  up_app : string;
-  up_revision : string;
-  up_source : string option;
-  up_plan : bool;
-  up_yes : bool;
-  up_expect : string option;
-  up_rehearse : bool;
-  up_ip : string option;
-}
+(* [--name value] and [--switch] flags in any order, each at most once:
+   name to value ("" for a switch), or None for anything else. *)
+let parse_flags ~valued ~switches arguments =
+  let rec go seen = function
+    | [] -> Some seen
+    | flag :: value :: rest when List.mem flag valued && not (List.mem_assoc flag seen) ->
+        go ((flag, value) :: seen) rest
+    | flag :: rest when List.mem flag switches && not (List.mem_assoc flag seen) -> go ((flag, "") :: seen) rest
+    | _ -> None in
+  go [] arguments
 
+(* serai up <app> and its flags: the app, the revision and a lookup. *)
 let parse_up = function
   | "up" :: app :: flags when not (String.starts_with ~prefix:"--" app) ->
-      let rec go ~revision a = function
-        | [] -> Option.map (fun up_revision -> { a with up_revision }) revision
-        | "--revision" :: value :: rest when revision = None -> go ~revision:(Some value) a rest
-        | "--source" :: value :: rest when a.up_source = None -> go ~revision { a with up_source = Some value } rest
-        | "--expect-plan" :: value :: rest when a.up_expect = None -> go ~revision { a with up_expect = Some value } rest
-        | "--ip" :: value :: rest when a.up_ip = None -> go ~revision { a with up_ip = Some value } rest
-        | "--plan" :: rest when not a.up_plan -> go ~revision { a with up_plan = true } rest
-        | "--yes" :: rest when not a.up_yes -> go ~revision { a with up_yes = true } rest
-        | "--rehearse" :: rest when not a.up_rehearse -> go ~revision { a with up_rehearse = true } rest
-        | _ -> None in
-      go ~revision:None
-        { up_app = app; up_revision = ""; up_source = None; up_plan = false; up_yes = false; up_expect = None;
-          up_rehearse = false; up_ip = None } flags
+      Option.bind
+        (parse_flags ~valued:[ "--revision"; "--source"; "--expect-plan"; "--ip" ]
+           ~switches:[ "--plan"; "--yes"; "--rehearse" ] flags)
+        (fun flags ->
+          Option.map (fun revision -> app, revision, (fun flag -> List.assoc_opt flag flags))
+            (List.assoc_opt "--revision" flags))
   | _ -> None
 
 let new_kind = function
@@ -298,31 +291,31 @@ let print_new (plan : App_scaffold.t) app =
 
 (* The commands that act, answered in the agent envelope. *)
 let new_json (plan : App_scaffold.t) app =
-  Agent_cli.(Object [ "app", Text app; "ip", Text plan.ip; "port", Int plan.port;
-    "hostname", Text plan.hostname;
-    "files", Array (List.map (fun (f : App_scaffold.file) -> Text f.path) plan.files @ [ Text Layout.Relative.topology ]);
+  Agent_cli.(Object [ "app", String app; "ip", String plan.ip; "port", Json.of_int plan.port;
+    "hostname", String plan.hostname;
+    "files", Array (List.map (fun (f : App_scaffold.file) -> String f.path) plan.files @ [ String Layout.Relative.topology ]);
     "host_inspected", Bool false ])
 
 let up_plan_json (plan : Dispatcher.up_plan) =
-  Agent_cli.(Object [ "app", Text plan.app; "host", Text plan.host; "source", Text plan.source;
-    "commit", Text plan.commit; "local_source", Bool plan.local;
+  Agent_cli.(Object [ "app", String plan.app; "host", String plan.host; "source", String plan.source;
+    "commit", String plan.commit; "local_source", Bool plan.local;
     "jail", (match plan.jail with
-      | Dispatcher.Jail_ready -> Object [ "action", Text "none" ]
-      | Jail_create -> Object [ "action", Text "create" ]
-      | Jail_needs_env message -> Object [ "action", Text "refused"; "message", Text message ]);
+      | Dispatcher.Jail_ready -> Object [ "action", String "none" ]
+      | Jail_create -> Object [ "action", String "create" ]
+      | Jail_needs_env message -> Object [ "action", String "refused"; "message", String message ]);
     "release", (match plan.release with
-      | Dispatcher.Reuse identity -> Object [ "action", Text "reuse"; "identity", Text identity ]
+      | Dispatcher.Reuse identity -> Object [ "action", String "reuse"; "identity", String identity ]
       | Build { ip; base_sha256 } ->
-          Object [ "action", Text "build"; "builder_ip", Text ip; "base_sha256", Text base_sha256 ]);
-    "public_url", Text plan.public_url; "plan_id", Text (Plan_id.to_string (Dispatcher.up_plan_id plan));
+          Object [ "action", String "build"; "builder_ip", String ip; "base_sha256", String base_sha256 ]);
+    "public_url", String plan.public_url; "plan_id", String (Plan_id.to_string (Dispatcher.up_plan_id plan));
     "host_inspected", Bool true; "applied", Bool false ])
 
-let component_json (name, host) = Agent_cli.(Object [ "component", Text name; "host", Text host ])
+let component_json (name, host) = Agent_cli.(Object [ "component", String name; "host", String host ])
 
 let edge_plan_json (plan : Dispatcher.edge_plan) =
   Agent_cli.(Object [
     "pending", Bool (plan.plan_id <> None);
-    "plan_id", (match plan.plan_id with Some id -> Text (Plan_id.to_string id) | None -> Null);
+    "plan_id", (match plan.plan_id with Some id -> String (Plan_id.to_string id) | None -> Null);
     "components", Array (List.map component_json plan.components) ])
 
 let edge_outcome_json (outcome : Dispatcher.edge_outcome) =
@@ -331,9 +324,9 @@ let edge_outcome_json (outcome : Dispatcher.edge_outcome) =
     "failed", (match outcome.failed with
       | None -> Null
       | Some (name, host, message) ->
-          Object [ "component", Text name; "host", Text host; "message", Text message ]) ])
+          Object [ "component", String name; "host", String host; "message", String message ]) ])
 
-let short commit = String.sub commit 0 (min 12 (String.length commit))
+let short = Hex.short
 
 let drift_apply_command app (plan : Dispatcher.up_plan) =
   Printf.sprintf "serai up %s --revision %s --yes --json --expect-plan %s"
@@ -342,26 +335,26 @@ let drift_apply_command app (plan : Dispatcher.up_plan) =
 let drift_json (t : Drift.t) =
   let open Agent_cli in
   let section to_fields = function
-    | Drift.Checked value -> Object (("state", Text "checked") :: to_fields value)
-    | Unavailable message -> Object [ "state", Text "unavailable"; "message", Text message ]
-    | Not_declared -> Object [ "state", Text "not_declared" ] in
+    | Drift.Checked value -> Object (("state", String "checked") :: to_fields value)
+    | Unavailable message -> Object [ "state", String "unavailable"; "message", String message ]
+    | Not_declared -> Object [ "state", String "not_declared" ] in
   let fields = function Object fields -> fields | json -> [ "plan", json ] in
   let app = function
     | Drift.App_checked { app; state; live; target; plan } ->
-        Object ([ "app", Text app; "state", Text (Drift_app.state_to_string state);
-                  "live", (match live with Some commit -> Text commit | None -> Null);
-                  "target", Text target.commit; "target_revision", Text target.revision ]
+        Object ([ "app", String app; "state", String (Drift_app.state_to_string state);
+                  "live", (match live with Some commit -> String commit | None -> Null);
+                  "target", String target.commit; "target_revision", String target.revision ]
                 @ match plan with
-                  | Some plan -> [ "plan", up_plan_json plan; "apply", Text (drift_apply_command app plan) ]
+                  | Some plan -> [ "plan", up_plan_json plan; "apply", String (drift_apply_command app plan) ]
                   | None -> [])
-    | App_unavailable { app; message } -> Object [ "app", Text app; "state", Text "unavailable"; "message", Text message ]
-    | App_not_covered app -> Object [ "app", Text app; "state", Text "not_covered" ] in
+    | App_unavailable { app; message } -> Object [ "app", String app; "state", String "unavailable"; "message", String message ]
+    | App_not_covered app -> Object [ "app", String app; "state", String "not_covered" ] in
   Object [
     "drifted", Bool (Drift.drifted t); "complete", Bool (Drift.complete t);
     "edge", section (fun plan -> fields (edge_plan_json plan)) t.edge;
     "idp", section (fun (plan : Idp_plan.t) ->
         fields (Idp_plan.to_json plan)
-        @ [ "lockout", (match plan.lockout with Some message -> Text message | None -> Null) ]) t.idp;
+        @ [ "lockout", (match plan.lockout with Some message -> String message | None -> Null) ]) t.idp;
     "apps", Array (List.map app t.apps) ]
 
 (* One line per section and app, after the edge's diffs. *)
@@ -400,10 +393,10 @@ let drift env =
 
 let step_status (status : Dispatcher.step_status) =
   Agent_cli.(match status with
-    | Done -> [ "status", Text "done" ]
-    | Skipped -> [ "status", Text "skipped" ]
-    | Not_run -> [ "status", Text "not_run" ]
-    | Failed message -> [ "status", Text "failed"; "message", Text message ])
+    | Done -> [ "status", String "done" ]
+    | Skipped -> [ "status", String "skipped" ]
+    | Not_run -> [ "status", String "not_run" ]
+    | Failed message -> [ "status", String "failed"; "message", String message ])
 
 (* What the operator or agent does after a failed step. Nothing is undone
    automatically: a release may already have migrated. *)
@@ -418,15 +411,15 @@ let next_after app ~revision (step : Dispatcher.up_step) =
 let up_json app ~revision ((plan : Dispatcher.up_plan), (outcome : Dispatcher.up_outcome)) =
   let open Agent_cli in
   let data result next =
-    Object ([ "app", Text app; "commit", Text plan.commit; "local_source", Bool plan.local ] @ result
+    Object ([ "app", String app; "commit", String plan.commit; "local_source", Bool plan.local ] @ result
       @ [ "steps", Array (List.map (fun (step, status) ->
-            Object (("name", Text (Dispatcher.step_name step)) :: step_status status)) outcome.steps);
-          "next", (match next with Some next -> Text next | None -> Null) ]) in
+            Object (("name", String (Dispatcher.step_name step)) :: step_status status)) outcome.steps);
+          "next", (match next with Some next -> String next | None -> Null) ]) in
   match outcome.result with
-  | Deployed identity -> Ok (data [ "outcome", Text "deployed"; "identity", Text identity ] None)
-  | Stopped_for_env message -> Ok (data [ "outcome", Text "stopped_for_operator" ] (Some message))
+  | Deployed identity -> Ok (data [ "outcome", String "deployed"; "identity", String identity ] None)
+  | Stopped_for_env message -> Ok (data [ "outcome", String "stopped_for_operator" ] (Some message))
   | Step_failed (step, message) ->
-      Error (data [ "outcome", Text "failed" ] (Some (next_after app ~revision step)), message)
+      Error (data [ "outcome", String "failed" ] (Some (next_after app ~revision step)), message)
 
 (* serai update: its settings and state live with the user running it, the
    configuration comes from a verified commit, not the working directory. *)
@@ -461,40 +454,40 @@ let captured f =
   result, text
 
 let revert_json = function
-  | Update.Not_attempted why -> Agent_cli.(Object [ "outcome", Text "not_attempted"; "message", Text why ])
-  | Reverted -> Agent_cli.(Object [ "outcome", Text "reverted" ])
-  | Revert_failed message -> Agent_cli.(Object [ "outcome", Text "failed"; "message", Text message ])
+  | Update.Not_attempted why -> Agent_cli.(Object [ "outcome", String "not_attempted"; "message", String why ])
+  | Reverted -> Agent_cli.(Object [ "outcome", String "reverted" ])
+  | Revert_failed message -> Agent_cli.(Object [ "outcome", String "failed"; "message", String message ])
 
 let update_outcome_json (name, outcome) =
   let open Agent_cli in
   let fields = match outcome with
-    | Update.Not_enrolled -> [ "outcome", Text "not_enrolled" ]
-    | Built_on_controller -> [ "outcome", Text "built_on_controller" ]
-    | Already_handled commit -> [ "outcome", Text "already_handled"; "commit", Text commit ]
-    | Current commit -> [ "outcome", Text "current"; "commit", Text commit ]
-    | Would_deploy commit -> [ "outcome", Text "would_deploy"; "commit", Text commit ]
+    | Update.Not_enrolled -> [ "outcome", String "not_enrolled" ]
+    | Built_on_controller -> [ "outcome", String "built_on_controller" ]
+    | Already_handled commit -> [ "outcome", String "already_handled"; "commit", String commit ]
+    | Current commit -> [ "outcome", String "current"; "commit", String commit ]
+    | Would_deploy commit -> [ "outcome", String "would_deploy"; "commit", String commit ]
     | Deployed { commit; identity } ->
-        [ "outcome", Text "deployed"; "commit", Text commit; "identity", Text identity ]
+        [ "outcome", String "deployed"; "commit", String commit; "identity", String identity ]
     | Refused { commit; refusal } ->
-        [ "outcome", Text "refused"; "commit", Text commit;
-          "message", Text (Update_decision.refusal_message refusal) ]
+        [ "outcome", String "refused"; "commit", String commit;
+          "message", String (Update_decision.refusal_message refusal) ]
     | Failed { commit; step; message; revert } ->
-        [ "outcome", Text "failed"; "commit", Text commit; "step", Text (Dispatcher.step_name step);
-          "message", Text message; "revert", revert_json revert ]
+        [ "outcome", String "failed"; "commit", String commit; "step", String (Dispatcher.step_name step);
+          "message", String message; "revert", revert_json revert ]
     | Not_applied { commit; message } ->
-        [ "outcome", Text "not_applied";
-          "commit", (match commit with Some commit -> Text commit | None -> Null);
-          "message", Text message ] in
-  Object (("app", Text name) :: fields)
+        [ "outcome", String "not_applied";
+          "commit", (match commit with Some commit -> String commit | None -> Null);
+          "message", String message ] in
+  Object (("app", String name) :: fields)
 
 let update_report_json (report : Update.report) =
   let open Agent_cli in
   [ "configuration", (match report.configuration with
-      | Update.Configuration commit -> Object [ "status", Text "verified"; "commit", Text commit ]
+      | Update.Configuration commit -> Object [ "status", String "verified"; "commit", String commit ]
       | Configuration_refused { commit; refusal } ->
-          Object [ "status", Text "refused"; "commit", Text commit;
-                   "message", Text (Update_decision.refusal_message refusal) ]
-      | Configuration_unavailable message -> Object [ "status", Text "unavailable"; "message", Text message ]);
+          Object [ "status", String "refused"; "commit", String commit;
+                   "message", String (Update_decision.refusal_message refusal) ]
+      | Configuration_unavailable message -> Object [ "status", String "unavailable"; "message", String message ]);
     "apps", Array (List.map update_outcome_json report.apps);
     "host_inspected", Bool (match report.configuration with Update.Configuration _ -> true | _ -> false) ]
 
@@ -524,7 +517,7 @@ let update argv =
          | `Run (Some run) ->
              let data = Agent_cli.Object (update_report_json run.report
                @ [ "ran", Agent_cli.Bool true;
-                   "reported", Agent_cli.Array (List.map (fun line -> Agent_cli.Text line) run.lines) ]) in
+                   "reported", Agent_cli.Array (List.map (fun line -> Agent_cli.String line) run.lines) ]) in
              if run.failed then Error (data, String.concat "; " run.lines) else Ok data)) in
     print_endline (Agent_cli.to_json response);
     exit (Agent_cli.exit_code response)
@@ -581,35 +574,41 @@ let idp argv =
     Printf.sprintf "idp: stale plan: approved %s, now %s; run serai idp --plan again"
       (Plan_id.to_string expected)
       (match current with Some id -> Plan_id.to_string id | None -> "nothing to do") in
+  (* For --json: the declaration, the live state and the plan between them,
+     or a Failure before anything changes. *)
+  let planned () =
+    let layout = locate_layout () in
+    let declaration = match Idp_declaration.load ~layout with
+      | Ok (Some d) -> d | Ok None -> failwith (no_declaration layout) | Error message -> failwith message in
+    match fetch_result declaration.url with
+    | Error message -> failwith message
+    | Ok (session, live) ->
+        let t = Idp_plan.plan declaration live in
+        Option.iter failwith t.lockout;
+        session, live, t in
   if json && yes then begin
     let response = with_stdout_on_stderr
       (fun () -> Agent_cli.respond ~operation:"idp.apply" (fun () ->
          let expected = match expect with
            | None -> raise (Agent_cli.Bad_request "serai idp --yes --json requires --expect-plan <id>, the plan_id of the approved serai idp --plan --json")
            | Some text -> (match Plan_id.parse text with Ok id -> id | Error m -> raise (Agent_cli.Bad_request m)) in
-         let layout = locate_layout () in
-         let declaration = match Idp_declaration.load ~layout with
-           | Ok (Some d) -> d | Ok None -> failwith (no_declaration layout) | Error message -> failwith message in
-         match fetch_result declaration.url with
-         | Error message -> failwith message
-         | Ok (session, live) ->
-             let t = Idp_plan.plan declaration live in
-             Option.iter failwith t.lockout;
-             if t.plan_id <> Some expected then raise (Agent_cli.Stale_plan (stale expected t.plan_id));
+         match planned () with
+         | session, live, t ->
+             if t.plan_id <> Some expected then raise (Plan_id.Stale (stale expected t.plan_id));
              let applied = Proc.live (fun () -> Pocket_id.apply ~curl_bin session live t) in
              let open Agent_cli in
-             let optional_int = function Some n -> Int n | None -> Null in
-             let optional_text = function Some s -> Text s | None -> Null in
+             let optional_int = function Some n -> Json.of_int n | None -> Null in
+             let optional_text = function Some s -> String s | None -> Null in
              let failed = match applied.failed with
                | None -> Null
                | Some (action, (error : Pocket_id.error)) ->
-                   Object [ ("action", Idp_plan.action_to_json action); ("request", Text error.request);
+                   Object [ ("action", Idp_plan.action_to_json action); ("request", String error.request);
                             ("status", optional_int error.status); ("code", optional_text error.code);
-                            ("message", Text error.message) ] in
+                            ("message", String error.message) ] in
              let data = Object [
                  ("completed", Array (List.map Idp_plan.action_to_json applied.completed));
                  ("failed", failed);
-                 ("secrets_needed", Array (List.map (fun c -> Text c) t.secrets_needed)) ] in
+                 ("secrets_needed", Array (List.map (fun c -> String c) t.secrets_needed)) ] in
              match applied.failed with
              | None -> Ok data
              | Some (_, error) -> Error (data, Pocket_id.error_message error))) in
@@ -620,16 +619,9 @@ let idp argv =
     let pending = ref false in
     let response = with_stdout_on_stderr
       (fun () -> Agent_cli.respond ~operation:"idp.plan" (fun () ->
-         let layout = locate_layout () in
-         let declaration = match Idp_declaration.load ~layout with
-           | Ok (Some d) -> d | Ok None -> failwith (no_declaration layout) | Error message -> failwith message in
-         match fetch_result declaration.url with
-         | Error message -> failwith message
-         | Ok (_, live) ->
-             let t = Idp_plan.plan declaration live in
-             Option.iter failwith t.lockout;
-             pending := Idp_plan.pending t;
-             Ok (Idp_plan.to_json t))) in
+         let _, _, t = planned () in
+         pending := Idp_plan.pending t;
+         Ok (Idp_plan.to_json t))) in
     print_endline (Agent_cli.to_json response);
     let code = Agent_cli.exit_code response in
     exit (if code = 0 && !pending then 2 else code)
@@ -715,19 +707,21 @@ let acting_json argv =
       run "new" app (fun env -> Ok (new_json (new_app ~hostname env app ~kind ~repo) app))
   | "up" :: _ as up_argv ->
       (match parse_up up_argv with
-       | Some { up_app = app; up_revision = revision; up_source = local_source; up_plan = true; up_yes = false;
-                up_expect = None; up_rehearse = false; up_ip = None } ->
-           run "up.plan" app (fun env -> Ok (up_plan_json (up_plan ?local_source env app ~revision)))
-       (* Applies only with --yes, there being no terminal to ask in, and only
-          the plan the operator approved. *)
-       | Some { up_app = app; up_revision = revision; up_source = local_source; up_plan = false; up_yes = true;
-                up_expect = Some id; up_rehearse = false; up_ip = None } ->
-           let expect_plan = checked "up" id in
-           run ~assume_yes:true "up" app (fun env ->
-             up_json app ~revision (up_run ?local_source ~expect_plan env app ~revision))
-       | Some { up_plan = false; up_yes = true; up_expect = None; up_rehearse = false; up_ip = None; _ } ->
-           refuse "up" "serai up --yes --json requires --expect-plan <id>, the plan_id of the approved serai up --plan --json"
-       | _ -> ())
+       | None -> ()
+       | Some (app, revision, flag) ->
+           let local_source = flag "--source" in
+           (match flag "--plan", flag "--yes", flag "--expect-plan", flag "--rehearse", flag "--ip" with
+            | Some _, None, None, None, None ->
+                run "up.plan" app (fun env -> Ok (up_plan_json (up_plan ?local_source env app ~revision)))
+            (* Applies only with --yes, there being no terminal to ask in,
+               and only the plan the operator approved. *)
+            | None, Some _, Some id, None, None ->
+                let expect_plan = checked "up" id in
+                run ~assume_yes:true "up" app (fun env ->
+                  up_json app ~revision (up_run ?local_source ~expect_plan env app ~revision))
+            | None, Some _, None, None, None ->
+                refuse "up" "serai up --yes --json requires --expect-plan <id>, the plan_id of the approved serai up --plan --json"
+            | _ -> ()))
   | [ "edge"; "--plan" ] ->
       let pending = ref false in
       run ~pending "edge.plan" "edge" (fun env ->
@@ -761,45 +755,29 @@ let dispatch (env, registry) argv =
   | [ "guests" ] -> List.iter print_endline (Dispatcher.list_guests env)
   | [ "bootstrap"; app ] -> Dispatcher.bootstrap env app
   | [ "deploy"; name ] -> Dispatcher.deploy_app_or_guest env name
-  | "artifact" :: "build" :: guest :: "--revision" :: revision ::
-      "--opam-repository" :: checkout :: "--opam-revision" :: repository_revision ::
-      "--compiler" :: compiler :: "--store" :: store :: tail ->
-      let reuse = match tail with [] -> None | ["--reuse"; identity] -> Some identity
+  | "artifact" :: "build" :: name :: flags ->
+      let flag = match parse_flags ~switches:[] flags
+          ~valued:[ "--revision"; "--ip"; "--base"; "--sha256"; "--store"; "--opam-repository";
+                    "--opam-revision"; "--compiler"; "--reuse" ] with
+        | Some flags -> (fun flag -> List.assoc_opt flag flags)
+        | None -> usage_and_exit () in
+      let reuse = flag "--reuse" in
+      let opam_repository = match flag "--opam-repository", flag "--opam-revision" with
+        | Some checkout, Some revision -> Some (checkout, revision)
+        | None, None -> None
         | _ -> usage_and_exit () in
-      let identity = Dispatcher.artifact_build_guest_store ?reuse env guest ~revision
-        ~opam_repository:(checkout, repository_revision) ~compiler ~store in
-      Printf.printf "%s verified artifact: %s\n%!"
-        (if reuse = None then "stored" else "reused") identity
-  | "artifact" :: "build" :: app :: "--revision" :: revision :: "--ip" :: ip ::
-      "--base" :: base_archive :: "--sha256" :: base_sha256 :: "--store" :: store ::
-      "--opam-repository" :: checkout :: "--opam-revision" :: repository_revision :: tail ->
-      let reuse = match tail with [] -> None | ["--reuse"; identity] -> Some identity
+      let identity =
+        match flag "--revision", flag "--ip", flag "--base", flag "--sha256", flag "--store",
+              opam_repository, flag "--compiler" with
+        | Some revision, None, None, None, Some store, Some opam_repository, Some compiler ->
+            Dispatcher.artifact_build_guest_store ?reuse env name ~revision ~opam_repository ~compiler ~store
+        | Some revision, Some ip, Some base_archive, Some base_sha256, Some store, opam_repository, None ->
+            Dispatcher.artifact_build_store ?reuse ?opam_repository env name ~revision ~ip
+              ~base_archive ~base_sha256 ~store
+        | None, Some ip, Some base_archive, Some base_sha256, Some store, None, None ->
+            Dispatcher.artifact_build_executable_store ?reuse env name ~ip ~base_archive ~base_sha256 ~store
         | _ -> usage_and_exit () in
-      let identity = Dispatcher.artifact_build_store ?reuse
-        ~opam_repository:(checkout, repository_revision) env app ~revision ~ip
-        ~base_archive ~base_sha256 ~store in
-      Printf.printf "%s verified artifact: %s\n%!"
-        (if reuse = None then "stored" else "reused") identity
-  | [ "artifact"; "build"; app; "--revision"; revision; "--ip"; ip;
-      "--base"; base_archive; "--sha256"; base_sha256; "--store"; store ] ->
-      let identity = Dispatcher.artifact_build_store env app ~revision ~ip
-        ~base_archive ~base_sha256 ~store in
-      Printf.printf "stored verified artifact: %s\n%!" identity
-  | [ "artifact"; "build"; app; "--revision"; revision; "--ip"; ip;
-      "--base"; base_archive; "--sha256"; base_sha256; "--store"; store; "--reuse"; reuse ] ->
-      let identity = Dispatcher.artifact_build_store ~reuse env app ~revision ~ip
-        ~base_archive ~base_sha256 ~store in
-      Printf.printf "reused verified artifact: %s\n%!" identity
-  | [ "artifact"; "build"; app; "--ip"; ip; "--base"; base_archive;
-      "--sha256"; base_sha256; "--store"; store ] ->
-      let identity = Dispatcher.artifact_build_executable_store env app ~ip
-        ~base_archive ~base_sha256 ~store in
-      Printf.printf "stored verified artifact: %s\n%!" identity
-  | [ "artifact"; "build"; app; "--ip"; ip; "--base"; base_archive;
-      "--sha256"; base_sha256; "--store"; store; "--reuse"; reuse ] ->
-      let identity = Dispatcher.artifact_build_executable_store ~reuse env app ~ip
-        ~base_archive ~base_sha256 ~store in
-      Printf.printf "reused verified artifact: %s\n%!" identity
+      Printf.printf "%s verified artifact: %s\n%!" (if reuse = None then "stored" else "reused") identity
   | [ "artifact"; "install"; app; "--identity"; identity; "--archive"; archive; "--sha256"; sha256 ] ->
       Dispatcher.artifact_install env app ~identity ~archive ~sha256
   | [ "artifact"; ("upgrade" | "rollback" | "convert" as mode); app;
@@ -817,16 +795,15 @@ let dispatch (env, registry) argv =
   | "up" :: _ ->
       (* --yes was taken off before dispatch. *)
       (match parse_up argv with
-       | Some { up_app = app; up_revision = revision; up_source = local_source; up_plan = true;
-                up_expect = None; up_rehearse = false; up_ip = None; _ } ->
-           Dispatcher.print_up_plan (up_plan ?local_source env app ~revision)
-       | Some { up_app = app; up_revision = revision; up_source = local_source; up_plan = false;
-                up_expect = None; up_rehearse = true; up_ip = Some ip; _ } ->
-           up ?local_source ~target:(Dispatcher.Rehearse ip) env app ~revision
-       | Some { up_app = app; up_revision = revision; up_source = local_source; up_plan = false;
-                up_expect; up_rehearse = false; up_ip = None; _ } ->
-           up ?local_source ?expect_plan:(Option.map expected_plan up_expect) env app ~revision
-       | _ -> usage_and_exit ())
+       | None -> usage_and_exit ()
+       | Some (app, revision, flag) ->
+           let local_source = flag "--source" in
+           (match flag "--plan", flag "--rehearse", flag "--ip", flag "--expect-plan" with
+            | Some _, None, None, None -> Dispatcher.print_up_plan (up_plan ?local_source env app ~revision)
+            | None, Some _, Some ip, None -> up ?local_source ~target:(Dispatcher.Rehearse ip) env app ~revision
+            | None, None, None, expect ->
+                up ?local_source ?expect_plan:(Option.map expected_plan expect) env app ~revision
+            | _ -> usage_and_exit ()))
   | [ "edge"; "--plan" ] ->
       (match (Dispatcher.plan_edge env).plan_id with
        | Some id -> Printf.printf "plan %s\n%!" (Plan_id.to_string id); raise (Cli_exit 2)
@@ -919,7 +896,7 @@ let () =
       Progress.outcome_unknown ();
       Progress.finish Progress.Interrupted;
       exit 130
-  | Failure msg | Agent_cli.Stale_plan msg | Agent_cli.Bad_request msg ->
+  | Failure msg | Plan_id.Stale msg | Agent_cli.Bad_request msg ->
       Printf.eprintf "%s\n%!" msg;
       Progress.finish Progress.Failed;
       exit 1

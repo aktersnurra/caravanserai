@@ -1,7 +1,6 @@
 (* Building, storing, applying and reverting artifacts in jails. Part of
    Dispatcher. *)
-open! Remote_host
-open! App_hooks
+open Remote_host
 
 (* Prepare one verified Phoenix release in its jail without changing the
    active symlink or service. This is a building block for the artifact
@@ -72,18 +71,55 @@ type artifact_build_candidate = {
   manifest : Artifact_manifest.t;
 }
 
-let artifact_file_sha256 path =
-  let channel = open_in_bin path in
-  Fun.protect ~finally:(fun () -> close_in channel) (fun () ->
-    if (Unix.fstat (Unix.descr_of_in_channel channel)).Unix.st_kind <> Unix.S_REG then
-      failwith "artifact build: input must be a regular file";
-    let bytes = Bytes.create 65536 in
-    let rec consume state =
-      let count = input channel bytes 0 (Bytes.length bytes) in
-      if count = 0 then state
-      else consume (Digestif.SHA256.feed_string state (Bytes.sub_string bytes 0 count))
-    in
-    Digestif.SHA256.(to_hex (get (consume empty))))
+let artifact_file_sha256 = Fs.file_sha256 ~not_regular:"artifact build: input must be a regular file"
+
+(* The inventory of the tree staged at [root], written as [receipt] to
+   travel with it: its identity. *)
+let write_inventory ~root ~commit ~receipt =
+  let inventory = ok_or_fail (Source_inventory.create ~root ~commit) in
+  write_private receipt (Source_inventory.canonical inventory);
+  Source_inventory.identity inventory
+
+(* A staged opam repository carries its [repo] marker file. *)
+let require_opam_repository path =
+  match Unix.lstat (Filename.concat path "repo") with
+  | { Unix.st_kind = Unix.S_REG; _ } -> ()
+  | _ -> failwith "artifact build: invalid opam repository marker"
+  | exception Unix.Unix_error _ -> failwith "artifact build: missing opam repository marker"
+
+(* The engine's helpers [names] copied privately into [local], so what is
+   sent is what was hashed: each as (name, copy, digest). *)
+let snapshot_helpers env ~context ~local names =
+  List.map (fun name ->
+    let snapshot = Filename.concat local name in
+    let source = Layout.lib_file env.layout name in
+    In_channel.with_open_bin source (fun input ->
+      if (Unix.lstat source).Unix.st_kind <> Unix.S_REG
+         || (Unix.fstat (Unix.descr_of_in_channel input)).Unix.st_kind <> Unix.S_REG
+      then failwith (context ^ ": unsafe helper");
+      write_private snapshot (In_channel.input_all input));
+    name, snapshot, artifact_file_sha256 snapshot) names
+
+(* What a build sent back, read no further than [limit]. *)
+let read_evidence ~dir name limit =
+  let file = Filename.concat dir name in
+  match Unix.lstat file with
+  | { Unix.st_kind = Unix.S_REG; _ } ->
+      In_channel.with_open_bin file (fun channel ->
+        if In_channel.length channel > Int64.of_int limit then
+          failwith ("artifact build: oversized evidence: " ^ name);
+        In_channel.input_all channel)
+  | _ -> failwith ("artifact build: unsafe evidence: " ^ name)
+  | exception Unix.Unix_error _ -> failwith ("artifact build: missing evidence: " ^ name)
+
+(* The target-abi file's one line. *)
+let abi_evidence ~dir =
+  match String.split_on_char '\n' (read_evidence ~dir "target-abi" 129) with
+  | [ value; "" ] -> value
+  | _ -> failwith "artifact build: invalid target ABI"
+
+let dependency_evidence ~dir =
+  ok_or_fail (Artifact_manifest.dependencies_of_inventory (read_evidence ~dir "dependencies" 1048576))
 
 (* The base archive a build starts from: a regular file with the declared
    digest. [context] prefixes the refusal. *)
@@ -164,14 +200,9 @@ let artifact_source_recipe ?opam_snapshots env ~local ~base_sha256 ~release_name
               Source_snapshot.stage ~jj_bin:env.jj_bin ~checkout ~revision ~out:path
               |> Result.map (fun commit -> commit, path) in
         let commit, path = ok_or_fail (staged) in
-        let inventory = ok_or_fail (Source_inventory.create ~root:path ~commit) in
-        (match Unix.lstat (Filename.concat path "repo") with
-         | {Unix.st_kind=Unix.S_REG; _} -> ()
-         | _ -> failwith "artifact build: invalid opam repository marker"
-         | exception Unix.Unix_error _ -> failwith "artifact build: missing opam repository marker");
         let receipt = Filename.concat local "repository-inventory" in
-        write_private receipt (Source_inventory.canonical inventory);
-        let sha256 = Source_inventory.identity inventory in
+        let sha256 = write_inventory ~root:path ~commit ~receipt in
+        require_opam_repository path;
         Artifact_recipe.stage_ocaml ~lib_dir:(Layout.lib_dir env.layout) ~out ~base_sha256 ~release_name ~packages
           ~compiler ~repository_commit:commit ~repository_sha256:sha256 ~web_bundle, Some (path, receipt, sha256)
     | _ -> failwith "artifact build: inconsistent source recipe inputs" in
@@ -204,11 +235,8 @@ let artifact_build_candidate ?checkout ?opam_repository ?opam_snapshots env app_
       Progress.with_duration ~phase:"source" ~parent:None (fun () ->
       let source_commit = ok_or_fail (Source_snapshot.stage ~jj_bin:env.jj_bin
         ~checkout:repo_path ~revision ~out:source) in
-      let inventory = ok_or_fail (Source_inventory.create ~root:source ~commit:source_commit) in
-      let source_inventory_sha256 = Source_inventory.identity inventory in
       let inventory_path = Filename.concat local "inventory" in
-      write_private inventory_path (Source_inventory.canonical inventory);
-      source_commit, source_inventory_sha256, inventory_path) in
+      source_commit, write_inventory ~root:source ~commit:source_commit ~receipt:inventory_path, inventory_path) in
     let web_bundle = artifact_web_bundle env app_name in
     let recipe_dir = Filename.concat local "recipe" in
     let recipe, repository = artifact_source_recipe ?opam_snapshots env ~local ~base_sha256 ~release_name
@@ -293,41 +321,20 @@ let artifact_build_candidate ?checkout ?opam_repository ?opam_snapshots env app_
         Progress.phase "verify";
         let archive_sha256, target_abi, dependencies =
           Progress.with_duration ~phase:"verification" ~parent:None (fun () ->
-          let archive = Filename.concat output_temp "release.tar" in
-          let checksum = Filename.concat output_temp "release.sha256" in
-          let abi_file = Filename.concat output_temp "target-abi" in
-          let dependencies_file = Filename.concat output_temp "dependencies" in
-          (match Unix.lstat archive, Unix.lstat checksum, Unix.lstat abi_file,
-                 Unix.lstat dependencies_file with
-           | { Unix.st_kind = Unix.S_REG; _ }, { Unix.st_kind = Unix.S_REG; _ },
-             { Unix.st_kind = Unix.S_REG; _ }, { Unix.st_kind = Unix.S_REG; _ } -> ()
-           | _ -> failwith "artifact build: candidate output must be regular"
-           | exception Unix.Unix_error _ -> failwith "artifact build: missing candidate output");
-          let archive_sha256 =
-            let channel = open_in_bin checksum in
-            Fun.protect ~finally:(fun () -> close_in channel) (fun () ->
-              if in_channel_length channel > 65 then failwith "artifact build: invalid candidate checksum";
-              String.trim (really_input_string channel (in_channel_length channel))) in
+          let dir = output_temp in
+          let archive = Filename.concat dir "release.tar" in
+          let archive_sha256 = String.trim (read_evidence ~dir "release.sha256" 65) in
           if not (is_sha256 archive_sha256)
+             || (Unix.lstat archive).Unix.st_kind <> Unix.S_REG
              || artifact_file_sha256 archive <> archive_sha256 then
             failwith "artifact build: candidate archive SHA-256 mismatch";
-          let target_abi =
-            let channel = open_in_bin abi_file in
-            Fun.protect ~finally:(fun () -> close_in channel) (fun () ->
-              let length = in_channel_length channel in
-              if length > 129 then failwith "artifact build: invalid target ABI";
-              match String.split_on_char '\n' (really_input_string channel length) with
-              | [ value; "" ] -> value
-              | _ -> failwith "artifact build: invalid target ABI") in
+          let target_abi = abi_evidence ~dir in
           (match String.split_on_char ':' target_abi with
            | [ "FreeBSD"; major; arch ] when major <> "" && arch <> ""
                && String.for_all (function '0' .. '9' -> true | _ -> false) major
                && String.for_all (function 'a' .. 'z' | 'A' .. 'Z' | '0' .. '9' | '_' | '-' -> true | _ -> false) arch -> ()
            | _ -> failwith "artifact build: invalid target ABI");
-          let dependencies = In_channel.with_open_bin dependencies_file (fun channel ->
-            let size = in_channel_length channel in
-            if size > 1048576 then failwith "artifact build: oversized dependency inventory";
-            ok_or_fail (Artifact_manifest.dependencies_of_inventory (really_input_string channel size))) in
+          let dependencies = dependency_evidence ~dir in
           archive_sha256, target_abi, dependencies) in
         let manifest = ok_or_fail (Artifact_manifest.create ~name:app_name ~source_commit ~target_abi
           ~dependencies ~recipe_sha256 ~release_name ~archive_sha256) in
@@ -454,21 +461,13 @@ let artifact_build_executable_store ?reuse env app_name ~ip ~base_archive ~base_
         List.iter (fun name -> transfer (remote ("output/" ^ name)) (Filename.concat local name))
           ["release.tar"; "release.sha256"; "target-abi"; "dependencies"]);
     Progress.phase "verify";
-    let read_evidence name limit =
-      let file = Filename.concat local name in
-      if (Unix.lstat file).Unix.st_kind <> Unix.S_REG then failwith "artifact build: unsafe evidence";
-      In_channel.with_open_bin file (fun channel ->
-        if in_channel_length channel > limit then failwith "artifact build: oversized evidence";
-        In_channel.input_all channel) in
-    let archive_sha256 = String.trim (read_evidence "release.sha256" 65) in
-    let target_abi = match String.split_on_char '\n' (read_evidence "target-abi" 129) with
-      | [value; ""] -> value
-      | _ -> failwith "artifact build: invalid target ABI" in
+    let archive_sha256 = String.trim (read_evidence ~dir:local "release.sha256" 65) in
+    let target_abi = abi_evidence ~dir:local in
     (match String.split_on_char ':' target_abi with
      | ["FreeBSD"; major; "amd64"] when major <> ""
          && String.for_all (function '0'..'9' -> true | _ -> false) major -> ()
      | _ -> failwith "artifact build: incompatible executable ABI");
-    let dependencies = ok_or_fail (Artifact_manifest.dependencies_of_inventory (read_evidence "dependencies" 1048576)) in
+    let dependencies = dependency_evidence ~dir:local in
     let manifest = ok_or_fail (Artifact_manifest.create_input ~name:app_name ~input ~target_abi ~dependencies
       ~recipe_sha256:recipe.sha256 ~release_name:release ~archive_sha256) in
     Progress.phase "publish";
@@ -517,16 +516,7 @@ let source_release_settings app_name (strategy : Strategy_config.t) =
 let run_artifact_helper env ~context ~label ~subtree ~files ~helpers ~assignments ~args =
   let local = Filename.temp_dir "serai-artifact-apply" "" in
   Fun.protect ~finally:(fun () -> remove_tree local) (fun () ->
-    let scripts = List.map (fun name ->
-      let source = Layout.lib_file env.layout name in
-      if (Unix.lstat source).Unix.st_kind <> Unix.S_REG then failwith (context ^ ": unsafe helper");
-      let snapshot = Filename.concat local name in
-      In_channel.with_open_bin source (fun input ->
-        if (Unix.fstat (Unix.descr_of_in_channel input)).Unix.st_kind <> Unix.S_REG
-        then failwith (context ^ ": unsafe helper");
-        Out_channel.with_open_bin snapshot (fun output -> output_string output (In_channel.input_all input)));
-      Unix.chmod snapshot 0o600;
-      name, snapshot, artifact_file_sha256 snapshot) helpers in
+    let scripts = snapshot_helpers env ~context ~local helpers in
     let stage = env.remote_stage ^ "/" ^ subtree in
     with_retained_stage env ~command:label ~host:Compute_host
       ~retained:(Printf.sprintf

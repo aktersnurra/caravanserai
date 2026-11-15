@@ -1,5 +1,5 @@
 (* Deliberately no Proc/Dispatcher dependency: this surface cannot mutate hosts. *)
-type json = Null | Bool of bool | Int of int | Text of string
+type json = Json.t = Null | Bool of bool | Number of string | String of string
           | Array of json list | Object of (string * json) list
 
 type error_code = Invalid_request | Unsupported_operation | Input_unavailable
@@ -11,7 +11,6 @@ type response = { operation : string; status : status; data : json;
                   error : (error_code * string) option }
 type request = Validate | Inspect | Plan of string * string option
 exception Refusal of error_code * string
-exception Stale_plan of string
 exception Bad_request of string
 
 let code = function
@@ -22,26 +21,20 @@ let code = function
   | Interrupted -> "interrupted" | Not_applied -> "not_applied" | Step_failed -> "step_failed"
   | Stale_plan -> "stale_plan"
 
-let quote = Json.quote
-
-let rec encode = function
-  | Null -> "null" | Bool value -> string_of_bool value | Int value -> string_of_int value
-  | Text value -> quote value
-  | Array values -> "[" ^ String.concat "," (List.map encode values) ^ "]"
-  | Object fields -> "{" ^ String.concat "," (List.map (fun (k,v) -> quote k ^ ":" ^ encode v) fields) ^ "}"
+let encode = Json.to_string
 
 let to_json response =
   let status = match response.status with Succeeded -> "succeeded" | Refused -> "refused"
     | Failed -> "failed" | Cancelled -> "interrupted" in
   let error = match response.error with None -> Null | Some (kind,message) ->
-    Object ["code",Text (code kind); "message",Text message] in
-  encode (Object ["schema_version",Int 1; "operation",Text response.operation;
-    "status",Text status; "data",response.data; "error",error])
+    Object ["code",String (code kind); "message",String message] in
+  encode (Object ["schema_version",Json.of_int 1; "operation",String response.operation;
+    "status",String status; "data",response.data; "error",error])
 
 let exit_code response = match response.status with Succeeded -> 0 | Cancelled -> 130 | Refused | Failed -> 1
 let refuse kind message = raise (Refusal (kind,message))
-let strings values = Array (List.map (fun value -> Text value) values)
-let optional = function None -> Null | Some value -> Text value
+let strings values = Array (List.map (fun value -> String value) values)
+let optional = function None -> Null | Some value -> String value
 
 let topology (d : Declaration.t) = match d.topology with
   | Some value -> value | None -> refuse Invalid_declaration "missing topology"
@@ -60,23 +53,23 @@ let workload (d : Declaration.t) name =
         Topology.guest_jumps t name,"guest",name
     | None, None -> refuse Unknown_workload ("unknown workload: " ^ name)
     | Some _, Some _ -> refuse Invalid_declaration ("ambiguous workload: " ^ name) in
-  Object ["name",Text name; "kind",Text kind; "host_id",Text host.id;
-    "ssh_target",Text target; "ssh_jumps",strings jumps;
-    "ip",Text endpoint.ip; "hostname",Text endpoint.hostname;
+  Object ["name",String name; "kind",String kind; "host_id",String host.id;
+    "ssh_target",String target; "ssh_jumps",strings jumps;
+    "ip",String endpoint.ip; "hostname",String endpoint.hostname;
     "proxied",Bool (List.mem name (Topology.proxy_workloads t));
-    "mutation_lock",Object ["kind",Text lock_kind; "id",Text lock_id]]
+    "mutation_lock",Object ["kind",String lock_kind; "id",String lock_id]]
 
 let inventory (d : Declaration.t) =
   let t = topology d in
   let hosts = Topology.hosts t |> List.sort (fun (a : Topology.host) b -> String.compare a.id b.id)
-    |> List.map (fun (h : Topology.host) -> Object ["id",Text h.id;
-        "os",Text (match h.os with Topology.Freebsd -> "freebsd" | Topology.Linux -> "linux");
-        "ssh_target",Text h.ssh; "via",optional h.via;
+    |> List.map (fun (h : Topology.host) -> Object ["id",String h.id;
+        "os",String (match h.os with Topology.Freebsd -> "freebsd" | Topology.Linux -> "linux");
+        "ssh_target",String h.ssh; "via",optional h.via;
         "ssh_jumps",strings (Topology.host_jumps t h)]) in
   let names = App_config.names d.apps @ List.map Guest_config.name d.guests |> List.sort String.compare in
-  Object ["scope",Text "declaration"; "host_inspected",Bool false;
+  Object ["scope",String "declaration"; "host_inspected",Bool false;
     "hosts",Array hosts; "workloads",Array (List.map (workload d) names);
-    "edge_host_id",Text (Topology.edge t).id]
+    "edge_host_id",String (Topology.edge t).id]
 
 let plan (d : Declaration.t) name revision =
   let target = workload d name in
@@ -85,16 +78,16 @@ let plan (d : Declaration.t) name revision =
     | None -> Artifact_plan.of_guest ?revision (List.find (fun g -> Guest_config.name g = name) d.guests) in
   let p = match result with Ok p -> p | Error message -> refuse Invalid_plan message in
   let origin = match p.origin with
-    | Artifact_plan.Phoenix_source s -> Object ["kind",Text "phoenix_source";
-        "checkout",Text s.checkout; "requested_revision",Text s.revision; "release_name",Text s.release_name]
-    | Artifact_plan.Ocaml_source s -> Object ["kind",Text "ocaml_source";
-        "checkout",Text s.checkout; "requested_revision",Text s.revision]
-    | Artifact_plan.Guest_source s -> Object ["kind",Text "guest_source";
-        "checkout",Text s.checkout; "requested_revision",Text s.revision]
-    | Artifact_plan.Verified_binary s -> Object ["kind",Text "pinned_binary";
-        "version",Text s.version; "sha256",Text s.sha256]
-    | Artifact_plan.Freebsd_packages names -> Object ["kind",Text "freebsd_packages"; "package_names",strings names] in
-  Object ["kind",Text "design_preview"; "name",Text name; "target",target; "origin",origin;
+    | Artifact_plan.Phoenix_source s -> Object ["kind",String "phoenix_source";
+        "checkout",String s.checkout; "requested_revision",String s.revision; "release_name",String s.release_name]
+    | Artifact_plan.Ocaml_source s -> Object ["kind",String "ocaml_source";
+        "checkout",String s.checkout; "requested_revision",String s.revision]
+    | Artifact_plan.Guest_source s -> Object ["kind",String "guest_source";
+        "checkout",String s.checkout; "requested_revision",String s.revision]
+    | Artifact_plan.Verified_binary s -> Object ["kind",String "pinned_binary";
+        "version",String s.version; "sha256",String s.sha256]
+    | Artifact_plan.Freebsd_packages names -> Object ["kind",String "freebsd_packages"; "package_names",strings names] in
+  Object ["kind",String "design_preview"; "name",String name; "target",target; "origin",origin;
     "host_inspected",Bool false; "source_verified",Bool false; "artifact_identity",Null;
     "authorized_to_apply",Bool false; "database_rollback",Bool false]
 
@@ -132,7 +125,7 @@ let run ~layout argv =
            | Ok _ -> () | Error message -> refuse Invalid_declaration message);
           let files = match Validation.render_all d with
             | Ok files -> files | Error message -> refuse Render_failed message in
-          Object ["apps",Int (List.length d.apps); "guests",Int (List.length d.guests);
+          Object ["apps",Json.of_int (List.length d.apps); "guests",Json.of_int (List.length d.guests);
             "rendered_files",strings (List.map fst files); "host_inspected",Bool false] in
     {operation; status=Succeeded; data; error=None}
   with
@@ -146,7 +139,7 @@ let respond ~operation f =
   | Ok data -> {operation; status=Succeeded; data; error=None}
   | Error (data, message) -> {operation; status=Failed; data; error=Some (Step_failed, message)}
   | exception Failure message -> error Refused Not_applied message
-  | exception Stale_plan message -> error Refused Stale_plan message
+  | exception Plan_id.Stale message -> error Refused Stale_plan message
   | exception Bad_request message -> error Refused Invalid_request message
   | exception Sys.Break -> error Cancelled Interrupted "interrupted"
   | exception exn -> error Failed Internal_error (Printexc.to_string exn)

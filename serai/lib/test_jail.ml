@@ -1,9 +1,5 @@
 (* The throwaway jail <app>test. Part of Dispatcher. *)
-open! Remote_host
-open! App_hooks
-open! Artifact_lifecycle
-open! Edge_apply
-open! Logging_install
+open Remote_host
 
 (* Every name and ip a test jail must not take: the apps' and guests'. *)
 let declared_endpoints env =

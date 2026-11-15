@@ -2,13 +2,9 @@
    Dispatcher. Every connection goes through the compute host by ProxyJump
    and shares the control socket; the steps that run a guest script ask for
    a TTY, because su must prompt for the guest's root password. *)
-open! Remote_host
-open! App_hooks
-open! Artifact_lifecycle
-open! Edge_apply
-open! Logging_install
-open! Test_jail
-open! Up
+open Remote_host
+open Artifact_lifecycle
+open Logging_install
 
 let find_guest env name =
   if not (name <> "" && String.for_all is_app_char name) then failwith "invalid guest name";
@@ -134,16 +130,11 @@ let artifact_build_guest_store ?reuse env name ~revision ~opam_repository:(repos
     let snapshot checkout revision label =
       let path = Filename.concat local label in
       let commit = ok_or_fail (Source_snapshot.stage ~jj_bin:env.jj_bin ~checkout ~revision ~out:path) in
-      let inventory = ok_or_fail (Source_inventory.create ~root:path ~commit) in
       let receipt = Filename.concat local (label ^ "-inventory") in
-      write_private receipt (Source_inventory.canonical inventory);
-      path, receipt, commit, Source_inventory.identity inventory in
+      path, receipt, commit, write_inventory ~root:path ~commit ~receipt in
     let source, source_receipt, source_commit, source_sha = snapshot checkout revision "source" in
     let repository, repo_receipt, repo_commit, repo_sha = snapshot repository_checkout repository_revision "repository" in
-    (match Unix.lstat (Filename.concat repository "repo") with
-     | {Unix.st_kind=Unix.S_REG; _} -> ()
-     | _ -> failwith "artifact build: invalid opam repository marker"
-     | exception Unix.Unix_error _ -> failwith "artifact build: missing opam repository marker");
+    require_opam_repository repository;
     Progress.phase "recipe";
     let recipe_dir = Filename.concat local "recipe" in
     let recipe = ok_or_fail (Artifact_recipe.stage_guest ~lib_dir:(Layout.lib_dir env.layout) ~out:recipe_dir
@@ -203,20 +194,13 @@ let artifact_build_guest_store ?reuse env name ~revision ~opam_repository:(repos
         List.iter (fun file -> transfer (remote ("output/" ^ file)) (Filename.concat output file))
           ["release.tar"; "release.sha256"; "target-abi"; "dependencies"]);
     Progress.phase "verify";
-    let read file limit =
-      let path = Filename.concat output file in
-      if (Unix.lstat path).Unix.st_kind <> Unix.S_REG then failwith "artifact build: unsafe guest evidence";
-      In_channel.with_open_bin path (fun channel ->
-        if in_channel_length channel > limit then failwith "artifact build: oversized guest receipt";
-        In_channel.input_all channel) in
     let archive = Filename.concat output "release.tar" in
     if (Unix.lstat archive).Unix.st_kind <> Unix.S_REG then failwith "artifact build: unsafe guest archive";
     let archive_sha256 = artifact_file_sha256 archive in
-    if read "release.sha256" 65 <> archive_sha256 ^ "\n" then failwith "artifact build: guest archive checksum mismatch";
-    let target_abi = match String.split_on_char '\n' (read "target-abi" 129) with
-      | [value; ""] -> value | _ -> failwith "artifact build: invalid Linux ABI receipt" in
+    if read_evidence ~dir:output "release.sha256" 65 <> archive_sha256 ^ "\n" then failwith "artifact build: guest archive checksum mismatch";
+    let target_abi = abi_evidence ~dir:output in
     artifact_guest_abi target_abi;
-    let dependencies = ok_or_fail (Artifact_manifest.dependencies_of_inventory (read "dependencies" 1048576)) in
+    let dependencies = dependency_evidence ~dir:output in
     (match dependencies with
      | [{Artifact_manifest.name="opam-repository"; version; sha256}]
        when String.equal version repo_commit && String.equal sha256 repo_sha -> ()
@@ -246,15 +230,7 @@ let artifact_apply_guest ?(convert=false) env name ~store ~identity ~rollback =
     failwith "artifact apply: cancelled";
   let local = Filename.temp_dir "serai-guest-apply" "" in
   Fun.protect ~finally:(fun () -> remove_tree local) (fun () ->
-    let scripts = List.map (fun name ->
-      let path = Layout.lib_file env.layout name in
-      if (Unix.lstat path).Unix.st_kind <> Unix.S_REG then failwith "artifact apply: unsafe guest helper";
-      let snapshot = Filename.concat local name in
-      In_channel.with_open_bin path (fun input ->
-        if (Unix.fstat (Unix.descr_of_in_channel input)).Unix.st_kind <> Unix.S_REG then failwith "artifact apply: unsafe guest helper";
-        Out_channel.with_open_bin snapshot (fun output -> output_string output (In_channel.input_all input)));
-      Unix.chmod snapshot 0o600;
-      name, snapshot, artifact_file_sha256 snapshot)
+    let scripts = snapshot_helpers env ~context:"artifact apply" ~local
       (["artifact_install_guest.sh"; "artifact_activate_guest.sh"; "artifact_check_health.sh"]
        @ if convert then ["artifact_convert_binary.sh"; "artifact_service_guest.sh"] else []) in
     let subtree = "artifact-apply/" ^ name ^ "/" ^ identity in

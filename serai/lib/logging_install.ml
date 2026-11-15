@@ -1,9 +1,7 @@
 (* Central logging's senders on the compute and edge hosts. Part of
    Dispatcher. *)
-open! Remote_host
-open! App_hooks
-open! Artifact_lifecycle
-open! Edge_apply
+open Remote_host
+open Edge_apply
 
 (* Central logging: the logs jail's VictoriaLogs and its senders. Each
    sender is installed by its own script on its own host, under that host's

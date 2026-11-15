@@ -30,30 +30,6 @@ let placeholders ~(edge : Edge_config.t) endpoints =
               endpoint.tailnet_ports)
        (Network_endpoint.to_list endpoints)
 
-let replace_all ~pattern ~with_ text =
-  if pattern = "" then invalid_arg "Caddy_render.replace_all: empty pattern";
-  let pattern_length = String.length pattern in
-  let buffer = Buffer.create (String.length text) in
-  let rec go i =
-    if i > String.length text - pattern_length then
-      Buffer.add_string buffer (String.sub text i (String.length text - i))
-    else if String.sub text i pattern_length = pattern then begin
-      Buffer.add_string buffer with_;
-      go (i + pattern_length)
-    end
-    else begin
-      Buffer.add_char buffer text.[i];
-      go (i + 1)
-    end
-  in
-  go 0;
-  Buffer.contents buffer
-
-let substitute ~placeholders text =
-  List.fold_left
-    (fun text (pattern, with_) -> replace_all ~pattern ~with_ text)
-    text placeholders
-
 (* Digits included: port names may carry them (an s3 port gives
    __STORE_S3_PORT__), and a leftover one must be caught too. *)
 let is_placeholder_char c = (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c = '_'
@@ -105,7 +81,7 @@ let render_source ~placeholders rendered (relative_path, source) =
   match rendered with
   | Error _ as error -> error
   | Ok files -> (
-      let contents = substitute ~placeholders (read_file source) in
+      let contents = Template.substitute ~placeholders (read_file source) in
       match find_unsubstituted contents with
       | Some placeholder ->
           Error (Printf.sprintf "%s: unknown placeholder %s" relative_path placeholder)
@@ -123,7 +99,7 @@ let render ?proxy ~edge ~root_template ~sites:sites_dir endpoints =
           let source = read_file (Filename.concat sites_dir template) in
           template, Network_endpoint.to_list endpoints |> List.filter (fun (e : Network_endpoint.t) ->
             let pattern = "__" ^ String.uppercase_ascii e.name ^ "_" in
-            replace_all ~pattern ~with_:"" source <> source)) templates in
+            Template.replace_all ~pattern ~with_:"" source <> source)) templates in
         (* Each proxied workload has exactly one site: none would leave it
            unreachable without an error, two would be two sites for one name. *)
         let one_site_each = match proxy with

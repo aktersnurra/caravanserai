@@ -73,7 +73,7 @@ log { source(s_local_syslog); destination(d_local_messages); };
 let render_bridge t = match t.guests with None -> "" | Some (bridge, _) -> bridge ^ "\n"
 
 let render_edge_sender r ~template =
-  Caddy_render.substitute
+  Template.substitute
     ~placeholders:[ ("__LOGS_IP__", r.receiver_ip); ("__LOGS_SYSLOG_PORT__", string_of_int r.port) ] template
 
 let render_receiver r = Printf.sprintf "%s %d\n" r.receiver_ip r.port

@@ -182,7 +182,7 @@ let () =
       let result =
         try Ok (Proc.Mock.run mock (fun () ->
           Dispatcher.up_run ~expect_plan (env ~confirm:(fun _ -> incr asked; true)) "hello" ~revision:"main" ~cache ~store))
-        with Agent_cli.Stale_plan message -> Error message in
+        with Plan_id.Stale message -> Error message in
       result, Proc.Mock.calls mock in
     (match bound id with
      | Ok (_, outcome), _ -> check "the approved plan is applied" (outcome.result = Dispatcher.Deployed identity)

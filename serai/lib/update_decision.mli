@@ -28,10 +28,6 @@ val examine :
   desired:string -> deployed:string option -> signature:Source_mirror.signature ->
   allowed:string list -> descends:bool -> verdict
 
-(** A failed release step, on an app without migrate, whose new release is
-    active (the switch happened): the only failure an update reverts. *)
-val should_revert : step:Dispatcher.up_step -> migrate:bool -> active_is_desired:bool -> bool
-
 (** A line is reported when it differs from the last one reported. *)
 val should_report : last:string option -> current:string -> bool
 

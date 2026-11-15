@@ -299,7 +299,7 @@ let plan (declaration : Declaration.t) ~topology ~templates (request : request) 
   let* validated = Network_endpoint.validate_all (endpoints @ [ app.endpoint ])
     |> Result.map_error (fun errors -> "serai new: " ^ Network_endpoint.errors_message errors) in
   let* () = match Caddy_render.find_unsubstituted
-      (Caddy_render.substitute ~placeholders:(Caddy_render.placeholders ~edge:declaration.edge validated) site_text) with
+      (Template.substitute ~placeholders:(Caddy_render.placeholders ~edge:declaration.edge validated) site_text) with
     | None -> Ok ()
     | Some placeholder -> Error ("serai new: the generated Caddy site leaves " ^ placeholder) in
   let* topology = place topology ~name ~host:host.id in

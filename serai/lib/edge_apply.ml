@@ -1,8 +1,6 @@
 (* The edge: rendering, staging, planning and installing pf rules, the
    Headscale policy and Caddy's tree. Part of Dispatcher. *)
-open! Remote_host
-open! App_hooks
-open! Artifact_lifecycle
+open Remote_host
 
 (* Every file edge stages, keyed by its path under the remote stage. All
    rendering happens here, on the operator's machine, before any command
@@ -261,7 +259,7 @@ let edge_run ?expect_plan env =
       Option.iter (fun expected ->
           let current = (edge_plan_of pending).plan_id in
           if current <> Some expected then
-            raise (Agent_cli.Stale_plan (Printf.sprintf
+            raise (Plan_id.Stale (Printf.sprintf
                      "edge: stale plan: approved %s, now %s; run serai edge --plan again"
                      (Plan_id.to_string expected)
                      (match current with Some id -> Plan_id.to_string id | None -> "nothing to do"))))

@@ -1,11 +1,10 @@
 (* serai up: plan, then jail, build, release, edge and check. Part of
    Dispatcher. *)
-open! Remote_host
-open! App_hooks
-open! Artifact_lifecycle
-open! Edge_apply
-open! Logging_install
-open! Test_jail
+open Remote_host
+open App_hooks
+open Artifact_lifecycle
+open Edge_apply
+open Test_jail
 
 type up_target = Live | Rehearse of string | Update
 
@@ -24,7 +23,7 @@ type up_plan = {
   public_url : string;
 }
 
-let short value = if String.length value > 12 then String.sub value 0 12 else value
+let short = Hex.short
 
 type up_step = Jail | Build | Release | Edge | Check
 type step_status = Done | Skipped | Failed of string | Not_run
@@ -219,7 +218,7 @@ let up_run ?local_source ?target ?expect_plan env app_name ~revision ~cache ~sto
   Option.iter (fun expected ->
       let current = up_plan_id plan in
       if current <> expected then
-        raise (Agent_cli.Stale_plan (Printf.sprintf
+        raise (Plan_id.Stale (Printf.sprintf
                  "up: stale plan: approved %s, now %s; run serai up %s --revision %s --plan again"
                  (Plan_id.to_string expected) (Plan_id.to_string current) app_name revision))) expect_plan;
   let question = match plan.jail, target with

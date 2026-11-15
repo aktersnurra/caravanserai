@@ -155,6 +155,8 @@ let quote s =
   escape buffer s;
   Buffer.contents buffer
 
+let of_int n = Number (string_of_int n)
+
 let to_string value =
   let buffer = Buffer.create 256 in
   let rec go = function

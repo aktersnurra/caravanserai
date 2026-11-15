@@ -52,10 +52,10 @@ val pending : t -> bool
 (** One line per action, then one per undeclared resource; none in sync. *)
 val lines : t -> string list
 
-val to_json : t -> Agent_cli.json
+val to_json : t -> Json.t
 
 (** One action as [to_json] lists it. *)
-val action_to_json : action -> Agent_cli.json
+val action_to_json : action -> Json.t
 
 (** The live state as a declaration, validated as idp.sexp is. Token
     lifetimes equal to Pocket ID's defaults are left out. *)

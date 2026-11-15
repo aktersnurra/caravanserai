@@ -798,6 +798,8 @@ serai/
   lib/strategy.ml          jail sh generation per app strategy
   lib/network_endpoint.ml  the shared endpoint type (name, ip, hostname, named ports)
   lib/sexp_fields.ml       shared (key value) field-list parsing
+  lib/hex.ml               digests and commit ids as text; lib/fs.ml: private directories,
+                           file hashes, tree removal; lib/template.ml: literal substitution
   lib/guest_config.ml      sexp parsing for guests/<name>/guest.sexp (endpoint, login user, source checkout)
   lib/edge_config.ml       sexp parsing for edge/edge.sexp (base_domain, operator, operator_edge_ports)
   lib/headscale_acl.ml     Headscale ACL rendering

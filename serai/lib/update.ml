@@ -113,7 +113,8 @@ let deploy paths env ~name ~commit ~migrate =
           Failed { commit; step = Release; message;
                    revert = Not_attempted ("could not tell whether the new release is active: " ^ probe) }
       | { source; _ } when source <> Some commit -> Not_applied { commit = Some commit; message }
-      | _ when Update_decision.should_revert ~step:Release ~migrate ~active_is_desired:true ->
+      (* The new release is active and files are all that changed: revert. *)
+      | _ when not migrate ->
           let revert = match Dispatcher.revert env name with
             | () -> Reverted
             | exception Failure failure -> Revert_failed failure in
@@ -179,7 +180,7 @@ let examine ~plan deps config paths ~handled =
 
 let plan deps config paths = examine ~plan:true deps config paths ~handled:(fun _ -> None)
 
-let short commit = if String.length commit > 12 then String.sub commit 0 12 else commit
+let short = Hex.short
 
 let configuration_line = function
   | Configuration _ -> None

@@ -46,7 +46,7 @@ let () =
 
   (* The refusal. *)
   let response = Agent_cli.respond ~operation:"idp.apply" (fun () ->
-      raise (Agent_cli.Stale_plan "idp: stale plan: approved 0000000000000000, now 1111111111111111")) in
+      raise (Plan_id.Stale "idp: stale plan: approved 0000000000000000, now 1111111111111111")) in
   let json = Agent_cli.to_json response in
   check "Stale_plan is refused with code stale_plan"
     (contains json {|"status":"refused"|} && contains json {|"code":"stale_plan"|}
