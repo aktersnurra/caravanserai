@@ -54,6 +54,15 @@ test "$code" = 0 || fail "the approved plan was not applied (exit $code)"
 has '"operation":"bootstrap","status":"succeeded"' 'the approved bootstrap did not succeed'
 test "$(wc -l <"$TMP/output")" -eq 1 || fail 'stdout holds more than the one result'
 grep -q 'doas sh' "$TMP/contacted" || fail 'the approved bootstrap ran nothing on the host'
+has '"workload":"hello"' 'the result does not name the workload'
+has '"changed":true' 'the result does not say a host changed'
+has '"hosts":["worker"]' 'the result does not name the host it locked'
+has '"ran":["bootstrap hello"]' 'the result does not list the steps that ran'
+
+# A failure names its cause in a word, beside the outcome code.
+serai bootstrap nosuchapp --plan --json
+has '"code":"not_applied"' 'an unknown app is not refused'
+has '"cause":"unknown_workload"' 'the refusal does not name its cause'
 
 # The same plan id from the terminal form.
 serai bootstrap hello --plan

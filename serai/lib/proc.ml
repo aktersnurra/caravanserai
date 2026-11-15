@@ -36,7 +36,7 @@ let run_checked ?extra_env prog args =
   match Effect.perform (Run req) with
   | 0 -> ()
   | code ->
-      failwith
+      Run_state.fail ~cause:"command_failed"
         (Printf.sprintf "%s %s: exited %d" prog
            (String.concat " " (List.map describe_arg args)) code)
 

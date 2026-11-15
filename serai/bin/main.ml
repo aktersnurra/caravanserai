@@ -85,7 +85,8 @@ let env_of_layout ~assume_yes layout : Dispatcher.env =
         (fun question ->
           if assume_yes then true
           else if not (Unix.isatty Unix.stdin) then
-            failwith (question ^ ": needs confirmation but stdin is not a terminal; re-run with --yes")
+            Run_state.fail ~cause:"approval_needed"
+              (question ^ ": needs confirmation but stdin is not a terminal; re-run with --yes")
           else ask question);
       operator =
         Printf.sprintf "%s@%s"
@@ -344,15 +345,18 @@ let step_status (status : Dispatcher.step_status) =
     | Failed message -> [ "status", String "failed"; "message", String message ]
     | Pending message -> [ "status", String "pending"; "message", String message ])
 
-(* What the operator or agent does after a failed step. Nothing is undone
-   automatically: a release may already have migrated. *)
+(* What the operator or agent does after a failed step: a sentence, and
+   the command when there is one. Nothing is undone automatically: a
+   release may already have migrated. *)
 let next_after app ~revision (step : Dispatcher.up_step) =
   match step with
-  | Jail -> Printf.sprintf "inspect jail %s on the compute host before running serai up again" app
-  | Build -> Printf.sprintf "fix the build, then serai up %s --revision %s" app revision
-  | Release -> Printf.sprintf "serai check %s; the message says whether the previous release is still active" app
-  | Edge -> "serai edge --plan"
-  | Check -> Printf.sprintf "serai check %s" app
+  | Jail -> Printf.sprintf "inspect jail %s on the compute host before running serai up again" app,
+            [ "serai"; "status"; app; "--json" ]
+  | Build -> Printf.sprintf "fix the build, then serai up %s --revision %s" app revision,
+             [ "serai"; "up"; app; "--revision"; revision; "--plan"; "--json" ]
+  | Release -> Printf.sprintf "serai status %s says which release is active" app, [ "serai"; "status"; app; "--json" ]
+  | Edge -> "serai edge --plan", [ "serai"; "edge"; "--plan"; "--json" ]
+  | Check -> Printf.sprintf "serai check %s" app, [ "serai"; "check"; app; "--json" ]
 
 let up_json app ~revision ((plan : Dispatcher.up_plan), (outcome : Dispatcher.up_outcome)) =
   let open Agent_cli in
@@ -360,14 +364,18 @@ let up_json app ~revision ((plan : Dispatcher.up_plan), (outcome : Dispatcher.up
     Object ([ "app", String app; "commit", String plan.commit; "local_source", Bool plan.local ] @ result
       @ [ "steps", Array (List.map (fun (step, status) ->
             Object (("name", String (Dispatcher.step_name step)) :: step_status status)) outcome.steps);
-          "next", (match next with Some next -> String next | None -> Null) ]) in
+          "next", (match next with Some (text, _) -> String text | None -> Null);
+          "next_command", (match next with
+            | Some (_, (_ :: _ as command)) -> Array (List.map (fun word -> String word) command)
+            | _ -> Null) ]) in
   match outcome.result with
   | Deployed identity -> Ok (data [ "outcome", String "deployed"; "identity", String identity ] None)
-  | Stopped_for_env message -> Ok (data [ "outcome", String "stopped_for_operator" ] (Some message))
+  | Stopped_for_env message -> Ok (data [ "outcome", String "stopped_for_operator" ] (Some (message, [])))
   | Stopped_for_edge id ->
-      Ok (data [ "outcome", String "stopped_for_operator"; "edge_plan_id", String (Plan_id.to_string id) ]
-            (Some (Printf.sprintf "serai edge --yes --json --expect-plan %s, then serai check %s --json"
-                     (Plan_id.to_string id) app)))
+      let id = Plan_id.to_string id in
+      Ok (data [ "outcome", String "stopped_for_operator"; "edge_plan_id", String id ]
+            (Some (Printf.sprintf "have the edge plan %s approved and apply it, then serai check %s" id app,
+                   [ "serai"; "edge"; "--yes"; "--json"; "--expect-plan"; id ])))
   | Step_failed (step, message) ->
       Error (data [ "outcome", String "failed" ] (Some (next_after app ~revision step)), message)
 
@@ -713,13 +721,27 @@ let dispatch (context : (Dispatcher.env * Pipeline.t) Lazy.t) (inv : Cli_spec.in
   let env () = fst (Lazy.force context) in
   let flag = Cli_spec.flag inv and has = Cli_spec.has inv in
   let need name = match flag name with Some value -> value | None -> usage_and_exit () in
-  let none = Object [] in
+  (* A command with nothing more to say names what it acted on; the
+     envelope adds the hosts and the steps that ran. *)
+  let none = match inv.arguments with
+    | workload :: _ -> Object [ "workload", String workload ]
+    | [] -> Object [] in
   let names list = List.iter print_endline list; Array (List.map (fun name -> String name) list) in
   (* A command that asks nothing itself is approved as requested, when a
      plan is asked for or expected. *)
-  if inv.command.approval = Cli_spec.Bound_by_request && !Run_state.approval <> Run_state.Ask then
-    ignore (Remote_host.approved (env ()) ~operation:(String.concat "." inv.command.path)
-              ~facts:(request_facts inv) (Cli_spec.name inv.command));
+  if inv.command.approval = Cli_spec.Bound_by_request && !Run_state.approval <> Run_state.Ask then begin
+    (* No plan for a workload that is not declared. *)
+    let env = env () in
+    let known list name = List.mem name list in
+    (match inv.command.arguments, inv.arguments with
+     | (kind, _) :: _, name :: _ when List.mem kind [ "app"; "guest"; "app|guest" ] ->
+         let apps = Dispatcher.list_apps env and guests = Dispatcher.list_guests env in
+         if not ((kind <> "guest" && known apps name) || (kind <> "app" && known guests name)) then
+           Run_state.fail ~cause:"unknown_workload" (Printf.sprintf "unknown %s: %s" kind name)
+     | _ -> ());
+    ignore (Remote_host.approved env ~operation:(String.concat "." inv.command.path)
+              ~facts:(request_facts inv) (Cli_spec.name inv.command))
+  end;
   match inv.command.path, inv.arguments with
   | [ "apps" ], [] -> names (Dispatcher.list_apps (env ()))
   | [ "guests" ], [] -> names (Dispatcher.list_guests (env ()))
@@ -768,7 +790,15 @@ let dispatch (context : (Dispatcher.env * Pipeline.t) Lazy.t) (inv : Cli_spec.in
   | [ "deploy" ], [ name ] -> Dispatcher.deploy_app_or_guest (env ()) name; none
   | [ "provision" ], [ guest ] -> Dispatcher.provision_guest (env ()) guest; none
   | [ "build" ], [ guest ] -> Dispatcher.build_guest (env ()) guest; none
-  | [ "check" ], [ app ] -> Dispatcher.check (env ()) app; none
+  | [ "check" ], [ app ] ->
+      let env = env () in
+      Dispatcher.check env app;
+      let fact = Dispatcher.check_environment (Dispatcher.find_app env app) in
+      let get name = List.assoc name fact in
+      Object [ "workload", String app; "service", String (get "SERVICE");
+               "checked", Array [
+                 String (Printf.sprintf "http://%s:%s%s" (get "JAIL_IP") (get "PORT") (get "CHECK_PATH"));
+                 String (Printf.sprintf "https://%s%s" (get "PUBLIC_HOST") (get "CHECK_PATH")) ] ]
   | [ "up" ], [ app ] ->
       let env = env () and revision = need "--revision" and local_source = flag "--source" in
       (match inv.plan, has "--rehearse", flag "--ip" with

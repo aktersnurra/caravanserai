@@ -26,7 +26,7 @@ let check env app_name =
   let env = app_env env app_name in
   require_direct_hook env;
   if not (App_config.supports app Check) then
-    failwith "check is not supported for this app";
+    Run_state.fail ~cause:"unsupported_for_workload" "check is not supported for this app";
   announce "check %s" app.endpoint.name;
   Proc.run_checked "sh"
     [ "-c"; {|set -eu; . "$1"; check_app|}; "sh"; Layout.lib_file env.layout "check.sh" ]
@@ -42,7 +42,7 @@ let update_version env app_name version =
   let app = find_app env app_name in
   let env = app_env env app_name in
   if not (App_config.supports app Update_version) then
-    failwith "update-version is not supported for this app";
+    Run_state.fail ~cause:"unsupported_for_workload" "update-version is not supported for this app";
   announce "update-version %s" app.endpoint.name;
   Run_state.changing ();
   Proc.run_checked (hook_path env app "update-version") [ version ]

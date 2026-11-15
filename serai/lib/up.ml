@@ -242,7 +242,7 @@ let up_run ?local_source ?target ?expect_plan env app_name ~revision ~cache ~sto
     | Jail_needs_env message, _ -> failwith ("up: " ^ message)
     | Jail_create, _ -> Printf.sprintf "create jail %s at %s?" app_name (find_app env app_name).endpoint.ip
     | Jail_ready, _ -> Printf.sprintf "deploy %s at %s?" app_name (short plan.commit) in
-  if not (env.confirm question) then failwith "up: not applied";
+  if not (env.confirm question) then Run_state.fail ~cause:"declined" "up: not applied";
   Run_state.changing ();
   (* One confirmation covers the whole sequence -- but under an approved
      plan, not an edge change that plan never showed. *)

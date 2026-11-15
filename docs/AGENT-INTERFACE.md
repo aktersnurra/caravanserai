@@ -66,7 +66,7 @@ validation renders in memory without writing them. The illustration omits them.
 | `operation` | `inspect`, `validate`, `artifact.plan`, or the refused requested operation. |
 | `status` | `succeeded`, `refused`, `failed`, `unknown`, or `interrupted`. |
 | `data` | Operation result on success; null otherwise. |
-| `error` | Null on success; `{code, message}` otherwise. Branch on code, not message. |
+| `error` | Null on success; `{code, message, cause}` otherwise. Branch on `code` and `cause`, not the message. |
 
 What an error means depends on where the run stood:
 
@@ -79,6 +79,21 @@ What an error means depends on where the run stood:
   each `host` and `stage`, with `inspect` and `unlock_after_inspection` as
   commands. Do not retry and do not unlock: report it. Unlocking is the
   operator's, after looking at the host.
+
+`error.code` says how the run ended; `error.cause` says why, in a word set
+where the failure was raised, or null when none was: `lock_held`,
+`lock_stale`, `host_unreachable`, `command_failed` (a remote or local
+command exited non-zero), `declined`, `approval_needed`, `unknown_workload`,
+`invalid_name`, `unsupported_for_workload`. More may be added; treat an
+unknown cause as null.
+
+A result object also says what the run did: `changed` (a host may have
+changed), `hosts` (each host whose lock it took) and `ran` (each step it
+announced, in order). A `failed` or `unknown` result carries the same
+fields, so a failure still shows how far the run got. A command with
+nothing else to report names its `workload`; `check` adds the `service` and
+the URLs it `checked`. `up` gives `next` as a sentence and `next_command`
+as the command to run, or null when the next move is the operator's alone.
 
 Exit codes: 0 for success, 1 for refusal/failure, 2 for a plan or pending
 changes, 3 for unknown, 130 for interruption. Require both

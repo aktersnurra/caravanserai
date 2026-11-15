@@ -10,7 +10,7 @@ let find_guest env name =
   if not (name <> "" && String.for_all is_app_char name) then failwith "invalid guest name";
   match List.find_opt (fun guest -> Guest_config.name guest = name) env.guests with
   | Some guest -> guest
-  | None -> failwith "unknown guest"
+  | None -> Run_state.fail ~cause:"unknown_workload" "unknown guest"
 
 type guest_step =
   | Stage_guard (* the staging check, over the same hop the rsync uses *)
@@ -155,7 +155,7 @@ let artifact_build_guest_store ?reuse env name ~revision ~opam_repository:(repos
     if not (approved env ~operation:"artifact.build"
               ~facts:[ "guest", name; "source_commit", source_commit; "recipe_sha256", recipe.sha256 ]
               (Printf.sprintf "Build verified %s artifact in the Linux guest?" name)) then
-      failwith "artifact build: cancelled";
+      Run_state.fail ~cause:"declined" "artifact build: cancelled";
     let subtree = "artifact-build/" ^ name ^ "/" ^ env.lock_token in
     let stage = env.remote_stage ^ "/" ^ subtree in
     let output = Filename.concat local "output" in
@@ -233,7 +233,7 @@ let artifact_apply_guest ?(convert=false) env name ~store ~identity ~rollback =
             ~operation:("artifact." ^ if convert then "convert" else if rollback then "rollback" else "upgrade")
             ~facts:[ "guest", name; "identity", identity; "archive_sha256", manifest.archive_sha256; "check", url ]
             (Printf.sprintf "Apply %s artifact %s (files only; no database rollback)?" name identity)) then
-    failwith "artifact apply: cancelled";
+    Run_state.fail ~cause:"declined" "artifact apply: cancelled";
   let local = Filename.temp_dir "serai-guest-apply" "" in
   Fun.protect ~finally:(fun () -> remove_tree local) (fun () ->
     let scripts = snapshot_helpers env ~context:"artifact apply" ~local

@@ -8,7 +8,18 @@ let approval = ref Ask
 let changed = ref false
 let kept = ref []
 
-let reset () = approval := Ask; changed := false; kept := []
+let cause = ref None
+let steps = ref []
+let hosts = ref []
+
+let reset () = approval := Ask; changed := false; kept := []; cause := None; steps := []; hosts := []
+
+let fail ~cause:code message = cause := Some (code, message); failwith message
+let cause_of message = match !cause with Some (code, m) when m = message -> Some code | _ -> None
+let ran step = steps := step :: !steps
+let steps_ran () = List.rev !steps
+let locked host = if not (List.mem host !hosts) then hosts := host :: !hosts
+let hosts_locked () = List.rev !hosts
 
 let with_approval mode f =
   let previous = !approval in

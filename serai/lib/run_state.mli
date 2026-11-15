@@ -30,5 +30,19 @@ type retained = { host : string; stage : string; context : string }
 val retain : retained -> unit
 val retained : unit -> retained list
 
+(** Fails as [Failure message] does, and records why in a word a caller
+    can branch on: the cause of that message, for the run's report. *)
+val fail : cause:string -> string -> 'a
+
+(** The cause recorded for exactly this message, if any. *)
+val cause_of : string -> string option
+
+(** What the run did, in order: each step it announced, and each host
+    whose lock it took. *)
+val ran : string -> unit
+val steps_ran : unit -> string list
+val locked : string -> unit
+val hosts_locked : unit -> string list
+
 (** A fresh run, for tests. *)
 val reset : unit -> unit

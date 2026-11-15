@@ -52,7 +52,7 @@ let deploy env app_name =
   let env = app_env env app_name in
   require_direct_hook env;
   if not (App_config.supports app Deploy) then
-    failwith "deploy is not supported for this app";
+    Run_state.fail ~cause:"unsupported_for_workload" "deploy is not supported for this app";
   announce "deploy %s" app.endpoint.name;
   Run_state.changing ();
   (* The hook runs from the configuration, so the engine's deploy library

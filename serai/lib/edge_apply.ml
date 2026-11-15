@@ -269,7 +269,7 @@ let edge_run ?expect_plan env =
       | pending ->
           let summary = String.concat ", " (List.map (fun (env,c,_) -> edge_component_label c ^ " [" ^ host_target env (component_host c) ^ "]") pending) in
           if not (env.confirm (Printf.sprintf "apply changes to %s?" summary)) then
-            failwith "edge: not applied";
+            Run_state.fail ~cause:"declined" "edge: not applied";
           Run_state.changing ();
           let rec install applied = function
             | [] -> Ok (List.rev applied)
@@ -321,6 +321,6 @@ let caddy_install env =
                     ~facts:([ "host", host; "force_build", string_of_bool env.caddy_force_build ]
                             @ List.map (fun (path, contents) -> path, Digest.to_hex (Digest.string contents)) files)
                     (Printf.sprintf "run edge/02-caddy (build if needed, unit, install, reload) on %s?" host)) then
-            failwith "caddy-install: not applied";
+            Run_state.fail ~cause:"declined" "caddy-install: not applied";
           announce "apply caddy install (%s)" host;
           ssh_checked env [ target; command ]))

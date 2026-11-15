@@ -34,6 +34,20 @@ let () =
   check "a retained stage is never a success" (says r {|"status":"unknown"|});
 
   Run_state.reset ();
+  let r = respond (fun () -> Run_state.fail ~cause:"lock_held" "compute is locked") in
+  check "a failure names its cause beside the outcome code"
+    (says r {|"code":"not_applied"|} && says r {|"cause":"lock_held"|});
+  let r = respond (fun () -> ignore (try Run_state.fail ~cause:"declined" "first" with Failure _ -> ()); failwith "second") in
+  check "a cause belongs to its own message, not to a later failure" (says r {|"cause":null|});
+  Run_state.locked "compute"; Run_state.ran "bootstrap hello"; Run_state.changing ();
+  let r = respond (fun () -> Ok (Json.Object [ "workload", Json.String "hello" ])) in
+  check "a result says what ran and on which hosts"
+    (says r {|"changed":true|} && says r {|"hosts":["compute"]|} && says r {|"ran":["bootstrap hello"]|});
+  let r = respond (fun () -> Run_state.fail ~cause:"command_failed" "ssh: exited 1") in
+  check "an error after a change still says what ran"
+    (says r {|"status":"failed"|} && says r {|"ran":["bootstrap hello"]|} && says r {|"cause":"command_failed"|});
+
+  Run_state.reset ();
   let plan : Run_state.planned =
     { operation = "demo"; id = Plan_id.make ~operation:"demo" [ "a" ]; question = "do it?"; facts = [ "app", "a" ] } in
   let r = respond (fun () -> raise (Run_state.Planned plan)) in

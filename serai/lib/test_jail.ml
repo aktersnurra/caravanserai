@@ -85,7 +85,7 @@ let jail_test env app_name ~ip =
                       "script", Digest.to_hex (Digest.string script) ]
              (Printf.sprintf "create test jail %s (%s) on %s from %s's generated jail script?" test_name ip (host_label env Compute_host)
                 app.endpoint.name))
-      then failwith "jail-test: not run";
+      then Run_state.fail ~cause:"declined" "jail-test: not run";
       announce "run generated jail script for %s (compute)" test_name;
       ssh_checked env
         [ env.compute_target; "doas sh " ^ Shell.quote (stage ^ "/jail") ];
@@ -123,6 +123,6 @@ let jail_test_destroy env app_name =
                 ~facts:([ "jail", test_name; "host", host_label env Compute_host ]
                         @ match dataset with Some d -> [ "dataset", d ] | None -> [])
                 (Printf.sprintf "destroy test jail %s on %s?" test_name (host_label env Compute_host))) then
-        failwith "jail-test --destroy: not run";
+        Run_state.fail ~cause:"declined" "jail-test --destroy: not run";
       announce "destroy %s (compute)" test_name;
       ssh_checked env [ env.compute_target; "doas sh -c " ^ Shell.quote script ])

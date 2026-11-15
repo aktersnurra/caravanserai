@@ -6,7 +6,7 @@ let is_app_char c = (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c = '-'
 
 let validate_app_name name =
   if name <> "" && String.for_all is_app_char name then ()
-  else failwith "invalid app name"
+  else Run_state.fail ~cause:"invalid_name" "invalid app name"
 
 let is_stage_char c =
   (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')
@@ -161,13 +161,14 @@ let rsync_checked env args =
 
 let announce fmt = Printf.ksprintf (fun message ->
   Progress.phase "execute";
+  Run_state.ran message;
   Printf.printf "==> %s\n%!" message) fmt
 
 let find_app env name =
   validate_app_name name;
   match App_config.find env.config name with
   | Some app -> app
-  | None -> failwith "unknown app"
+  | None -> Run_state.fail ~cause:"unknown_workload" "unknown app"
 
 let list_apps env = App_config.names env.config
 let list_guests env = List.map (fun (g : Guest_config.t) -> g.endpoint.name) env.guests |> List.sort compare
@@ -254,19 +255,20 @@ let acquire_lock env ~command host =
       (host_connection env host
       @ [ acquire_lock_script ~stage:env.remote_stage ~token:env.lock_token ~holder ])
   with
-  | 0, record_output -> record_output
+  | 0, record_output -> Run_state.locked label; record_output
   | code, _ when code = Remote_lock.held_exit ->
-      failwith (Printf.sprintf "%s is locked by another serai run (holder above) that did not finish in %d min; retry once it does"
+      Run_state.fail ~cause:"lock_held" (Printf.sprintf "%s is locked by another serai run (holder above) that did not finish in %d min; retry once it does"
         label (Remote_lock.stale_after_seconds / 60))
   | code, _ when code = Remote_lock.stale_exit ->
-      failwith
+      Run_state.fail ~cause:"lock_stale"
         (* Age is all the host knows: nothing refreshes a lock, and a build
            can outlast the threshold. So the holder is to be checked first. *)
         (Printf.sprintf
            "%s has been locked for over %d min (holder above). A long build can hold it that long: check on \
             the holder's machine that its serai (the pid named) has ended, and only then: serai unlock %s"
            label (Remote_lock.stale_after_seconds / 60) label)
-  | code, _ when code = ssh_unreachable_exit -> failwith (Printf.sprintf "could not reach %s (%s)" label target)
+  | code, _ when code = ssh_unreachable_exit ->
+      Run_state.fail ~cause:"host_unreachable" (Printf.sprintf "could not reach %s (%s)" label target)
   | code, _ -> failwith (Printf.sprintf "locking %s failed (exit %d)" label code)
 
 (* Best effort: a failed release must not mask the error that ended the

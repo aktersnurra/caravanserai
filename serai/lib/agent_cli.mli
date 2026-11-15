@@ -33,6 +33,10 @@ type json = Json.t = Null | Bool of bool | Number of string | String of string
     - a stage and lock were retained: [unknown], code [outcome_unknown],
       with [data.retained] naming each host and stage. No retry is safe
       until the host has been inspected.
+    An object result gains [changed], [hosts] (each host whose lock the run
+    took) and [ran] (each step it announced, in order); so does an error
+    once a host may have changed. [error.cause] is the word recorded where
+    the failure was raised ({!Run_state.fail}), or null.
     {!Run_state.Planned} is the plan itself: succeeded, [applied] false.
     Ctrl-C is interrupted. *)
 val respond : operation:string -> (unit -> (json, json * string) result) -> response

@@ -10,6 +10,16 @@ type error_code = Invalid_request | Unsupported_operation | Input_unavailable
 type status = Succeeded | Refused | Failed | Cancelled | Unknown
 type response = { operation : string; status : status; data : json;
                   error : (error_code * string) option }
+
+(* What the run did: on which hosts, and each step it announced. *)
+let run_fields () =
+  [ "changed", Bool (Run_state.has_changed ());
+    "hosts", Array (List.map (fun host -> String host) (Run_state.hosts_locked ()));
+    "ran", Array (List.map (fun step -> String step) (Run_state.steps_ran ())) ]
+
+let with_run = function
+  | Object fields -> Object (fields @ List.filter (fun (name, _) -> not (List.mem_assoc name fields)) (run_fields ()))
+  | data -> data
 type request = Validate | Inspect | Plan of string * string option
 exception Refusal of error_code * string
 exception Bad_request of string
@@ -28,7 +38,8 @@ let to_json response =
   let status = match response.status with Succeeded -> "succeeded" | Refused -> "refused"
     | Failed -> "failed" | Cancelled -> "interrupted" | Unknown -> "unknown" in
   let error = match response.error with None -> Null | Some (kind,message) ->
-    Object ["code",String (code kind); "message",String message] in
+    Object ["code",String (code kind); "message",String message;
+            "cause",(match Run_state.cause_of message with Some cause -> String cause | None -> Null)] in
   encode (Object ["schema_version",Json.of_int 1; "operation",String response.operation;
     "status",String status; "data",response.data; "error",error])
 
@@ -160,7 +171,12 @@ let plan_json (p : Run_state.planned) =
    had changed (refused), a host may have (failed), or a stage and lock
    were left because the outcome on a host is not known (unknown). *)
 let respond ~operation f =
-  let with_retained data = match Run_state.retained (), data with
+  (* Once a host may have changed, an error still says what ran. *)
+  let with_retained data =
+    let data = match data with
+      | Null when Run_state.has_changed () -> Object (run_fields ())
+      | data -> with_run data in
+    match Run_state.retained (), data with
     | [], data -> data
     | _, Object fields -> Object (fields @ [ "retained", retained_json () ])
     | _, _ -> Object [ "retained", retained_json () ] in
@@ -171,7 +187,7 @@ let respond ~operation f =
       | [], false -> refused in
     { operation; status; data = with_retained data; error = Some (kind, message) } in
   match f () with
-  | Ok data when Run_state.retained () = [] -> { operation; status = Succeeded; data; error = None }
+  | Ok data when Run_state.retained () = [] -> { operation; status = Succeeded; data = with_run data; error = None }
   | Ok data -> ended ~data ~refused:(Refused, Not_applied) "the run left a stage and lock for inspection"
   | Error (data, message) ->
       (match ended ~data ~refused:(Failed, Step_failed) message with

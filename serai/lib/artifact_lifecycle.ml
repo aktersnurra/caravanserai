@@ -269,7 +269,7 @@ let artifact_build_candidate ?checkout ?opam_repository ?opam_snapshots env app_
                            "recipe_sha256", recipe_sha256 ]
                   (Printf.sprintf "Build %s at %s in a build jail on %s?"
                      app_name (Hex.short source_commit) (host_label env Compute_host)))
-        then failwith "artifact build: cancelled";
+        then Run_state.fail ~cause:"declined" "artifact build: cancelled";
         with_retained_stage env ~command:("artifact build " ^ app.endpoint.name) ~host:Compute_host ~stage
           ~retained:(Printf.sprintf
             "artifact build: stage %s and host lock retained; inspect failed/uncertain build before serai unlock %s."
@@ -429,7 +429,7 @@ let artifact_build_executable_store ?reuse env app_name ~ip ~base_archive ~base_
               ~facts:[ "app", app_name; "host", host_label env Compute_host; "builder_ip", ip;
                        "base_sha256", base_sha256; "recipe_sha256", recipe.sha256 ]
               ("Build verified executable artifact for " ^ app_name ^ "?"))
-    then failwith "artifact build: cancelled";
+    then Run_state.fail ~cause:"declined" "artifact build: cancelled";
     let subtree = "artifact-executable/" ^ app_name ^ "/" ^ env.lock_token in
     let stage = env.remote_stage ^ "/" ^ subtree in
     let remote name = env.compute_target ^ ":" ^ stage ^ "/" ^ name in
@@ -606,7 +606,7 @@ let artifact_apply ?(convert=false) ?rehearse_ip env app_name ~store ~identity ~
             ~facts:[ "jail", jail; "host", host_label env Compute_host; "identity", identity;
                      "archive_sha256", manifest.archive_sha256; "check", url ]
             (Printf.sprintf "%s %s to %s (files only; no database rollback)?" mode jail identity))
-  then failwith "artifact apply: cancelled";
+  then Run_state.fail ~cause:"declined" "artifact apply: cancelled";
   run_artifact_helper env ~context:"artifact apply" ~label:("artifact " ^ mode ^ " " ^ jail)
     ~subtree:("artifact-apply/" ^ jail ^ "/" ^ identity)
     ~files:[ archive, "release.tar" ]
@@ -655,7 +655,7 @@ let revert env app_name =
   if not (approved env ~operation:"revert"
             ~facts:[ "app", app_name; "host", host_label env Compute_host; "identity", previous; "check", url ]
             (Printf.sprintf "revert %s to %s (files only)?" app_name previous)) then
-    failwith "revert: cancelled";
+    Run_state.fail ~cause:"declined" "revert: cancelled";
   (* The script checks .previous again under the lock. *)
   run_artifact_helper env ~context:"revert" ~label:("artifact revert " ^ app_name)
     ~subtree:("artifact-revert/" ^ app_name ^ "/" ^ previous)
