@@ -263,6 +263,13 @@ let artifact_build_candidate ?checkout ?opam_repository ?opam_snapshots env app_
             {|[ -d "$stage" ] && [ ! -L "$stage" ] || exit 1|};
             {|rm -rf -- "$stage"|};
             {|[ ! -e "$stage" ] && [ ! -L "$stage" ]|} ] in
+        if not (approved env ~operation:"artifact.build"
+                  ~facts:[ "app", app_name; "host", host_label env Compute_host; "builder_ip", ip;
+                           "base_sha256", base_sha256; "source_commit", source_commit;
+                           "recipe_sha256", recipe_sha256 ]
+                  (Printf.sprintf "Build %s at %s in a build jail on %s?"
+                     app_name (Hex.short source_commit) (host_label env Compute_host)))
+        then failwith "artifact build: cancelled";
         with_retained_stage env ~command:("artifact build " ^ app.endpoint.name) ~host:Compute_host ~stage
           ~retained:(Printf.sprintf
             "artifact build: stage %s and host lock retained; inspect failed/uncertain build before serai unlock %s."

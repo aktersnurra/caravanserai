@@ -8,6 +8,27 @@
   operator rule to `tag:vps`, and omits it when none are declared, so
   existing policies render unchanged.
 
+## 2026-11-15: Every command for agents
+
+- `serai commands [--json]` lists every command, its arguments and flags
+  and what it may change. The parser and the usage text come from the same
+  table, and every command takes `--json` and its flags in any order.
+- Under `--json`, a command that changes a host applies only an approved
+  plan: `--plan` returns a `plan_id` (exit 2), `--yes --expect-plan <id>`
+  applies that plan and no other. In a terminal, `--plan` and
+  `--expect-plan` work the same and every prompt is preceded by its
+  `plan <id>`. `serai artifact build` of a source app now asks before it
+  builds.
+- A result is `refused` (nothing changed), `failed` (`apply_failed`: a host
+  may have changed) or `unknown` (`outcome_unknown`, exit 3: a stage and
+  lock were left, named in `data.retained`).
+- An approved `serai up` plan no longer applies pending edge changes: it
+  plans them and stops for the operator with their plan id.
+- `serai locks` shows who holds each host's lock and for how long;
+  `serai status` shows each app's jail and releases. `serai revert <app>`
+  is a command of its own.
+- CI runs `scripts/lint.sh` on every push.
+
 ## 2026-11-15: Review fixes
 
 - Host scripts fail whole or not at all: `compute/01-pf-rules` refuses a

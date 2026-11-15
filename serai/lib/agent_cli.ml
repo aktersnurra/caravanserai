@@ -105,7 +105,7 @@ let parse argv =
   | ["artifact"; "plan"; name; "--revision"; revision] -> Plan (name,Some revision)
   | ("validate" | "inspect") :: _ | "artifact" :: "plan" :: _ ->
       refuse Invalid_request "unsupported arguments for this read-only operation"
-  | _ -> refuse Unsupported_operation "JSON currently supports inspect, validate and artifact plan only"
+  | _ -> refuse Unsupported_operation "unknown command; serai commands --json lists them"
 
 let run ~layout argv =
   let args = List.filter (fun arg -> not (String.starts_with ~prefix:"--" arg)) argv in
@@ -137,6 +137,10 @@ let run ~layout argv =
   | Refusal (kind,message) -> error Refused kind message
   | Sys.Break -> error Cancelled Interrupted "interrupted before any host operation"
   | _ -> error Failed Internal_error "unexpected local error; no host operation was performed"
+
+let refused ~operation ~known message =
+  { operation; status = Refused; data = Null;
+    error = Some ((if known then Invalid_request else Unsupported_operation), message) }
 
 (* A stage and lock the run left behind, and the command that clears the
    lock once the host has been inspected. *)

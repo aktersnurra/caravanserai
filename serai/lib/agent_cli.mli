@@ -8,6 +8,10 @@ type response
 val run : layout:(unit -> Layout.t) -> string list -> response
 val to_json : response -> string
 
+(** A request refused before anything is read: [invalid_request] for a
+    [known] command given wrongly, [unsupported_operation] for no command. *)
+val refused : operation:string -> known:bool -> string -> response
+
 (** 0 succeeded, 1 refused or failed, 3 unknown, 130 interrupted. *)
 val exit_code : response -> int
 

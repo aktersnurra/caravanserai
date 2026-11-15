@@ -87,3 +87,29 @@ let unlock_script ~stage =
       {|  echo "no lock at $lock" >&2|};
       "fi";
     ]
+
+let holder_marker = "lock-holder: "
+let age_marker = "lock-age: "
+
+(* Read-only: who holds the lock and for how long, or nothing when free. *)
+let inspect_script ~stage =
+  String.concat "\n"
+    [
+      "lock=" ^ Shell.quote (lock_dir ~stage);
+      {|if [ -d "$lock" ]; then|};
+      {|  if stat --version >/dev/null 2>&1; then since=$(stat -c %Y "$lock"); else since=$(stat -f %m "$lock"); fi|};
+      {|  echo "|} ^ holder_marker ^ {|$(cat "$lock/holder" 2>/dev/null || echo 'unknown holder')"|};
+      {|  echo "|} ^ age_marker ^ {|$(( $(date +%s) - since ))"|};
+      "fi";
+    ]
+
+type held = { holder : string; age_seconds : int; stale : bool }
+
+let inspect output =
+  match Shell.answers ~marker:holder_marker output, Shell.answers ~marker:age_marker output with
+  | [], [] -> Ok None
+  | [ holder ], [ age ] ->
+      (match int_of_string_opt age with
+       | Some age_seconds -> Ok (Some { holder; age_seconds; stale = age_seconds >= stale_after_seconds })
+       | None -> Error "lock probe: invalid age")
+  | _ -> Error "lock probe: unclear answer"

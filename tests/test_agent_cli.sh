@@ -79,16 +79,25 @@ with tempfile.TemporaryDirectory(prefix='serai-agent-cli-') as directory:
         assert source['data']['origin']['kind'] == kind
     _, binary = run('artifact', 'plan', 'idp', '--json')
     assert binary['data']['origin']['kind'] == 'pinned_binary'
-    result, unsupported = run('bootstrap', 'hello', '--json', cwd=Path('/'))
-    assert result.returncode == 1 and unsupported['error']['code'] == 'unsupported_operation'
+    # A command that changes a host applies only an approved plan under --json.
+    result, unapproved = run('bootstrap', 'hello', '--json', cwd=Path('/'))
+    assert result.returncode == 1 and unapproved['error']['code'] == 'invalid_request'
+    result, unknown = run('frobnicate', '--json', cwd=Path('/'))
+    assert result.returncode == 1 and unknown['error']['code'] == 'unsupported_operation'
+    result, table = run('commands', '--json', cwd=Path('/'))
+    assert result.returncode == 0 and table['operation'] == 'commands'
+    listed = {c['command']: c for c in table['data']['commands']}
+    assert listed['bootstrap']['effect'] == 'changes_hosts' and listed['bootstrap']['plan'] is True
+    assert listed['status']['effect'] == 'reads_hosts' and listed['status']['plan'] is False
+    assert {'up', 'edge', 'locks', 'status', 'artifact upgrade', 'revert'} <= set(listed)
 
     for args, code in [
         (('artifact', 'plan', 'hello', '--json'), 'invalid_plan'),
         (('artifact', 'plan', 'unknown"\nname', '--json'), 'unknown_workload'),
-        (('bootstrap', 'hello', '--yes', '--json'), 'unsupported_operation'),
-        (('up', 'hello', '--revision', 'master', '--json'), 'unsupported_operation'),
+        (('bootstrap', 'hello', '--yes', '--json'), 'invalid_request'),
+        (('up', 'hello', '--revision', 'master', '--json'), 'invalid_request'),
         (('artifact', 'build', 'hello', '--revision', 'master', '--ip', '10.20.0.250',
-          '--base', 'missing', '--sha256', 'missing', '--store', 'missing', '--json'), 'unsupported_operation'),
+          '--base', 'missing', '--sha256', 'missing', '--store', 'missing', '--json'), 'invalid_request'),
         (('validate', '--out', str(fixture / 'rendered'), '--json'), 'invalid_request'),
         (('inspect', '--json', '--json'), 'invalid_request')]:
         result, body = run(*args)
@@ -98,7 +107,7 @@ with tempfile.TemporaryDirectory(prefix='serai-agent-cli-') as directory:
     for args in [('artifact', 'build', 'hello', '--base', 'missing'),
                  ('artifact', 'upgrade', 'hello', '--identity', 'missing')]:
         result, body = run(*args, '--yes', '--json', cwd=Path('/'))
-        assert result.returncode == 1 and body['error']['code'] == 'unsupported_operation'
+        assert result.returncode == 1 and body['error']['code'] == 'invalid_request'
     result, body = run('validate', '--json', '--progress=jsonl')
     assert result.returncode == 0
     events = [json.loads(line) for line in result.stderr.splitlines() if line.startswith('{')]

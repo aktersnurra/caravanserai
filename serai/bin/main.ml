@@ -1,56 +1,9 @@
 open Serai
 
-let usage_text =
-  "usage:\n\
-  \  serai apps\n\
-  \  serai guests\n\
-  \  serai inspect --json   (declared topology, not live state)\n\
-  \  serai validate --json\n\
-  \  serai artifact plan <app|guest> [--revision <rev>] --json   (design preview only)\n\
-  \  serai validate [--out <dir>]   (offline: no ssh, lock or jj)\n\
-  \  serai render-logging-targets   (offline: the jails central logging forwards from)\n\
-  \  serai artifact plan <app|guest> [--revision <rev>]   (offline design preview)\n\
-  \  serai artifact source-stage <app|guest> --revision <rev> --out <dir>   (local committed source only)\n\
-  \  serai artifact build <app> --revision <rev> --ip <builder-ip> --base <txz> --sha256 <base-digest> --store <private-dir> [--reuse <identity>] [--yes]   (Phoenix build/store or explicit local reuse)\n\
-  \  serai artifact build <app> --ip <builder-ip> --base <txz> --sha256 <base-digest> --store <private-dir> [--reuse <identity>] [--yes]   (package or pinned executable)\n\
-  \  serai artifact build <ocaml-app> --revision <rev> --ip <builder-ip> --base <txz> --sha256 <digest> --store <dir> --opam-repository <checkout> --opam-revision <rev> [--reuse <identity>]\n\
-  \  serai artifact build <guest> --revision <rev> --opam-repository <checkout> --opam-revision <rev> --compiler <ocaml-variants.version> --store <dir> [--reuse <identity>]\n\
-  \  serai artifact install <app> --identity <identity> --archive <tar> --sha256 <digest>   (prepare only)\n\
-  \  serai artifact upgrade <app> --identity <identity> --store <private-dir> [--yes]\n\
-  \  serai artifact rollback <app> --identity <previous-identity> --store <private-dir> [--yes]\n\
-  \  serai artifact convert <app> --identity <identity> --store <private-dir> [--yes]   (legacy executables, byte-equivalent only)\n\
-  \  serai new <app> --kind phoenix|ocaml --repo <checkout> [--hostname <fqdn>] [--json]   (declaration only; no host)\n\
-  \  serai bootstrap <app>\n\
-  \  serai deploy <app|guest>   (a guest: build, install, then provision)\n\
-  \  serai provision <guest>\n\
-  \  serai build <guest>\n\
-  \  serai check <app>\n\
-  \  serai up <app> --revision <bookmark|commit> [--source <checkout>] [--yes]   (create a new app's jail, or build or reuse, deploy, edge, check)\n\
-  \  serai up <app> --revision <bookmark|commit> [--source <checkout>] --plan [--json]   (what up would do; changes no host)\n\
-  \  serai up <app> --revision <bookmark|commit> [--source <checkout>] [--yes] --expect-plan <id>   (only the plan --plan named)\n\
-  \  serai up <app> --revision <bookmark|commit> [--source <checkout>] --yes --json --expect-plan <id>   (each step's outcome as JSON)\n\
-  \  serai up <app> --revision <bookmark|commit> [--source <checkout>] --rehearse --ip <addr>   (the same into <app>test; no edge)\n\
-  \  serai edge [--plan] [--yes] [--expect-plan <id>]   (--plan exits 2 when changes are pending)\n\
-  \  serai drift [--json]   (where the live system differs from the declaration; exits 2 when it does, 1 when a part can't be checked)\n\
-  \  serai edge --plan --json | --yes --json --expect-plan <id>   (the plan, or only the approved plan, as JSON)\n\
-  \  serai caddy-install [--yes]   (build if needed, unit, install, reload)\n\
-  \  serai unlock <host-id|guest>\n\
-  \  serai jail-test <app> --ip <addr> [--yes]   (generated script on jail <app>test)\n\
-  \  serai jail-test <app> --destroy [--yes]\n\
-  \  serai rollout <app> [--edge] [--yes]\n\
-  \  serai update [--plan] [--json]   (deploy what CI marked, if signed and newer; settings in ~/.config/serai/update.sexp)\n\
-  \  serai idp [--yes] [--expect-plan <id>]   (Pocket ID's users, groups, clients and APIs to match idp.sexp; key in SERAI_IDP_API_KEY)\n\
-  \  serai idp --yes --json --expect-plan <id>   (apply only the approved plan, as JSON)\n\
-  \  serai idp --plan [--json]   (what idp would change; exits 2 when changes are pending)\n\
-  \  serai idp --export [--url <url>]   (the live resources as idp.sexp; without --url, idp.sexp's url)\n\
-  \  serai update-version <app> [version]\n\
-  \  serai run <app> <pipeline>\n\
-  \  Add --progress=jsonl to stream phase/outcome events on stderr.\n"
-
 exception Cli_exit of int
 
 let usage_and_exit () =
-  prerr_string usage_text;
+  prerr_string (Cli_spec.usage ());
   raise (Cli_exit 1)
 
 let getenv_default name default =
@@ -253,26 +206,18 @@ let up_plan ?local_source env app ~revision =
   let cache, store = up_dirs () in
   Dispatcher.up_plan ?local_source env app ~revision ~cache ~store
 
-(* [--name value] and [--switch] flags in any order, each at most once:
-   name to value ("" for a switch), or None for anything else. *)
-let parse_flags ~valued ~switches arguments =
-  let rec go seen = function
-    | [] -> Some seen
-    | flag :: value :: rest when List.mem flag valued && not (List.mem_assoc flag seen) ->
-        go ((flag, value) :: seen) rest
-    | flag :: rest when List.mem flag switches && not (List.mem_assoc flag seen) -> go ((flag, "") :: seen) rest
-    | _ -> None in
-  go [] arguments
-
-(* serai up <app> and its flags: the app, the revision and a lookup. *)
-let parse_up = function
-  | "up" :: app :: flags when not (String.starts_with ~prefix:"--" app) ->
-      Option.bind
-        (parse_flags ~valued:[ "--revision"; "--source"; "--expect-plan"; "--ip" ]
-           ~switches:[ "--plan"; "--yes"; "--rehearse" ] flags)
-        (fun flags ->
-          Option.map (fun revision -> app, revision, (fun flag -> List.assoc_opt flag flags))
-            (List.assoc_opt "--revision" flags))
+(* serai up <app> and its flags, through the command table: the app, the
+   revision and a lookup that also answers the global and plan flags. *)
+let parse_up argv =
+  match Cli_spec.parse argv with
+  | Ok ({ command = { path = [ "up" ]; _ }; arguments = [ app ]; _ } as inv) ->
+      let switch on = if on then Some "" else None in
+      Option.map (fun revision ->
+          app, revision, (function
+            | "--plan" -> switch inv.plan | "--yes" -> switch inv.yes
+            | "--expect-plan" -> inv.expect_plan
+            | flag -> Cli_spec.flag inv flag))
+        (Cli_spec.flag inv "--revision")
   | _ -> None
 
 let new_kind = function
@@ -499,7 +444,7 @@ let update_report_json (report : Update.report) =
 let update argv =
   let flags = List.filter (fun arg -> arg <> "update") argv in
   if List.exists (fun flag -> not (List.mem flag [ "--plan"; "--json" ])) flags then begin
-    prerr_string usage_text;
+    prerr_string (Cli_spec.usage ());
     exit 1
   end;
   let plan = List.mem "--plan" flags and json = List.mem "--json" flags in
@@ -545,7 +490,7 @@ let update argv =
 (* serai idp: Pocket ID's users, groups, clients and APIs against idp.sexp.
    Runs on the controller over HTTPS only: no ssh, lock or host. *)
 let idp argv =
-  let usage () = prerr_string usage_text; exit 1 in
+  let usage () = prerr_string (Cli_spec.usage ()); exit 1 in
   let rec parse ~plan ~json ~yes ~export ~url ~expect = function
     | [] -> (plan, json, yes, export, url, expect)
     | "--plan" :: rest when not plan -> parse ~plan:true ~json ~yes ~export ~url ~expect rest
@@ -754,158 +699,233 @@ let acting_json argv =
 
   | _ -> ()
 
-let dispatch (env, registry) argv =
-  match argv with
-  | [ "apps" ] -> List.iter print_endline (Dispatcher.list_apps env)
-  | [ "guests" ] -> List.iter print_endline (Dispatcher.list_guests env)
-  | [ "bootstrap"; app ] -> Dispatcher.bootstrap env app
-  | [ "deploy"; name ] -> Dispatcher.deploy_app_or_guest env name
-  | "artifact" :: "build" :: name :: flags ->
-      let flag = match parse_flags ~switches:[] flags
-          ~valued:[ "--revision"; "--ip"; "--base"; "--sha256"; "--store"; "--opam-repository";
-                    "--opam-revision"; "--compiler"; "--reuse" ] with
-        | Some flags -> (fun flag -> List.assoc_opt flag flags)
-        | None -> usage_and_exit () in
-      let reuse = flag "--reuse" in
+(* What approving a command as requested approves: the request itself. *)
+let request_facts (inv : Cli_spec.invocation) =
+  [ "command", Cli_spec.name inv.command ]
+  @ List.mapi (fun i argument -> Printf.sprintf "argument%d" i, argument) inv.arguments
+  @ inv.flags
+
+(* Every command but update and idp. Prints for a person and returns the
+   same result as data; under --json stdout is the envelope's alone, and
+   what is printed here goes to stderr. *)
+let dispatch (context : (Dispatcher.env * Pipeline.t) Lazy.t) (inv : Cli_spec.invocation) : Json.t =
+  let open Json in
+  let env () = fst (Lazy.force context) in
+  let flag = Cli_spec.flag inv and has = Cli_spec.has inv in
+  let need name = match flag name with Some value -> value | None -> usage_and_exit () in
+  let none = Object [] in
+  let names list = List.iter print_endline list; Array (List.map (fun name -> String name) list) in
+  (* A command that asks nothing itself is approved as requested, when a
+     plan is asked for or expected. *)
+  if inv.command.approval = Cli_spec.Bound_by_request && !Run_state.approval <> Run_state.Ask then
+    ignore (Remote_host.approved (env ()) ~operation:(String.concat "." inv.command.path)
+              ~facts:(request_facts inv) (Cli_spec.name inv.command));
+  match inv.command.path, inv.arguments with
+  | [ "apps" ], [] -> names (Dispatcher.list_apps (env ()))
+  | [ "guests" ], [] -> names (Dispatcher.list_guests (env ()))
+  | [ "commands" ], [] -> print_string (Cli_spec.usage ()); Cli_spec.to_json ()
+  | [ "render-logging-targets" ], [] ->
+      let layout = locate_layout () in
+      let targets = Logging_policy.load ~layout ~apps:(load_declaration layout).apps |> Logging_policy.render_targets in
+      print_string targets; Object [ "targets", String targets ]
+  | [ "validate" ], [] -> validate ~out:(flag "--out"); none
+  | [ "artifact"; "plan" ], [ name ] -> artifact_plan ?revision:(flag "--revision") name; none
+  | [ "artifact"; "source-stage" ], [ name ] ->
+      artifact_source_stage name ~revision:(need "--revision") ~out:(need "--out"); none
+  | [ "artifact"; "build" ], [ name ] ->
+      let env = env () and reuse = flag "--reuse" and store = need "--store" in
       let opam_repository = match flag "--opam-repository", flag "--opam-revision" with
         | Some checkout, Some revision -> Some (checkout, revision)
         | None, None -> None
         | _ -> usage_and_exit () in
       let identity =
-        match flag "--revision", flag "--ip", flag "--base", flag "--sha256", flag "--store",
-              opam_repository, flag "--compiler" with
-        | Some revision, None, None, None, Some store, Some opam_repository, Some compiler ->
+        match flag "--revision", flag "--ip", flag "--base", flag "--sha256", opam_repository, flag "--compiler" with
+        | Some revision, None, None, None, Some opam_repository, Some compiler ->
             Dispatcher.artifact_build_guest_store ?reuse env name ~revision ~opam_repository ~compiler ~store
-        | Some revision, Some ip, Some base_archive, Some base_sha256, Some store, opam_repository, None ->
+        | Some revision, Some ip, Some base_archive, Some base_sha256, opam_repository, None ->
             Dispatcher.artifact_build_store ?reuse ?opam_repository env name ~revision ~ip
               ~base_archive ~base_sha256 ~store
-        | None, Some ip, Some base_archive, Some base_sha256, Some store, None, None ->
+        | None, Some ip, Some base_archive, Some base_sha256, None, None ->
             Dispatcher.artifact_build_executable_store ?reuse env name ~ip ~base_archive ~base_sha256 ~store
         | _ -> usage_and_exit () in
-      Printf.printf "%s verified artifact: %s\n%!" (if reuse = None then "stored" else "reused") identity
-  | [ "artifact"; "install"; app; "--identity"; identity; "--archive"; archive; "--sha256"; sha256 ] ->
-      Dispatcher.artifact_install env app ~identity ~archive ~sha256
-  | [ "artifact"; ("upgrade" | "rollback" | "convert" as mode); app;
-      "--identity"; identity; "--store"; store ] ->
-      if List.mem app (Dispatcher.list_guests env) then
-        Dispatcher.artifact_apply_guest ~convert:(mode = "convert") env app ~store ~identity ~rollback:(mode = "rollback")
-      else Dispatcher.artifact_apply ~convert:(mode = "convert") env app ~store ~identity ~rollback:(mode = "rollback")
-  | [ "provision"; guest ] -> Dispatcher.provision_guest env guest
-  | [ "build"; guest ] -> Dispatcher.build_guest env guest
-  | [ "check"; app ] -> Dispatcher.check env app
-  | [ "edge" ] -> Dispatcher.edge env
-  | [ "new"; app; "--kind"; kind; "--repo"; repo ] -> print_new (new_app env app ~kind ~repo) app
-  | [ "new"; app; "--kind"; kind; "--repo"; repo; "--hostname"; hostname ] ->
-      print_new (new_app ~hostname env app ~kind ~repo) app
-  | "up" :: _ ->
-      (* --yes was taken off before dispatch. *)
-      (match parse_up argv with
-       | None -> usage_and_exit ()
-       | Some (app, revision, flag) ->
-           let local_source = flag "--source" in
-           (match flag "--plan", flag "--rehearse", flag "--ip", flag "--expect-plan" with
-            | Some _, None, None, None -> Dispatcher.print_up_plan (up_plan ?local_source env app ~revision)
-            | None, Some _, Some ip, None -> up ?local_source ~target:(Dispatcher.Rehearse ip) env app ~revision
-            | None, None, None, expect ->
-                up ?local_source ?expect_plan:(Option.map expected_plan expect) env app ~revision
-            | _ -> usage_and_exit ()))
-  | [ "edge"; "--plan" ] ->
-      (match (Dispatcher.plan_edge env).plan_id with
+      Printf.printf "%s verified artifact: %s\n%!" (if reuse = None then "stored" else "reused") identity;
+      Object [ "identity", String identity; "reused", Bool (reuse <> None) ]
+  | [ "artifact"; "install" ], [ app ] ->
+      Dispatcher.artifact_install (env ()) app ~identity:(need "--identity") ~archive:(need "--archive")
+        ~sha256:(need "--sha256"); none
+  | [ "artifact"; ("upgrade" | "rollback" | "convert" as mode) ], [ name ] ->
+      let env = env () and identity = need "--identity" and store = need "--store" in
+      let convert = mode = "convert" and rollback = mode = "rollback" in
+      if List.mem name (Dispatcher.list_guests env)
+      then Dispatcher.artifact_apply_guest ~convert env name ~store ~identity ~rollback
+      else Dispatcher.artifact_apply ~convert env name ~store ~identity ~rollback;
+      Object [ "identity", String identity; "mode", String mode ]
+  | [ "revert" ], [ app ] -> Dispatcher.revert (env ()) app; none
+  | [ "new" ], [ app ] ->
+      let plan = new_app ?hostname:(flag "--hostname") (env ()) app ~kind:(need "--kind") ~repo:(need "--repo") in
+      print_new plan app; new_json plan app
+  | [ "bootstrap" ], [ app ] -> Dispatcher.bootstrap (env ()) app; none
+  | [ "deploy" ], [ name ] -> Dispatcher.deploy_app_or_guest (env ()) name; none
+  | [ "provision" ], [ guest ] -> Dispatcher.provision_guest (env ()) guest; none
+  | [ "build" ], [ guest ] -> Dispatcher.build_guest (env ()) guest; none
+  | [ "check" ], [ app ] -> Dispatcher.check (env ()) app; none
+  | [ "up" ], [ app ] ->
+      let env = env () and revision = need "--revision" and local_source = flag "--source" in
+      (match inv.plan, has "--rehearse", flag "--ip" with
+       | true, false, None when inv.expect_plan = None ->
+           let plan = up_plan ?local_source env app ~revision in
+           Dispatcher.print_up_plan plan; up_plan_json plan
+       | false, true, Some ip when inv.expect_plan = None ->
+           up ?local_source ~target:(Dispatcher.Rehearse ip) env app ~revision; none
+       | false, false, None ->
+           up ?local_source ?expect_plan:(Option.map expected_plan inv.expect_plan) env app ~revision; none
+       | _ -> usage_and_exit ())
+  | [ "edge" ], [] when inv.plan ->
+      let plan = Dispatcher.plan_edge (env ()) in
+      (match plan.plan_id with
        | Some id -> Printf.printf "plan %s\n%!" (Plan_id.to_string id); raise (Cli_exit 2)
-       | None -> ())
-  | [ "edge"; "--expect-plan"; id ] -> Dispatcher.edge ~expect_plan:(expected_plan id) env
-  | [ "drift" ] ->
-      let t = drift env in
+       | None -> edge_plan_json plan)
+  | [ "edge" ], [] -> Dispatcher.edge ?expect_plan:(Option.map expected_plan inv.expect_plan) (env ()); none
+  | [ "drift" ], [] ->
+      let t = drift (env ()) in
       print_drift t;
-      (match Drift.exit_code t with 0 -> () | code -> raise (Cli_exit code))
-  | [ "caddy-install" ] -> Dispatcher.caddy_install env
-  | [ "unlock"; host ] -> Dispatcher.unlock env host
-  | [ "jail-test"; app; "--ip"; ip ] -> Dispatcher.jail_test env app ~ip
-  | [ "jail-test"; app; "--destroy" ] -> Dispatcher.jail_test_destroy env app
-  | [ "rollout"; app ] -> Pipeline.run env registry app "rollout"
-  | [ "rollout"; app; "--edge" ] -> Pipeline.run env registry app "rollout-edge"
-  | [ "update-version"; app ] -> Dispatcher.update_version env app ""
-  | [ "update-version"; app; version ] ->
-      Dispatcher.update_version env app version
-  | [ "run"; app; pipeline ] -> Pipeline.run env registry app pipeline
+      (match Drift.exit_code t with 0 -> drift_json t | code -> raise (Cli_exit code))
+  | [ "status" ], ([] | [ _ ] as only) ->
+      let apps = Status.apps ?only:(List.nth_opt only 0) (env ()) in
+      List.iter (fun app -> print_endline (Status.app_line app)) apps;
+      Object [ "apps", Array (List.map Status.app_json apps); "host_inspected", Bool true ]
+  | [ "locks" ], ([] | [ _ ] as only) ->
+      let locks = Status.locks ?only:(List.nth_opt only 0) (env ()) in
+      List.iter (fun lock -> print_endline (Status.lock_line lock)) locks;
+      Object [ "locks", Array (List.map Status.lock_json locks); "host_inspected", Bool true ]
+  | [ "unlock" ], [ host ] -> Dispatcher.unlock (env ()) host; none
+  | [ "caddy-install" ], [] -> Dispatcher.caddy_install (env ()); none
+  | [ "jail-test" ], [ app ] ->
+      (match flag "--ip", has "--destroy" with
+       | Some ip, false -> Dispatcher.jail_test (env ()) app ~ip
+       | None, true -> Dispatcher.jail_test_destroy (env ()) app
+       | _ -> usage_and_exit ());
+      none
+  | [ "rollout" ], [ app ] ->
+      let env, registry = Lazy.force context in
+      Pipeline.run env registry app (if has "--edge" then "rollout-edge" else "rollout"); none
+  | [ "run" ], [ app; pipeline ] ->
+      let env, registry = Lazy.force context in
+      Pipeline.run env registry app pipeline; none
+  | [ "update-version" ], (app :: version) ->
+      Dispatcher.update_version (env ()) app (match version with [ version ] -> version | _ -> ""); none
   | _ -> usage_and_exit ()
+
+(* How this invocation's approvals are answered. *)
+let approval_of (inv : Cli_spec.invocation) =
+  match inv.plan, inv.expect_plan with
+  | true, _ -> Run_state.Plan_only
+  | false, Some id -> Run_state.Expect (expected_plan id)
+  | false, None -> Run_state.Ask
+
+let operation_of (inv : Cli_spec.invocation) =
+  String.concat "." inv.command.path, List.nth_opt inv.arguments 0
+
+(* --json for every command the bespoke handlers above do not answer. A
+   command that changes a host applies only an approved plan: there is no
+   terminal to ask in, and --yes alone is nobody's approval of anything
+   in particular. *)
+let generic_json (inv : Cli_spec.invocation) =
+  let operation, workload = operation_of inv in
+  Progress.start ~enabled:inv.progress ~operation ~workload;
+  Sys.catch_break true;
+  let finish response =
+    print_endline (Agent_cli.to_json response);
+    let code = if Agent_cli.is_plan response then 2 else Agent_cli.exit_code response in
+    Progress.finish (match code with
+      | 0 -> Progress.Succeeded | 2 -> Progress.Changes_pending | 130 -> Progress.Interrupted | _ -> Progress.Failed);
+    exit code in
+  let refuse message = finish (Agent_cli.respond ~operation (fun () -> raise (Agent_cli.Bad_request message))) in
+  let changes = inv.command.effect = Cli_spec.Changes_hosts in
+  (match changes, inv.plan, inv.yes, inv.expect_plan with
+   | false, _, _, _ | true, true, false, None | true, false, true, Some _ -> ()
+   | true, _, _, _ ->
+       refuse (Printf.sprintf
+         "serai %s --json changes a host: it takes --plan, or --yes --expect-plan <id> with the plan_id the operator approved"
+         (Cli_spec.name inv.command)));
+  finish (with_stdout_on_stderr (fun () ->
+    Agent_cli.respond ~operation (fun () ->
+      Run_state.approval := approval_of inv;
+      Proc.live (fun () -> Ok (dispatch (lazy (build_env ~assume_yes:true ())) inv)))))
 
 let () =
   let argv = List.tl (Array.to_list Sys.argv) in
   (match argv with "update" :: _ -> update argv | "idp" :: _ -> idp argv | _ -> ());
-  if List.mem "--json" argv then acting_json argv;
-  if List.mem "--json" argv then begin
-    let args = List.filter (fun arg -> not (String.starts_with ~prefix:"--" arg)) argv in
-    let operation, workload = match args with
-      | "artifact" :: action :: name :: _ -> "artifact." ^ action, Some name
-      | action :: _ -> action, None | [] -> "usage", None in
-    Progress.start ~enabled:(List.mem "--progress=jsonl" argv) ~operation ~workload;
-    Sys.catch_break true;
-    let response = Agent_cli.run
-      ~layout:locate_layout argv in
-    print_endline (Agent_cli.to_json response);
-    let code = Agent_cli.exit_code response in
-    Progress.finish (if code = 0 then Progress.Succeeded else if code = 130 then Progress.Interrupted else Progress.Failed);
-    exit code
-  end;
-  let assume_yes = List.mem "--yes" argv in
-  let progress = List.mem "--progress=jsonl" argv in
-  let argv = List.filter (fun arg -> arg <> "--yes" && arg <> "--progress=jsonl") argv in
-  let operation, workload = match argv with
-    | "artifact" :: action :: name :: _ -> "artifact." ^ action, Some name
-    | ("bootstrap" | "deploy" | "provision" | "build" | "check" | "jail-test"
-      | "rollout" | "update-version" | "run" | "up" | "new" as action) :: name :: _ -> action, Some name
-    | action :: _ -> action, None
-    | [] -> "usage", None in
-  Progress.start ~enabled:progress ~operation ~workload;
+  let json = List.mem "--json" argv in
+  if json then acting_json argv;
+  let parsed = Cli_spec.parse argv in
+  (match parsed with
+   | Error error when json ->
+       let operation = match List.filter (fun arg -> not (String.starts_with ~prefix:"--" arg)) argv with
+         | "artifact" :: action :: _ -> "artifact." ^ action | action :: _ -> action | [] -> "usage" in
+       let response = match error with
+         | Cli_spec.Unknown_command ->
+             Agent_cli.refused ~operation ~known:false "unknown command; serai commands --json lists them"
+         | Bad_arguments (command, message) ->
+             Agent_cli.refused ~operation ~known:true (Printf.sprintf "%s; usage: %s" message (Cli_spec.synopsis command)) in
+       print_endline (Agent_cli.to_json response);
+       exit (Agent_cli.exit_code response)
+   | Ok ({ command = { path = [ "validate" ] | [ "inspect" ] | [ "artifact"; "plan" ]; _ }; _ }) when json ->
+       let args = List.filter (fun arg -> not (String.starts_with ~prefix:"--" arg)) argv in
+       let operation, workload = match args with
+         | "artifact" :: action :: name :: _ -> "artifact." ^ action, Some name
+         | action :: _ -> action, None | [] -> "usage", None in
+       Progress.start ~enabled:(List.mem "--progress=jsonl" argv) ~operation ~workload;
+       Sys.catch_break true;
+       let response = Agent_cli.run ~layout:locate_layout argv in
+       print_endline (Agent_cli.to_json response);
+       let code = Agent_cli.exit_code response in
+       Progress.finish (if code = 0 then Progress.Succeeded else if code = 130 then Progress.Interrupted else Progress.Failed);
+       exit code
+   | Ok inv when json -> generic_json inv
+   | _ -> ());
+  let inv = match parsed with
+    | Ok inv -> inv
+    | Error _ ->
+        Progress.start ~enabled:(List.mem "--progress=jsonl" argv) ~operation:"usage" ~workload:None;
+        prerr_string (Cli_spec.usage ());
+        Progress.finish Progress.Failed;
+        exit 1 in
+  let operation, workload = operation_of inv in
+  Progress.start ~enabled:inv.progress ~operation ~workload;
   (* Ctrl-C would otherwise kill the process outright, skipping
      Dispatcher.with_locks' Fun.protect ~finally and leaving a stale remote
      lock. As Sys.Break it unwinds like any exception, releasing the locks
      on the way out. *)
   Sys.catch_break true;
+  let failed message =
+    Printf.eprintf "%s\n%!" message;
+    Progress.finish Progress.Failed;
+    (* 3: a stage and lock were left; nothing may be retried blindly. *)
+    exit (if Run_state.retained () = [] then 1 else 3) in
   try
-    if argv = [] then usage_and_exit ();
-    (match argv with
-    | [ "render-logging-targets" ] ->
-        let layout = locate_layout () in
-        Logging_policy.load ~layout ~apps:(load_declaration layout).apps
-        |> Logging_policy.render_targets |> print_string
-    | [ "validate" ] -> validate ~out:None
-    | [ "validate"; "--out"; dir ] -> validate ~out:(Some dir)
-    | "validate" :: _ -> usage_and_exit ()
-    | [ "artifact"; "plan"; name ] -> artifact_plan name
-    | [ "artifact"; "plan"; name; "--revision"; revision ] -> artifact_plan ~revision name
-    | [ "artifact"; "source-stage"; name; "--revision"; revision; "--out"; out ] ->
-        artifact_source_stage name ~revision ~out
-    | "artifact" :: "build" :: _ ->
-        Proc.live (fun () -> dispatch (build_env ~assume_yes ()) argv)
-    | [ "artifact"; "install"; _; "--identity"; _; "--archive"; _; "--sha256"; _ ] ->
-        Proc.live (fun () -> dispatch (build_env ~assume_yes ()) argv)
-    | [ "artifact"; ("upgrade" | "rollback" | "convert"); _;
-        "--identity"; _; "--store"; _ ] ->
-        Proc.live (fun () -> dispatch (build_env ~assume_yes ()) argv)
-    | "artifact" :: _ -> usage_and_exit ()
-    | _ -> Proc.live (fun () -> dispatch (build_env ~assume_yes ()) argv));
+    Run_state.approval := approval_of inv;
+    ignore (Proc.live (fun () -> dispatch (lazy (build_env ~assume_yes:inv.yes ())) inv));
     Progress.finish Progress.Succeeded
   with
   | Cli_exit code ->
       Progress.finish (if code = 2 then Progress.Changes_pending else Progress.Failed);
       exit code
+  | Run_state.Planned plan ->
+      Printf.printf "%s\n" plan.question;
+      List.iter (fun (name, value) -> Printf.printf "    %-16s %s\n" name value) plan.facts;
+      Printf.printf "plan %s\n%!" (Plan_id.to_string plan.id);
+      Progress.finish Progress.Changes_pending;
+      exit 2
   | Sys.Break ->
       prerr_endline "interrupted";
       Progress.finish Progress.Interrupted;
       exit 130
   | Fun.Finally_raised _ ->
       (* a second Ctrl-C while with_locks was releasing *)
-      prerr_endline "interrupted; a remote lock may remain: serai unlock <host-id|guest>";
+      prerr_endline "interrupted; a remote lock may remain: serai locks, then serai unlock <host-id|guest>";
       Progress.outcome_unknown ();
       Progress.finish Progress.Interrupted;
       exit 130
-  | Failure msg | Plan_id.Stale msg | Agent_cli.Bad_request msg ->
-      Printf.eprintf "%s\n%!" msg;
-      Progress.finish Progress.Failed;
-      exit 1
-  | e ->
-      Printf.eprintf "error: %s\n%!" (Printexc.to_string e);
-      Progress.finish Progress.Failed;
-      exit 1
+  | Failure msg | Plan_id.Stale msg | Agent_cli.Bad_request msg -> failed msg
+  | e -> failed ("error: " ^ Printexc.to_string e)

@@ -1,4 +1,4 @@
-type env = {
+type env = Remote_host.env = {
   layout : Layout.t;
   topology : Topology.t option;
   compute_target : string;

@@ -25,6 +25,17 @@ phase durations.
 
 Application build compilers remain declared separately; a guest may use OxCaml.
 
+## Commands
+
+`serai commands` prints every command with its arguments and flags;
+`serai commands --json` is the same table as data. Flags come in any order.
+Every command takes `--json`; a command that changes a host also takes
+`--plan` (what it would do, ending in `plan <id>`, exit 2) and
+`--expect-plan <id>` (apply that plan or refuse). `serai locks` shows who
+holds each host's lock, `serai status` each app's jail and releases. An
+exit of 3 means a stage and lock were left on a host: inspect before
+`serai unlock`.
+
 ## Declaring an app: `serai new`
 
 ```sh
