@@ -803,7 +803,15 @@ serai/
   lib/headscale_acl.ml     Headscale ACL rendering
   lib/pf_rules.ml          compute host pf rule rendering
   lib/caddy_render.ml      fills the hand-written edge/caddy templates
-  lib/dispatcher.ml        bootstrap/deploy/check/edge/update-version and the guest lifecycle
+  lib/dispatcher.ml        the one interface over everything done to a host; includes:
+  lib/remote_host.ml         the run's environment, ssh routing, host locks, the guarded stage
+  lib/app_hooks.ml           bootstrap and the deploy hook
+  lib/artifact_lifecycle.ml  artifact build, store, apply and revert in jails
+  lib/edge_apply.ml          edge render, stage, plan and install
+  lib/logging_install.ml     central logging's senders
+  lib/test_jail.ml           running and destroying <app>test
+  lib/up.ml                  serai up: plan and steps
+  lib/guest_lifecycle.ml     a guest's provision, build, deploy and artifacts
   lib/jail_test.ml         serai jail-test: test-jail rules and the destroy script
   lib/pipeline.ml          the DSL: step type, sexp parser, effectful evaluator
   bin/main.ml              CLI parsing + wires Proc.live around Dispatcher/Pipeline

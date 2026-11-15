@@ -8,6 +8,26 @@
   operator rule to `tag:vps`, and omits it when none are declared, so
   existing policies render unchanged.
 
+## 2026-11-15: Review fixes
+
+- Host scripts fail whole or not at all: `compute/01-pf-rules` refuses a
+  BEGIN marker without its END, `artifact_activate.sh` puts `.previous`
+  back when the active switch fails, `compute/01-base` keeps the generated
+  service rules on a re-run and loads `pf.conf` for real, and
+  `edge/02-caddy` rolls back on a signal.
+- `edge/02-caddy` requires the secrets its staged tree references
+  (`{$NAME}` without a default) instead of one named secret.
+- `edge/00-headscale` installs by rename, verifies `HEADSCALE_SHA256` when
+  set and mints keys for the operator's own user.
+- `serai up` takes its flags in any order. A step that raises is reported
+  as that step's failure in `up --json`.
+- A pipeline's `(script name)` must be a plain file name; ports are decimal.
+- A lock older than 30 minutes says to check its holder before
+  `serai unlock`.
+- `scripts/lint.sh` shellchecks every script it finds.
+- Inside: `Dispatcher` is split into the modules it includes, and the
+  artifact operations share one retained-stage protocol.
+
 ## 2026-11-05: `serai drift`
 
 - `serai drift [--json]` shows in one read-only call where the live system
