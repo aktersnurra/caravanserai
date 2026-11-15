@@ -45,9 +45,16 @@ chown -R "${ADMIN_USER}:${ADMIN_USER}" "${ADMIN_HOME}/.ssh"
 chmod 700 "${ADMIN_HOME}/.ssh"
 chmod 600 "${ADMIN_HOME}/.ssh/authorized_keys"
 
-sed -i '' 's/#\?PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
-sed -i '' 's/#\?ChallengeResponseAuthentication.*/ChallengeResponseAuthentication no/' /etc/ssh/sshd_config
-sed -i '' 's/#\?PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config
+# Key-only logins: -E, since FreeBSD sed's basic expressions have no \?.
+# Each directive ships commented out in sshd_config, so each line is there
+# to rewrite; the check below fails the run if one was not.
+for setting in 'PasswordAuthentication no' 'KbdInteractiveAuthentication no' 'PermitRootLogin no'; do
+  directive=${setting%% *}
+  sed -i '' -E "s/^#?[[:space:]]*${directive}[[:space:]].*/${setting}/" /etc/ssh/sshd_config
+  grep -qx "$setting" /etc/ssh/sshd_config || echo "$setting" >>/etc/ssh/sshd_config
+done
+# A config sshd rejects must not reach the restart: it would lock the host out.
+sshd -t
 service sshd restart
 
 log "Setting up lo1 for jails"
@@ -62,9 +69,25 @@ sysctl net.inet.ip.forwarding=1
 
 log "Configuring pf"
 EXT_IF="$(netstat -rn | awk '/^default/{print $NF}' | head -1)"
+[ -n "$EXT_IF" ] || { log "ERROR: no default route, so no external interface for pf"; exit 1; }
 log "Detected external interface: ${EXT_IF}"
 
-cat >/etc/pf.conf <<EOF
+# A re-run keeps the service rules compute/01-pf-rules spliced in: this
+# script writes the rest of pf.conf, never that block. The markers are
+# 01-pf-rules' own.
+PF_RULES_BEGIN="# BEGIN generated service rules (nuc/01-pf-rules)"
+PF_RULES_END="# END generated service rules"
+pf_service_rules=""
+if [ -f /etc/pf.conf ]; then
+  pf_service_rules="$(awk -v begin="$PF_RULES_BEGIN" -v end="$PF_RULES_END" '
+    $0 == begin { keep = 1 }
+    keep        { print }
+    $0 == end   { keep = 0 }
+  ' /etc/pf.conf)"
+fi
+pf_candidate="$(mktemp /var/tmp/pf.conf.XXXXXX)"
+
+cat >"$pf_candidate" <<EOF
 ext_if="${EXT_IF}"
 lan_if="${EXT_IF}"
 ts_if="tailscale0"
@@ -110,9 +133,22 @@ pass out on \$guest_if to \$guest_net keep state
 # was a placeholder every one of them needed substituted by hand.
 EOF
 
+[ -z "$pf_service_rules" ] || printf '\n%s\n' "$pf_service_rules" >>"$pf_candidate"
+
 sysrc pf_enable="YES"
 sysrc pflog_enable="YES"
-pfctl -f /etc/pf.conf 2>/dev/null || true
+kldload -n pf 2>/dev/null || true
+# Validated before it replaces the live file, and loaded for real: a
+# ruleset that does not load must not end in "setup complete".
+if ! pfctl -nf "$pf_candidate"; then
+  log "ERROR: the generated pf.conf is invalid; /etc/pf.conf was not changed"
+  rm -f "$pf_candidate"
+  exit 1
+fi
+install -o root -g wheel -m 0600 "$pf_candidate" /etc/pf.conf
+rm -f "$pf_candidate"
+pfctl -f /etc/pf.conf
+# Already enabled is not an error.
 pfctl -e 2>/dev/null || true
 
 log "Enabling NTP"

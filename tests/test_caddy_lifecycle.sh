@@ -26,6 +26,21 @@ grep -Fq 'must define a nonempty VIDEO_SECRET' "$tmp/out" || fail 'empty-file di
 printf '%s\n' 'VIDEO_SECRET=synthetic-test-value' > "$tmp/caddy/secrets.env"
 if VIDEO_SECRET=inherited run >"$tmp/out" 2>&1; then fail 'validation failure unexpectedly succeeded'; fi
 [ -f "$tmp/validated" ] || fail 'valid file was not exported to validation'
+# The required names are the ones the staged tree references, whatever they
+# are called: another {$NAME} without a default is required too, and a tree
+# that references none needs none.
+printf '%s\n' 'other.example.org {' '    header X-Token "{$OTHER_TOKEN}"' '    header X-Opt "{$OPTIONAL:fallback}"' '}' >"$tmp/source/conf.d/41-other.caddy"
+if OTHER_TOKEN=inherited run >"$tmp/out" 2>&1; then fail 'unset referenced secret accepted via the environment'; fi
+grep -Fq 'must define a nonempty OTHER_TOKEN' "$tmp/out" || fail 'the missing secret is not named'
+! grep -Fq 'OPTIONAL' "$tmp/out" || fail 'a placeholder with a default was required'
+rm "$tmp/source/conf.d/41-other.caddy" "$tmp/validated"
+mkdir -p "$tmp/plain/conf.d"
+printf '%s\n' 'import conf.d/*.caddy' >"$tmp/plain/Caddyfile"
+printf '%s\n' 'plain.example.org {' '    respond ok' '}' >"$tmp/plain/conf.d/40-plain.caddy"
+: >"$tmp/empty-secrets.env"
+if PATH="$tmp/bin:$PATH" CADDY_DIR="$tmp/caddy" SECRETS_FILE="$tmp/empty-secrets.env" CADDY_SOURCE="$tmp/plain" \
+  CADDY_SKIP_BUILD=1 CADDY_SKIP_SETUP=1 "$script" >"$tmp/out" 2>&1; then fail 'validation failure unexpectedly succeeded'; fi
+[ -f "$tmp/validated" ] || fail 'a tree that references no secret was refused for one'
 # Inject activation failure after install and verify root, fragments, and unit roll back.
 printf '%s\n' old-root > "$tmp/caddy/Caddyfile"
 mkdir -p "$tmp/caddy/conf.d"; printf '%s\n' old-fragment > "$tmp/caddy/conf.d/old.caddy"

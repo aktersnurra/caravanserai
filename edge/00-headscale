@@ -18,10 +18,23 @@ esac
 log() { echo "==> $*"; }
 
 log "Installing Headscale ${HEADSCALE_VERSION}"
+# Downloaded beside the target and renamed over it: a partial download never
+# becomes the binary, and replacing a running one does not fail as busy.
+# HEADSCALE_SHA256, when set, must match the download.
+headscale_download="$(mktemp /usr/local/bin/.headscale.XXXXXX)"
+trap 'rm -f "$headscale_download"' EXIT
 curl -fsSL \
   "https://github.com/juanfont/headscale/releases/download/v${HEADSCALE_VERSION}/headscale_${HEADSCALE_VERSION}_linux_amd64" \
-  -o /usr/local/bin/headscale
-chmod +x /usr/local/bin/headscale
+  -o "$headscale_download"
+if [ -n "${HEADSCALE_SHA256:-}" ]; then
+  printf '%s  %s\n' "$HEADSCALE_SHA256" "$headscale_download" | sha256sum -c --quiet - ||
+    { echo "headscale ${HEADSCALE_VERSION}: SHA-256 mismatch" >&2; exit 1; }
+else
+  log "HEADSCALE_SHA256 not set: the download is not verified"
+fi
+chmod 755 "$headscale_download"
+mv -f "$headscale_download" /usr/local/bin/headscale
+trap - EXIT
 
 id -u headscale &>/dev/null ||
   useradd -r -s /sbin/nologin -d /var/lib/headscale headscale
@@ -122,8 +135,19 @@ for _ in $(seq 1 20); do
 done
 headscale users list >/dev/null 2>&1 || { log "Headscale did not start in time"; exit 1; }
 
-headscale users create "$HEADSCALE_USER" 2>/dev/null || true
-USER_ID="$(headscale users list -o json | grep -m1 '"id"' | grep -oP '\d+')"
+# The operator's own id, by name: the first user listed may be another's,
+# and its keys would be minted for the wrong user.
+operator_id() {
+  headscale users list --name "$HEADSCALE_USER" -o json | grep -oP '"id":\s*"?\K\d+' || true
+}
+USER_ID="$(operator_id)"
+if [ -z "$USER_ID" ]; then
+  headscale users create "$HEADSCALE_USER"
+  USER_ID="$(operator_id)"
+fi
+case "$USER_ID" in
+  '' | *[!0-9]*) log "ERROR: could not find exactly one Headscale user named ${HEADSCALE_USER}"; exit 1 ;;
+esac
 
 log "Next: from the workstation, run serai caddy-install"
 log "      (Caddy will proxy hs.${BASE_DOMAIN} → Headscale). Once the compute host is"

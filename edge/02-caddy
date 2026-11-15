@@ -24,19 +24,29 @@ log() { echo "==> $*" >&2; }
   exit 1
 }
 
-# Caddy expands {$VIDEO_SECRET} from this file at runtime. Source it only for
-# candidate validation; it is neither printed nor copied into a Caddyfile.
+# Caddy expands each {$NAME} the rendered tree references from this file at
+# runtime (the unit's EnvironmentFile). Source it only for candidate
+# validation; it is neither printed nor copied into a Caddyfile.
 [ -r "$SECRETS_FILE" ] || {
   log "ERROR: missing or unreadable $SECRETS_FILE"
   exit 1
 }
+# The names the staged tree requires: {$NAME} with no default. The engine
+# names none itself; a configuration's site templates decide them.
+required_secrets="$(grep -rhoE '\{\$[A-Za-z_][A-Za-z0-9_]*\}' "$CADDY_SOURCE" 2>/dev/null |
+  sed -e 's/^{\$//' -e 's/}$//' | LC_ALL=C sort -u || true)"
 # Never allow an inherited environment value to mask a missing/empty file value.
-unset VIDEO_SECRET
+for secret_name in $required_secrets; do unset "$secret_name"; done
 set -a
 # shellcheck source=/etc/caddy/secrets.env
 . "$SECRETS_FILE"
 set +a
-: "${VIDEO_SECRET:?$SECRETS_FILE must define a nonempty VIDEO_SECRET}"
+for secret_name in $required_secrets; do
+  [ -n "${!secret_name:-}" ] || {
+    log "ERROR: $SECRETS_FILE must define a nonempty $secret_name"
+    exit 1
+  }
+done
 
 # ---------------------------------------------------------------------------
 # Build Caddy with xcaddy so we get caddy-ratelimit
@@ -186,7 +196,7 @@ restore_caddy_config() {
   [ "$had_unit" -eq 0 ] || cp -a "$backup_dir/caddy.service" "$CADDY_UNIT_FILE"
 }
 rollback_on_error() {
-  status=$?
+  status=${1:-$?}
   [ "$rollback_armed" -eq 1 ] || exit "$status"
   log "Caddy installation failed — restoring $backup_dir"
   restore_caddy_config
@@ -195,6 +205,9 @@ rollback_on_error() {
   exit "$status"
 }
 trap rollback_on_error ERR
+# A signal between removing conf.d and installing the new fragments must
+# restore the tree too, not leave the live config without them.
+trap 'rollback_on_error 143' HUP INT TERM
 
 install -o root -g "$CADDY_USER" -m 640 "$CANDIDATE_DIR/Caddyfile" "$CADDY_DIR/Caddyfile"
 rm -rf "$CADDY_DIR/conf.d"
@@ -237,7 +250,7 @@ else
   systemctl start caddy
 fi
 rollback_armed=0
-trap - ERR
+trap - ERR HUP INT TERM
 
 log ""
 log "==> Caddy running."
@@ -254,7 +267,7 @@ if [ "$had_caddyfile" -eq 0 ]; then
   log "  1. sh compute/01-base"
   log "  2. sudo headscale nodes approve-routes -i <compute-node-id> -r <jail subnet>"
   log "  3. From the workstation: serai bootstrap <app>   # per app"
-  log "  4. Open the pf rules in /etc/pf.conf (set EDGE_TS_IP) and pfctl -f"
+  log "  4. From the workstation: serai edge   # pf rules, policy, Caddy config"
   log ""
   log "Then from your workstation, per app:"
   log ""

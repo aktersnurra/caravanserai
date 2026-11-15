@@ -86,7 +86,24 @@ install_rules() {
   trap "rm -f '$candidate' '$rules_file'" EXIT
   printf '%s\n' "$RULES" >"$rules_file"
 
-  if grep -Fq "$ANCHOR_BEGIN" "$PF_CONF"; then
+  # Exactly one block, opened and closed in that order: a BEGIN without its
+  # END would make the splice below drop everything after it, and pfctl -n
+  # accepts the truncated file.
+  begins=$(grep -Fxc "$ANCHOR_BEGIN" "$PF_CONF" || true)
+  ends=$(grep -Fxc "$ANCHOR_END" "$PF_CONF" || true)
+  if [ "$begins" != "$ends" ] || [ "$begins" -gt 1 ]; then
+    log "ERROR: ${PF_CONF} has ${begins} BEGIN and ${ends} END generated-rules markers; repair it by hand"
+    exit 1
+  fi
+  if [ "$begins" = 1 ] && ! awk -v begin="$ANCHOR_BEGIN" -v end="$ANCHOR_END" '
+      $0 == begin { seen = 1 }
+      $0 == end   { exit !seen }
+    ' "$PF_CONF"; then
+    log "ERROR: ${PF_CONF} has its END generated-rules marker before BEGIN; repair it by hand"
+    exit 1
+  fi
+
+  if [ "$begins" = 1 ]; then
     # The rules go to awk as a file, not -v: FreeBSD's awk rejects a -v
     # value containing a newline, so any multi-rule block failed here.
     awk -v begin="$ANCHOR_BEGIN" -v end="$ANCHOR_END" -v rules_file="$rules_file" '

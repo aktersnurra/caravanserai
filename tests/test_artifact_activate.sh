@@ -55,6 +55,7 @@ cat >"$TMP/bin/mv" <<'EOF'
 #!/bin/sh
 [ "$1" = -fh ] || exit 98
 shift
+case "${FAIL_ACTIVE_MV:-0}:$2" in 1:*/opt/demo) exit 1 ;; esac
 if mv --version >/dev/null 2>&1; then exec mv -fT "$@"; fi; exec mv -fh "$@"
 EOF
 chmod +x "$TMP/bin/"*
@@ -181,6 +182,15 @@ test "$(cat "$EVENTS")" = $'demotest service demo stop\ndemotest service demo st
 test "$(readlink "$TMP/jail/opt/demo")" = ".infra-releases/demo/$b"
 test "$(readlink "$TMP/jail/opt/.infra-releases/demo/.previous")" = "$a"
 test ! -e "$TMP/jail/opt/demotest"
+# A failed switch of the active pointer puts .previous back: left naming the
+# still-active release, the next activation would prune the real previous one.
+install_release "$c"
+if FAIL_ACTIVE_MV=1 activate "$c" >/dev/null 2>"$TMP/error"; then
+    echo 'FAIL - ignored a failed active pointer switch' >&2; exit 1
+fi
+grep -q 'previous pointer restored' "$TMP/error"
+test "$(readlink "$TMP/jail/opt/demo")" = ".infra-releases/demo/$b"
+test "$(readlink "$TMP/jail/opt/.infra-releases/demo/.previous")" = "$a"
 test ! -e "$TMP/jail/opt/.infra-releases/demotest"
 refused ../escape 'path escape'
 printf 'mismatch\n' >"$TMP/jail/opt/.infra-releases/demo/$a/.infra-sha256"

@@ -61,6 +61,7 @@ if [ -L "$active" ]; then
 elif [ -e "$active" ]; then
     fail 'legacy active directory needs explicit conversion'
 fi
+previous_id=''
 if [ -L "$previous" ]; then
     previous_id=$(readlink "$previous")
     is_digest "$previous_id" || fail 'unmanaged previous pointer'
@@ -145,12 +146,29 @@ if [ -n "$old_id" ]; then
         fi
     done
 fi
+moved_previous=0
 if [ -L "$tmp/previous" ]; then
     "$mv_bin" -fh "$tmp/previous" "$previous" || fail 'could not retain previous pointer; active pointer unchanged'
+    moved_previous=1
 fi
 # FreeBSD -h refuses to follow a destination directory symlink. Plain POSIX mv
 # would move the temporary pointer INSIDE the old release instead of replacing it.
-"$mv_bin" -fh "$tmp/current" "$active" || fail 'active pointer switch failed'
+if ! "$mv_bin" -fh "$tmp/current" "$active"; then
+    # .previous now names the release that is still active. Left so, the
+    # next activation would keep it and prune the real previous release:
+    # put the pointer back as it was.
+    if [ "$moved_previous" -eq 1 ]; then
+        if [ -n "$previous_id" ]; then
+            ln -s "$previous_id" "$tmp/restore-previous" \
+                && "$mv_bin" -fh "$tmp/restore-previous" "$previous" \
+                || fail 'active pointer switch failed and the previous pointer was not restored'
+        else
+            rm -f -- "$previous" \
+                || fail 'active pointer switch failed and the previous pointer was not restored'
+        fi
+    fi
+    fail 'active pointer switch failed; previous pointer restored'
+fi
 # No automatic rollback past this point: a migration may have changed data
 # that the previous release cannot read.
 if [ "$migrate" = migrate ]; then
