@@ -20,6 +20,24 @@ let validate_stage stage =
   | _ ->
       failwith "OPS_REMOTE_STAGE must be a dedicated non-root directory beneath /tmp"
 
+let ok_or_fail = function Ok value -> value | Error message -> failwith message
+
+let is_sha256 value =
+  String.length value = 64
+  && String.for_all (function '0' .. '9' | 'a' .. 'f' -> true | _ -> false) value
+
+(* Never follows a symlink: a link is removed, not what it names. *)
+let rec remove_tree path =
+  match (Unix.lstat path).Unix.st_kind with
+  | Unix.S_DIR ->
+      Array.iter (fun name -> remove_tree (Filename.concat path name)) (Sys.readdir path);
+      Unix.rmdir path
+  | _ -> Unix.unlink path
+
+let write_private path contents =
+  Out_channel.with_open_bin path (fun channel -> output_string channel contents);
+  Unix.chmod path 0o600
+
 (* Verbatim port of the POSIX sh staging guard the bash ./ops ran: stage components
    are created and checked remotely, before rsync or privilege escalation,
    so a pre-existing symlink or another user's directory can't redirect a
@@ -287,6 +305,53 @@ let with_locks env ~command hosts f =
   in
   take [] hosts
 
+(* A remote operation that may end with its outcome unknown: an interrupted
+   transfer may leave a writer, a lost connection a running build. While
+   [uncertain] is set, an error leaves the stage and the lock in place for
+   inspection; otherwise the stage is removed and the lock released. *)
+type retention = { mutable uncertain : bool }
+
+(* [f]'s outcome is unknown until it returns: an exception leaves it so. *)
+let uncertain_while retention f =
+  retention.uncertain <- true;
+  let value = f () in
+  retention.uncertain <- false;
+  value
+
+(* Takes [host]'s lock, runs [prepare] (the staging guard: a failure there
+   leaves no stage to remove), then [body], then [cleanup] whether [body]
+   returned or raised -- unless the outcome is uncertain, when the stage and
+   lock stay and [retained] says so. A cleanup that fails is uncertain too,
+   and both errors are kept. *)
+let with_retained_stage env ~command ~host ~retained ?(prepare = fun _ -> ()) ~cleanup body =
+  let retention = { uncertain = false } in
+  ignore (acquire_lock env ~command host);
+  Fun.protect
+    ~finally:(fun () ->
+      if retention.uncertain then begin
+        Progress.outcome_unknown ();
+        Printf.eprintf "%s\n%!" retained
+      end else release_lock env host)
+    (fun () ->
+      prepare retention;
+      let cleanup () =
+        if not retention.uncertain then begin
+          Progress.phase "cleanup";
+          uncertain_while retention cleanup
+        end in
+      match body retention with
+      | value -> cleanup (); value
+      | exception primary -> Proc.reraise_after_cleanup primary cleanup)
+
+(* Removes a stage directory, refusing one that is missing or a symlink. *)
+let remove_stage_script ?marker stage =
+  String.concat "\n"
+    ([ "set -eu" ] @ (match marker with Some marker -> [ "# " ^ marker ^ ":" ] | None -> [])
+     @ [ "stage=" ^ Shell.quote stage;
+         {|[ -d "$stage" ] && [ ! -L "$stage" ]|};
+         {|rm -rf -- "$stage"|};
+         {|[ ! -e "$stage" ] && [ ! -L "$stage" ]|} ])
+
 let unlock env label =
   match host_of_label env label with
   | None -> failwith "unlock: expected a configured host ID or guest name"
@@ -311,13 +376,6 @@ let show_applied_record env host record_output =
     match Applied_record.of_string record_output with
     | record -> announce "%s: %s" (host_label env host) (Applied_record.summary record)
     | exception _ -> announce "%s: unreadable record at %s" (host_label env host) Applied_record.path
-
-let rec remove_tree path =
-  if Sys.is_directory path then begin
-    Array.iter (fun entry -> remove_tree (Filename.concat path entry)) (Sys.readdir path);
-    Sys.rmdir path
-  end
-  else Sys.remove path
 
 let rec make_directories path =
   if not (Sys.file_exists path) then begin
@@ -446,13 +504,13 @@ let artifact_install env app_name ~identity ~archive ~sha256 =
 let build_torn_down_exit = 3
 
 (* Run the remote build-jail command. Only success and a torn-down failure
-   leave nothing to inspect; anything else keeps [retain_remote] set. *)
-let run_build_jail env ~retain_remote command =
-  retain_remote := true;
+   leave nothing to inspect; anything else stays uncertain. *)
+let run_build_jail env retention command =
+  retention.uncertain <- true;
   match ssh_run env [ env.compute_target; command ] with
-  | 0 -> retain_remote := false
+  | 0 -> retention.uncertain <- false
   | code when code = build_torn_down_exit ->
-      retain_remote := false;
+      retention.uncertain <- false;
       failwith "artifact build: the build failed (output above); its build jail was removed"
   | code ->
       failwith (Printf.sprintf
@@ -480,12 +538,29 @@ let artifact_file_sha256 path =
     in
     Digestif.SHA256.(to_hex (get (consume empty))))
 
-let rec artifact_remove_tree path =
-  match (Unix.lstat path).Unix.st_kind with
-  | Unix.S_DIR ->
-      Array.iter (fun name -> artifact_remove_tree (Filename.concat path name)) (Sys.readdir path);
-      Unix.rmdir path
-  | _ -> Unix.unlink path
+(* The base archive a build starts from: a regular file with the declared
+   digest. [context] prefixes the refusal. *)
+let require_base_archive ~context ~base_archive ~base_sha256 =
+  if not (is_sha256 base_sha256) then failwith (context ^ ": invalid base SHA-256");
+  (match Unix.lstat base_archive with
+   | { Unix.st_kind = Unix.S_REG; _ } -> ()
+   | _ -> failwith (context ^ ": base archive must be regular")
+   | exception Unix.Unix_error _ -> failwith (context ^ ": base archive not found"));
+  if artifact_file_sha256 base_archive <> base_sha256 then
+    failwith (context ^ ": base archive SHA-256 mismatch")
+
+(* The lock token names the build jail and its stage directory. *)
+let require_build_token env ~refusal =
+  if env.lock_token = "" || String.length env.lock_token > 32
+     || not (String.for_all (function 'a' .. 'z' | '0' .. '9' | '-' -> true | _ -> false) env.lock_token)
+  then failwith refusal
+
+(* A pinned binary's URL: its template with ${VERSION} replaced. *)
+let binary_url ~context ~template ~version =
+  match String.split_on_char '$' template with
+  | [ before; after ] when String.starts_with ~prefix:"{VERSION}" after ->
+      before ^ version ^ String.sub after 9 (String.length after - 9)
+  | _ -> failwith (context ^ ": invalid binary URL template")
 
 let artifact_source_configuration env app_name opam_repository =
   match (find_app env app_name).strategy, opam_repository with
@@ -541,21 +616,19 @@ let artifact_source_recipe ?opam_snapshots env ~local ~base_sha256 ~release_name
               let path = Filename.concat local "repository" in
               Source_snapshot.stage ~jj_bin:env.jj_bin ~checkout ~revision ~out:path
               |> Result.map (fun commit -> commit, path) in
-        let commit, path = match staged with Ok value -> value | Error message -> failwith message in
-        let inventory = match Source_inventory.create ~root:path ~commit with
-          | Ok value -> value | Error message -> failwith message in
+        let commit, path = ok_or_fail (staged) in
+        let inventory = ok_or_fail (Source_inventory.create ~root:path ~commit) in
         (match Unix.lstat (Filename.concat path "repo") with
          | {Unix.st_kind=Unix.S_REG; _} -> ()
          | _ -> failwith "artifact build: invalid opam repository marker"
          | exception Unix.Unix_error _ -> failwith "artifact build: missing opam repository marker");
         let receipt = Filename.concat local "repository-inventory" in
-        Out_channel.with_open_bin receipt (fun channel -> output_string channel (Source_inventory.canonical inventory));
-        Unix.chmod receipt 0o600;
+        write_private receipt (Source_inventory.canonical inventory);
         let sha256 = Source_inventory.identity inventory in
         Artifact_recipe.stage_ocaml ~lib_dir:(Layout.lib_dir env.layout) ~out ~base_sha256 ~release_name ~packages
           ~compiler ~repository_commit:commit ~repository_sha256:sha256 ~web_bundle, Some (path, receipt, sha256)
     | _ -> failwith "artifact build: inconsistent source recipe inputs" in
-  let recipe = match staged with Ok value -> value | Error message -> failwith message in
+  let recipe = ok_or_fail (staged) in
   recipe, repository
 
 let artifact_build_candidate ?checkout ?opam_repository ?opam_snapshots env app_name ~revision ~ip ~base_archive ~base_sha256 ~out =
@@ -565,17 +638,8 @@ let artifact_build_candidate ?checkout ?opam_repository ?opam_snapshots env app_
   let repo_path = Option.value checkout ~default:repo_path in
   validate_stage env.remote_stage;
   let declared = Network_endpoint.to_list env.endpoints |> List.map (fun endpoint -> endpoint.Network_endpoint.ip) in
-  (match Jail_test.validate_ip ~host:(jail_host env app_name) ~declared ip with
-   | Ok () -> () | Error message -> failwith message);
-  let is_sha256 value = String.length value = 64
-    && String.for_all (function '0' .. '9' | 'a' .. 'f' -> true | _ -> false) value in
-  if not (is_sha256 base_sha256) then failwith "artifact build: invalid base SHA-256";
-  (match Unix.lstat base_archive with
-   | { Unix.st_kind = Unix.S_REG; _ } -> ()
-   | _ -> failwith "artifact build: base archive must be regular"
-   | exception Unix.Unix_error _ -> failwith "artifact build: base archive not found");
-  if artifact_file_sha256 base_archive <> base_sha256 then
-    failwith "artifact build: base archive SHA-256 mismatch";
+  ok_or_fail (Jail_test.validate_ip ~host:(jail_host env app_name) ~declared ip);
+  require_base_archive ~context:"artifact build" ~base_archive ~base_sha256;
   if out = "" || out = "." || out = ".." then failwith "artifact build: invalid output";
   (match Unix.lstat out with
    | _ -> failwith "artifact build: output already exists"
@@ -584,25 +648,19 @@ let artifact_build_candidate ?checkout ?opam_repository ?opam_snapshots env app_
    | { Unix.st_kind = Unix.S_DIR; _ } -> ()
    | _ -> failwith "artifact build: output parent must be a directory"
    | exception Unix.Unix_error _ -> failwith "artifact build: output parent not found");
-  if env.lock_token = "" || String.length env.lock_token > 32
-     || not (String.for_all (function 'a' .. 'z' | '0' .. '9' | '-' -> true | _ -> false) env.lock_token)
-  then failwith "artifact build: invalid lock token for build jail";
+  require_build_token env ~refusal:"artifact build: invalid lock token for build jail";
   let local = Filename.temp_dir "serai-artifact-build" "" in
-  Fun.protect ~finally:(fun () -> artifact_remove_tree local) (fun () ->
+  Fun.protect ~finally:(fun () -> remove_tree local) (fun () ->
     Progress.phase "source";
     let source = Filename.concat local "source" in
     let source_commit, source_inventory_sha256, inventory_path =
       Progress.with_duration ~phase:"source" ~parent:None (fun () ->
-      let source_commit = match Source_snapshot.stage ~jj_bin:env.jj_bin
-        ~checkout:repo_path ~revision ~out:source with
-        | Ok value -> value | Error message -> failwith message in
-      let inventory = match Source_inventory.create ~root:source ~commit:source_commit with
-        | Ok value -> value | Error message -> failwith message in
+      let source_commit = ok_or_fail (Source_snapshot.stage ~jj_bin:env.jj_bin
+        ~checkout:repo_path ~revision ~out:source) in
+      let inventory = ok_or_fail (Source_inventory.create ~root:source ~commit:source_commit) in
       let source_inventory_sha256 = Source_inventory.identity inventory in
       let inventory_path = Filename.concat local "inventory" in
-      Out_channel.with_open_bin inventory_path
-        (fun channel -> output_string channel (Source_inventory.canonical inventory));
-      Unix.chmod inventory_path 0o600;
+      write_private inventory_path (Source_inventory.canonical inventory);
       source_commit, source_inventory_sha256, inventory_path) in
     let web_bundle = artifact_web_bundle env app_name in
     let recipe_dir = Filename.concat local "recipe" in
@@ -615,37 +673,34 @@ let artifact_build_candidate ?checkout ?opam_repository ?opam_snapshots env app_
     let recipe_sha256 = recipe.sha256 in
     let output_temp = Filename.temp_dir ~temp_dir:(Filename.dirname out) "serai-candidate-" "" in
     Fun.protect
-      ~finally:(fun () -> if Sys.file_exists output_temp then artifact_remove_tree output_temp)
+      ~finally:(fun () -> if Sys.file_exists output_temp then remove_tree output_temp)
       (fun () ->
         let subtree = "artifact-build/" ^ app.endpoint.name ^ "/" ^ env.lock_token in
         let stage = env.remote_stage ^ "/" ^ subtree in
         let remote path = Printf.sprintf "%s:%s/%s" env.compute_target stage path in
-        let retain_remote = ref false in
-        let rsync phase source destination =
-          retain_remote := true;
-          Progress.with_duration ~phase ~parent:None (fun () -> rsync_checked env
-            [ "-az"; "--no-owner"; "--no-group"; "--"; source; destination ]);
-          retain_remote := false in
-        ignore (acquire_lock env ~command:("artifact build " ^ app.endpoint.name) Compute_host);
-        Fun.protect ~finally:(fun () ->
-          if !retain_remote then begin
-            Progress.outcome_unknown ();
-            Printf.eprintf
-"artifact build: stage %s and host lock retained; inspect failed/uncertain build before serai unlock %s.\n%!" stage (host_label env Compute_host)
-          end else release_lock env Compute_host) (fun () ->
-          retain_remote := true;
-          secure_remote_stage env ~target:env.compute_target ~subtree;
-          retain_remote := false;
-          let cleanup_script = String.concat "\n"
-            [ "set -eu";
-              "# artifact-build-cleanup:";
-              "parent=" ^ Shell.quote (env.remote_stage ^ "/artifact-build/" ^ app.endpoint.name);
-              "stage=" ^ Shell.quote stage;
-              {|[ -d "$parent" ] && [ ! -L "$parent" ] || exit 1|};
-              {|[ -d "$stage" ] && [ ! -L "$stage" ] || exit 1|};
-              {|rm -rf -- "$stage"|};
-              {|[ ! -e "$stage" ] && [ ! -L "$stage" ]|} ] in
-          let build_result = try
+        let cleanup_script = String.concat "\n"
+          [ "set -eu";
+            "# artifact-build-cleanup:";
+            "parent=" ^ Shell.quote (env.remote_stage ^ "/artifact-build/" ^ app.endpoint.name);
+            "stage=" ^ Shell.quote stage;
+            {|[ -d "$parent" ] && [ ! -L "$parent" ] || exit 1|};
+            {|[ -d "$stage" ] && [ ! -L "$stage" ] || exit 1|};
+            {|rm -rf -- "$stage"|};
+            {|[ ! -e "$stage" ] && [ ! -L "$stage" ]|} ] in
+        with_retained_stage env ~command:("artifact build " ^ app.endpoint.name) ~host:Compute_host
+          ~retained:(Printf.sprintf
+            "artifact build: stage %s and host lock retained; inspect failed/uncertain build before serai unlock %s."
+            stage (host_label env Compute_host))
+          ~prepare:(fun retention ->
+            uncertain_while retention (fun () -> secure_remote_stage env ~target:env.compute_target ~subtree))
+          ~cleanup:(fun () ->
+            Progress.with_duration ~phase:"controller-cleanup" ~parent:None (fun () ->
+              ssh_checked env [env.compute_target; "doas sh -c " ^ Shell.quote cleanup_script]))
+          (fun retention ->
+            let rsync phase source destination =
+              uncertain_while retention (fun () ->
+                Progress.with_duration ~phase ~parent:None (fun () -> rsync_checked env
+                  [ "-az"; "--no-owner"; "--no-group"; "--"; source; destination ])) in
             Progress.phase "transfer";
             rsync "outbound-transfer" (source ^ "/") (remote "source/");
             rsync "outbound-transfer" inventory_path (remote "inventory");
@@ -682,29 +737,12 @@ let artifact_build_candidate ?checkout ?opam_repository ?opam_snapshots env app_
                   ^ String.concat " " (List.map Shell.quote build_args) ])) in
             Progress.phase "build";
             Progress.with_duration ~phase:"remote-total" ~parent:None (fun () ->
-              run_build_jail env ~retain_remote command);
+              run_build_jail env retention command);
             Progress.phase "transfer";
             rsync "return-transfer" (remote "output/release.tar") (Filename.concat output_temp "release.tar");
             rsync "return-transfer" (remote "output/release.sha256") (Filename.concat output_temp "release.sha256");
             rsync "return-transfer" (remote "output/target-abi") (Filename.concat output_temp "target-abi");
-            rsync "return-transfer" (remote "output/dependencies") (Filename.concat output_temp "dependencies");
-            Ok ()
-          with error -> Error (error, Printexc.get_raw_backtrace ()) in
-          let cleanup () =
-            if not !retain_remote then begin
-              Progress.phase "cleanup";
-              retain_remote := true;
-              Progress.with_duration ~phase:"controller-cleanup" ~parent:None (fun () ->
-                ssh_checked env [env.compute_target; "doas sh -c " ^ Shell.quote cleanup_script]);
-              retain_remote := false
-            end in
-          match build_result with
-          | Ok () -> cleanup ()
-          | Error (primary, backtrace) ->
-              (match cleanup () with
-               | () -> Printexc.raise_with_backtrace primary backtrace
-               | exception secondary ->
-                   Printexc.raise_with_backtrace (Proc.Cleanup_failed (primary, secondary)) backtrace));
+            rsync "return-transfer" (remote "output/dependencies") (Filename.concat output_temp "dependencies"));
         Progress.phase "verify";
         let archive_sha256, target_abi, dependencies =
           Progress.with_duration ~phase:"verification" ~parent:None (fun () ->
@@ -742,12 +780,10 @@ let artifact_build_candidate ?checkout ?opam_repository ?opam_snapshots env app_
           let dependencies = In_channel.with_open_bin dependencies_file (fun channel ->
             let size = in_channel_length channel in
             if size > 1048576 then failwith "artifact build: oversized dependency inventory";
-            match Artifact_manifest.dependencies_of_inventory (really_input_string channel size) with
-            | Ok value -> value | Error message -> failwith message) in
+            ok_or_fail (Artifact_manifest.dependencies_of_inventory (really_input_string channel size))) in
           archive_sha256, target_abi, dependencies) in
-        let manifest = match Artifact_manifest.create ~name:app_name ~source_commit ~target_abi
-          ~dependencies ~recipe_sha256 ~release_name ~archive_sha256 with
-          | Ok value -> value | Error message -> failwith message in
+        let manifest = ok_or_fail (Artifact_manifest.create ~name:app_name ~source_commit ~target_abi
+          ~dependencies ~recipe_sha256 ~release_name ~archive_sha256) in
         Out_channel.with_open_bin (Filename.concat output_temp "manifest") (fun channel ->
           output_string channel (Artifact_manifest.canonical manifest));
         (match Unix.lstat out with
@@ -757,10 +793,9 @@ let artifact_build_candidate ?checkout ?opam_repository ?opam_snapshots env app_
         { source_commit; source_inventory_sha256; target_abi; recipe_sha256; archive_sha256; manifest }))
 
 let artifact_build_store ?reuse ?checkout ?opam_repository ?opam_snapshots env app_name ~revision ~ip ~base_archive ~base_sha256 ~store =
-  (match Artifact_store.validate_root store with
-   | Ok () -> () | Error message -> failwith message);
+  ok_or_fail (Artifact_store.validate_root store);
   let local = Filename.temp_dir "serai-artifact-publish" "" in
-  Fun.protect ~finally:(fun () -> artifact_remove_tree local) (fun () ->
+  Fun.protect ~finally:(fun () -> remove_tree local) (fun () ->
     match reuse with
     | None ->
         let out = Filename.concat local "candidate" in
@@ -774,23 +809,13 @@ let artifact_build_store ?reuse ?checkout ?opam_repository ?opam_snapshots env a
          | Error message -> failwith message)
     | Some identity ->
         Progress.phase "reuse";
-        let manifest, _ = match Artifact_store.load ~root:store ~identity with
-          | Ok value -> value | Error message -> failwith message in
+        let manifest, _ = ok_or_fail (Artifact_store.load ~root:store ~identity) in
         let repo_path, release_name, packages, compiler =
           artifact_source_configuration env app_name opam_repository in
         let repo_path = Option.value checkout ~default:repo_path in
-        if String.length base_sha256 <> 64
-           || not (String.for_all (function '0'..'9' | 'a'..'f' -> true | _ -> false) base_sha256)
-        then failwith "artifact reuse: invalid base SHA-256";
-        (match Unix.lstat base_archive with
-         | { Unix.st_kind = Unix.S_REG; _ } -> ()
-         | _ -> failwith "artifact reuse: base archive must be regular"
-         | exception Unix.Unix_error _ -> failwith "artifact reuse: base archive not found");
-        if artifact_file_sha256 base_archive <> base_sha256 then
-          failwith "artifact reuse: base archive SHA-256 mismatch";
-        let source_commit = match Source_snapshot.stage ~jj_bin:env.jj_bin
-          ~checkout:repo_path ~revision ~out:(Filename.concat local "source") with
-          | Ok value -> value | Error message -> failwith message in
+        require_base_archive ~context:"artifact reuse" ~base_archive ~base_sha256;
+        let source_commit = ok_or_fail (Source_snapshot.stage ~jj_bin:env.jj_bin
+          ~checkout:repo_path ~revision ~out:(Filename.concat local "source")) in
         let recipe, _ = artifact_source_recipe ?opam_snapshots env ~local ~base_sha256 ~release_name
           ~packages ~compiler ~opam_repository ~web_bundle:(artifact_web_bundle env app_name) in
         let same_source = match manifest.input with
@@ -811,44 +836,28 @@ let artifact_build_executable_store ?reuse env app_name ~ip ~base_archive ~base_
         principal, s.packages, Artifact_manifest.Package_archives principal,
         ["SERAI_ARTIFACT_KIND=package"]
     | Strategy_config.Fetch_binary s ->
-        let url = match String.split_on_char '$' s.binary_url_template with
-          | [before; after] when String.starts_with ~prefix:"{VERSION}" after ->
-              before ^ s.version ^ String.sub after 9 (String.length after - 9)
-          | _ -> failwith "artifact build: invalid binary URL template" in
+        let url = binary_url ~context:"artifact build" ~template:s.binary_url_template ~version:s.version in
         s.binary_name, s.packages,
         Artifact_manifest.Upstream_binary {version=s.version; url; sha256=s.binary_sha256},
         ["SERAI_ARTIFACT_KIND=binary"; "SERAI_EXECUTABLE_SOURCE=" ^ Shell.quote url;
          "SERAI_EXECUTABLE_SHA256=" ^ Shell.quote s.binary_sha256]
     | _ -> failwith "artifact build: expected package or pinned executable strategy" in
-  (match Artifact_store.validate_root store with Ok () -> () | Error message -> failwith message);
+  ok_or_fail (Artifact_store.validate_root store);
   validate_stage env.remote_stage;
   let declared = Network_endpoint.to_list env.endpoints |> List.map (fun e -> e.Network_endpoint.ip) in
-  (match Jail_test.validate_ip ~host:(jail_host env app_name) ~declared ip with
-   | Ok () -> () | Error message -> failwith message);
-  if String.length base_sha256 <> 64
-     || not (String.for_all (function '0'..'9'|'a'..'f' -> true | _ -> false) base_sha256)
-  then failwith "artifact build: invalid base SHA-256";
-  (match Unix.lstat base_archive with
-   | {Unix.st_kind=Unix.S_REG; _} -> ()
-   | _ -> failwith "artifact build: base archive must be regular"
-   | exception Unix.Unix_error _ -> failwith "artifact build: base archive not found");
-  if artifact_file_sha256 base_archive <> base_sha256 then
-    failwith "artifact build: base archive SHA-256 mismatch";
-  if env.lock_token = "" || String.length env.lock_token > 32
-     || not (String.for_all (function 'a'..'z'|'0'..'9'|'-' -> true | _ -> false) env.lock_token)
-  then failwith "artifact build: invalid lock token";
+  ok_or_fail (Jail_test.validate_ip ~host:(jail_host env app_name) ~declared ip);
+  require_base_archive ~context:"artifact build" ~base_archive ~base_sha256;
+  require_build_token env ~refusal:"artifact build: invalid lock token";
   let local = Filename.temp_dir "serai-executable-build" "" in
-  Fun.protect ~finally:(fun () -> artifact_remove_tree local) (fun () ->
+  Fun.protect ~finally:(fun () -> remove_tree local) (fun () ->
     Progress.phase "recipe";
     let recipe_dir = Filename.concat local "recipe" in
-    let recipe = match Artifact_recipe.stage_executable ~lib_dir:(Layout.lib_dir env.layout) ~out:recipe_dir
-      ~base_sha256 ~release_name:release ~packages ~input with
-      | Ok value -> value | Error message -> failwith message in
+    let recipe = ok_or_fail (Artifact_recipe.stage_executable ~lib_dir:(Layout.lib_dir env.layout) ~out:recipe_dir
+      ~base_sha256 ~release_name:release ~packages ~input) in
     match reuse with
     | Some identity ->
         Progress.phase "reuse";
-        let manifest, _ = match Artifact_store.load ~root:store ~identity with
-          | Ok value -> value | Error message -> failwith message in
+        let manifest, _ = ok_or_fail (Artifact_store.load ~root:store ~identity) in
         if manifest.name <> app_name || manifest.input <> input
            || manifest.recipe_sha256 <> recipe.sha256 || manifest.release_name <> release
         then failwith "artifact reuse: requested inputs do not match stored artifact";
@@ -859,35 +868,29 @@ let artifact_build_executable_store ?reuse env app_name ~ip ~base_archive ~base_
     let subtree = "artifact-executable/" ^ app_name ^ "/" ^ env.lock_token in
     let stage = env.remote_stage ^ "/" ^ subtree in
     let remote name = env.compute_target ^ ":" ^ stage ^ "/" ^ name in
-    let retain_remote = ref false in
-    ignore (acquire_lock env ~command:("artifact build " ^ app_name) Compute_host);
-    Fun.protect ~finally:(fun () ->
-      if !retain_remote then begin
-        Progress.outcome_unknown ();
-        Printf.eprintf
-          "artifact build: stage %s and host lock retained; inspect failed/uncertain build before serai unlock %s.\n%!" stage (host_label env Compute_host)
-      end else release_lock env Compute_host) (fun () ->
-      let checked_remote command =
-        retain_remote := true;
-        let code = ssh_run env [env.compute_target; command] in
-        retain_remote := code >= 128;
-        if code <> 0 then failwith (Printf.sprintf "artifact build: remote exited %d" code) in
-      checked_remote ("sh -c " ^ Shell.quote
-        (secure_remote_stage_script ~stage:env.remote_stage ~subtree));
-      let transfer source destination =
-        retain_remote := true;
-        rsync_checked env
-          ["-az"; "--no-owner"; "--no-group"; "--"; source; destination];
-        retain_remote := false in
-      let cleanup () =
-        if not !retain_remote then
-          try
-            Progress.phase "cleanup";
-            checked_remote ("doas sh -c " ^ Shell.quote
-            ("set -eu\n# artifact-executable-cleanup:\nstage=" ^ Shell.quote stage
-             ^ "\n[ -d \"$stage\" ] && [ ! -L \"$stage\" ]\nrm -rf -- \"$stage\"\n[ ! -e \"$stage\" ] && [ ! -L \"$stage\" ]"))
-          with error -> retain_remote := true; raise error in
-      let build () =
+    (* A remote exit below 128 is the command's own answer; a signal's
+       128+n or ssh's failure leaves the outcome unknown. *)
+    let remote_exit retention command =
+      retention.uncertain <- true;
+      let code = ssh_run env [env.compute_target; command] in
+      retention.uncertain <- code >= 128;
+      code in
+    let refuse_exit code =
+      if code <> 0 then failwith (Printf.sprintf "artifact build: remote exited %d" code) in
+    with_retained_stage env ~command:("artifact build " ^ app_name) ~host:Compute_host
+      ~retained:(Printf.sprintf
+        "artifact build: stage %s and host lock retained; inspect failed/uncertain build before serai unlock %s."
+        stage (host_label env Compute_host))
+      ~prepare:(fun retention ->
+        refuse_exit (remote_exit retention ("sh -c " ^ Shell.quote
+          (secure_remote_stage_script ~stage:env.remote_stage ~subtree))))
+      ~cleanup:(fun () ->
+        refuse_exit (ssh_run env [env.compute_target;
+          "doas sh -c " ^ Shell.quote (remove_stage_script ~marker:"artifact-executable-cleanup" stage)]))
+      (fun retention ->
+        let transfer source destination =
+          uncertain_while retention (fun () ->
+            rsync_checked env ["-az"; "--no-owner"; "--no-group"; "--"; source; destination]) in
         Progress.phase "transfer";
         transfer base_archive (remote "base.txz");
         List.iter (fun (name, _) -> transfer (Filename.concat recipe_dir name) (remote name)) recipe.scripts;
@@ -897,20 +900,12 @@ let artifact_build_executable_store ?reuse env app_name ~ip ~base_archive ~base_
         let args = [stage ^ "/artifact_build_jail.sh"; "infra-build-" ^ app_name ^ "-" ^ env.lock_token;
           ip; stage ^ "/base.txz"; base_sha256; "-"; "-"; "-"; release; stage ^ "/output"] @ packages in
         Progress.phase "build";
-        run_build_jail env ~retain_remote ("doas sh -c " ^ Shell.quote
+        run_build_jail env retention ("doas sh -c " ^ Shell.quote
           (String.concat "\n" (["set -eu"] @ checks @ [String.concat " "
             (["SERAI_LOCK_HELD=1"] @ worker_env @ ["exec sh"] @ List.map Shell.quote args)])));
         Progress.phase "transfer";
         List.iter (fun name -> transfer (remote ("output/" ^ name)) (Filename.concat local name))
-          ["release.tar"; "release.sha256"; "target-abi"; "dependencies"] in
-      (match build () with
-       | () -> cleanup ()
-       | exception primary ->
-           let backtrace = Printexc.get_raw_backtrace () in
-           match cleanup () with
-           | () -> Printexc.raise_with_backtrace primary backtrace
-           | exception secondary ->
-               Printexc.raise_with_backtrace (Proc.Cleanup_failed (primary, secondary)) backtrace));
+          ["release.tar"; "release.sha256"; "target-abi"; "dependencies"]);
     Progress.phase "verify";
     let read_evidence name limit =
       let file = Filename.concat local name in
@@ -926,11 +921,9 @@ let artifact_build_executable_store ?reuse env app_name ~ip ~base_archive ~base_
      | ["FreeBSD"; major; "amd64"] when major <> ""
          && String.for_all (function '0'..'9' -> true | _ -> false) major -> ()
      | _ -> failwith "artifact build: incompatible executable ABI");
-    let dependencies = match Artifact_manifest.dependencies_of_inventory (read_evidence "dependencies" 1048576) with
-      | Ok value -> value | Error message -> failwith message in
-    let manifest = match Artifact_manifest.create_input ~name:app_name ~input ~target_abi ~dependencies
-      ~recipe_sha256:recipe.sha256 ~release_name:release ~archive_sha256 with
-      | Ok value -> value | Error message -> failwith message in
+    let dependencies = ok_or_fail (Artifact_manifest.dependencies_of_inventory (read_evidence "dependencies" 1048576)) in
+    let manifest = ok_or_fail (Artifact_manifest.create_input ~name:app_name ~input ~target_abi ~dependencies
+      ~recipe_sha256:recipe.sha256 ~release_name:release ~archive_sha256) in
     Progress.phase "publish";
     match Artifact_store.publish ~root:store ~manifest ~archive:(Filename.concat local "release.tar") with
     | Ok _ -> Artifact_manifest.identity manifest | Error message -> failwith message)
@@ -976,7 +969,7 @@ let source_release_settings app_name (strategy : Strategy_config.t) =
    stage is removed. [context] prefixes its errors. *)
 let run_artifact_helper env ~context ~label ~subtree ~files ~helpers ~assignments ~args =
   let local = Filename.temp_dir "serai-artifact-apply" "" in
-  Fun.protect ~finally:(fun () -> artifact_remove_tree local) (fun () ->
+  Fun.protect ~finally:(fun () -> remove_tree local) (fun () ->
     let scripts = List.map (fun name ->
       let source = Layout.lib_file env.layout name in
       if (Unix.lstat source).Unix.st_kind <> Unix.S_REG then failwith (context ^ ": unsafe helper");
@@ -988,54 +981,37 @@ let run_artifact_helper env ~context ~label ~subtree ~files ~helpers ~assignment
       Unix.chmod snapshot 0o600;
       name, snapshot, artifact_file_sha256 snapshot) helpers in
     let stage = env.remote_stage ^ "/" ^ subtree in
-    let retain_remote = ref false in
-    ignore (acquire_lock env ~command:label Compute_host);
-    Fun.protect ~finally:(fun () ->
-      if !retain_remote then begin
-        Progress.outcome_unknown ();
-        Printf.eprintf "%s: remote outcome uncertain; stage %s and host lock retained. Inspect before serai unlock %s.\n%!" context stage (host_label env Compute_host)
-      end else release_lock env Compute_host) (fun () ->
-        secure_remote_stage env ~target:env.compute_target ~subtree;
-        let cleanup () =
-          if not !retain_remote then
-            try
-              Progress.phase "cleanup";
-              ssh_checked env [env.compute_target; "sh -c " ^ Shell.quote
-              ("set -eu\nstage=" ^ Shell.quote stage ^ "\n[ -d \"$stage\" ] && [ ! -L \"$stage\" ]\nrm -rf -- \"$stage\"\n[ ! -e \"$stage\" ] && [ ! -L \"$stage\" ]")]
-            with e -> retain_remote := true; raise e in
-        let apply () =
-          Progress.phase "transfer";
-          let transfer source name =
-            (* A failed/interrupted transfer may leave a remote writer. *)
-            retain_remote := true;
+    with_retained_stage env ~command:label ~host:Compute_host
+      ~retained:(Printf.sprintf
+        "%s: remote outcome uncertain; stage %s and host lock retained. Inspect before serai unlock %s."
+        context stage (host_label env Compute_host))
+      ~prepare:(fun _ -> secure_remote_stage env ~target:env.compute_target ~subtree)
+      ~cleanup:(fun () ->
+        ssh_checked env [env.compute_target; "sh -c " ^ Shell.quote (remove_stage_script stage)])
+      (fun retention ->
+        Progress.phase "transfer";
+        (* A failed/interrupted transfer may leave a remote writer. *)
+        let transfer source name =
+          uncertain_while retention (fun () ->
             rsync_checked env
               ["-az"; "--no-owner"; "--no-group"; "--"; source;
-               env.compute_target ^ ":" ^ stage ^ "/" ^ name];
-            retain_remote := false in
-          List.iter (fun (source, name) -> transfer source name) files;
-          List.iter (fun (name, snapshot, _) -> transfer snapshot name) scripts;
-          let checks = List.map (fun (name, _, sha) ->
-            "file=" ^ Shell.quote (stage ^ "/" ^ name)
-            ^ "\n[ -f \"$file\" ] && [ ! -L \"$file\" ]\n[ \"$(sha256 -q \"$file\")\" = " ^ Shell.quote sha ^ " ]") scripts in
-          Progress.phase "apply";
-          (* Proc folds locally signalled exits into 128+signal. Those, SSH
-             transport failure and local exceptions leave the remote outcome unknown. *)
-          retain_remote := true;
-          let command = String.concat " "
-            (("SERAI_LOCK_HELD=1" :: List.map (fun (name, value) -> name ^ "=" ^ value) assignments)
-             @ [ "exec sh" ] @ List.map Shell.quote (args stage)) in
-          let code = ssh_run env [env.compute_target; "doas sh -c " ^ Shell.quote
-            (String.concat "\n" (["set -eu"] @ checks @ [command]))] in
-          retain_remote := code >= 128;
-          if code <> 0 then failwith (Printf.sprintf "%s: remote exited %d" label code) in
-        match apply () with
-        | () -> cleanup ()
-        | exception primary ->
-            let backtrace = Printexc.get_raw_backtrace () in
-            match cleanup () with
-            | () -> Printexc.raise_with_backtrace primary backtrace
-            | exception secondary ->
-                Printexc.raise_with_backtrace (Proc.Cleanup_failed (primary, secondary)) backtrace))
+               env.compute_target ^ ":" ^ stage ^ "/" ^ name]) in
+        List.iter (fun (source, name) -> transfer source name) files;
+        List.iter (fun (name, snapshot, _) -> transfer snapshot name) scripts;
+        let checks = List.map (fun (name, _, sha) ->
+          "file=" ^ Shell.quote (stage ^ "/" ^ name)
+          ^ "\n[ -f \"$file\" ] && [ ! -L \"$file\" ]\n[ \"$(sha256 -q \"$file\")\" = " ^ Shell.quote sha ^ " ]") scripts in
+        Progress.phase "apply";
+        (* Proc folds locally signalled exits into 128+signal. Those, SSH
+           transport failure and local exceptions leave the remote outcome unknown. *)
+        retention.uncertain <- true;
+        let command = String.concat " "
+          (("SERAI_LOCK_HELD=1" :: List.map (fun (name, value) -> name ^ "=" ^ value) assignments)
+           @ [ "exec sh" ] @ List.map Shell.quote (args stage)) in
+        let code = ssh_run env [env.compute_target; "doas sh -c " ^ Shell.quote
+          (String.concat "\n" (["set -eu"] @ checks @ [command]))] in
+        retention.uncertain <- code >= 128;
+        if code <> 0 then failwith (Printf.sprintf "%s: remote exited %d" label code)))
 
 let artifact_apply ?(convert=false) ?rehearse_ip env app_name ~store ~identity ~rollback =
   let env = app_env env app_name in
@@ -1051,8 +1027,7 @@ let artifact_apply ?(convert=false) ?rehearse_ip env app_name ~store ~identity ~
         (match Jail_test.retarget app ~ip with
          | Ok retargeted -> retargeted, Jail_test.name app
          | Error errors -> failwith ("artifact apply: " ^ Network_endpoint.errors_message errors)) in
-  let manifest, archive = match Artifact_store.load ~root:store ~identity with
-    | Ok entry -> entry | Error message -> failwith message in
+  let manifest, archive = ok_or_fail (Artifact_store.load ~root:store ~identity) in
   if manifest.name <> app_name || not (String.starts_with ~prefix:"FreeBSD:" manifest.target_abi)
   then failwith "artifact apply: workload or operating system mismatch";
   let settings = match source_release_settings app_name app.strategy, app.strategy, manifest.input with
@@ -1064,10 +1039,7 @@ let artifact_apply ?(convert=false) ?rehearse_ip env app_name ~store ~identity ~
         { release = package; check_path = s.check_path; anchor = "/usr/local/bin/" ^ package;
           health_status = status; migrate = false; service_status }
     | None, Strategy_config.Fetch_binary s, Artifact_manifest.Upstream_binary input ->
-        let url = match String.split_on_char '$' s.binary_url_template with
-          | [before; after] when String.starts_with ~prefix:"{VERSION}" after ->
-              before ^ input.version ^ String.sub after 9 (String.length after - 9)
-          | _ -> failwith "artifact apply: invalid binary URL template" in
+        let url = binary_url ~context:"artifact apply" ~template:s.binary_url_template ~version:input.version in
         if input.url <> url || (not rollback && (input.version <> s.version || input.sha256 <> s.binary_sha256))
         then failwith "artifact apply: immutable input does not match the declaration";
         { release = s.binary_name; check_path = s.check_path; anchor = "/usr/local/bin/" ^ s.binary_name;
@@ -1104,9 +1076,7 @@ let probe_releases env app_name =
   let env = app_env env app_name in
   match ssh_capture env [ env.compute_target; "doas sh -c " ^ Shell.quote (Release_probe.script ~app:app_name) ] with
   | 0, output -> (
-      match Release_probe.check ~app:app_name output with
-      | Ok releases -> releases
-      | Error message -> failwith message)
+      ok_or_fail (Release_probe.check ~app:app_name output))
   | code, _ ->
       failwith (Printf.sprintf "probing %s's releases on %s failed (exit %d)"
         app_name (host_label env Compute_host) code)
@@ -1602,8 +1572,6 @@ let install_edge_logging_component ?(action = Normal_logging) env component =
       ssh_checked env
         [ env.edge_target; Printf.sprintf "sudo bash %s/edge/%s%s" env.remote_stage script (logging_action_arg action) ])
 
-let fail_on_error = function Ok () -> () | Error msg -> failwith msg
-
 (* Every name and ip a test jail must not take: the apps' and guests'. *)
 let declared_endpoints env =
   List.map App_config.endpoint env.config @ Network_endpoint.to_list env.endpoints
@@ -1621,9 +1589,9 @@ let validate_test_jail env (app : App_config.t) ~ip =
   let test_name = Jail_test.name app in
   validate_app_name test_name;
   let declared = declared_endpoints env in
-  fail_on_error
+  ok_or_fail
     (Jail_test.validate_name ~declared:(List.map (fun (e : Network_endpoint.t) -> e.name) declared) test_name);
-  fail_on_error (Jail_test.validate_ip ~host:(jail_host env app.endpoint.name)
+  ok_or_fail (Jail_test.validate_ip ~host:(jail_host env app.endpoint.name)
     ~declared:(List.map (fun (e : Network_endpoint.t) -> e.ip) declared) ip);
   test_name
 
@@ -1700,7 +1668,7 @@ let jail_test_destroy env app_name =
   let env = app_env env app_name in
   let test_name = Jail_test.name app in
   validate_app_name test_name;
-  fail_on_error
+  ok_or_fail
     (Jail_test.validate_name
        ~declared:(List.map (fun (e : Network_endpoint.t) -> e.name) (declared_endpoints env))
        test_name);
@@ -1711,9 +1679,7 @@ let jail_test_destroy env app_name =
     | Invalid_argument msg -> failwith ("jail-test --destroy: " ^ msg)
   in
   let target =
-    match Jail_test.validate_destroy_target ~name:test_name ?dataset () with
-    | Ok target -> target
-    | Error msg -> failwith msg
+    ok_or_fail (Jail_test.validate_destroy_target ~name:test_name ?dataset ())
   in
   let script = Jail_test.destroy_script target in
   announce "jail-test %s --destroy" app.endpoint.name;
@@ -1762,10 +1728,8 @@ let new_app env name ~kind ~repo ~hostname =
   let topology_path = Layout.topology env.layout in
   let topology = read topology_path in
   let templates = Caddy_render.template_names (Layout.caddy_sites env.layout) in
-  let plan = match App_scaffold.plan declaration ~topology ~templates
-                     { name; kind; repo_path = repo; source; hostname } with
-    | Ok plan -> plan
-    | Error message -> failwith message in
+  let plan = ok_or_fail (App_scaffold.plan declaration ~topology ~templates
+                     { name; kind; repo_path = repo; source; hostname }) in
   let app_dir = Layout.app_dir env.layout name in
   List.iter (fun path ->
       if Sys.file_exists path then failwith ("new: " ^ path ^ " already exists"))
@@ -1868,11 +1832,10 @@ let prepare_up ?local_source ?(target = Live) ~plan_only env app_name ~revision 
   let rehearse_ip = match target with Rehearse ip -> Some ip | Live | Update -> None in
   let topology = match env.topology with
     | Some topology -> topology | None -> failwith "up: configured topology required" in
-  let inputs = match Up_inputs.of_app ~topology app with
-    | Ok inputs -> inputs | Error message -> failwith message in
+  let inputs = ok_or_fail (Up_inputs.of_app ~topology app) in
   let env = app_env env app_name in
-  let ok = function Ok value -> value | Error message -> failwith message in
-  (match Artifact_store.validate_root store with Ok () -> () | Error m -> failwith m);
+  let ok = ok_or_fail in
+  ok_or_fail (Artifact_store.validate_root store);
   (* A rehearsal deploys into the test jail <app>test at [ip], probed
      read-only first: does it exist, and is its env in place. A missing jail
      is created, and the run stops for the operator to write its env. *)
@@ -1924,7 +1887,7 @@ let prepare_up ?local_source ?(target = Live) ~plan_only env app_name ~revision 
   let _, release_name, packages, compiler = artifact_source_configuration env app_name opam_repository in
   let recipe_sha256 =
     let local = Filename.temp_dir "serai-up-recipe" "" in
-    Fun.protect ~finally:(fun () -> artifact_remove_tree local) (fun () ->
+    Fun.protect ~finally:(fun () -> remove_tree local) (fun () ->
       (fst (artifact_source_recipe ~opam_snapshots env ~local ~base_sha256 ~release_name ~packages ~compiler
               ~opam_repository ~web_bundle:(artifact_web_bundle env app_name))).sha256) in
   let existing = ok (Artifact_store.find ~root:store ~f:(fun (m : Artifact_manifest.t) ->
@@ -2139,23 +2102,20 @@ let artifact_build_guest_store ?reuse env name ~revision ~opam_repository:(repos
   let workload = guest_workload "artifact build" guest in
   validate_stage env.remote_stage;
   validate_app_name env.lock_token;
-  (match Artifact_store.validate_root store with Ok () -> () | Error message -> failwith message);
+  ok_or_fail (Artifact_store.validate_root store);
   let selected = Option.map (fun identity ->
     match Artifact_store.load ~root:store ~identity with
     | Ok (manifest, _) -> manifest | Error message -> failwith message) reuse in
   let _, checkout = resolve_source_checkout env guest in
   let local = Filename.temp_dir "serai-guest-artifact" "" in
-  Fun.protect ~finally:(fun () -> artifact_remove_tree local) (fun () ->
+  Fun.protect ~finally:(fun () -> remove_tree local) (fun () ->
     Progress.phase "source";
     let snapshot checkout revision label =
       let path = Filename.concat local label in
-      let commit = match Source_snapshot.stage ~jj_bin:env.jj_bin ~checkout ~revision ~out:path with
-        | Ok value -> value | Error message -> failwith message in
-      let inventory = match Source_inventory.create ~root:path ~commit with
-        | Ok value -> value | Error message -> failwith message in
+      let commit = ok_or_fail (Source_snapshot.stage ~jj_bin:env.jj_bin ~checkout ~revision ~out:path) in
+      let inventory = ok_or_fail (Source_inventory.create ~root:path ~commit) in
       let receipt = Filename.concat local (label ^ "-inventory") in
-      Out_channel.with_open_bin receipt (fun channel -> output_string channel (Source_inventory.canonical inventory));
-      Unix.chmod receipt 0o600;
+      write_private receipt (Source_inventory.canonical inventory);
       path, receipt, commit, Source_inventory.identity inventory in
     let source, source_receipt, source_commit, source_sha = snapshot checkout revision "source" in
     let repository, repo_receipt, repo_commit, repo_sha = snapshot repository_checkout repository_revision "repository" in
@@ -2165,10 +2125,9 @@ let artifact_build_guest_store ?reuse env name ~revision ~opam_repository:(repos
      | exception Unix.Unix_error _ -> failwith "artifact build: missing opam repository marker");
     Progress.phase "recipe";
     let recipe_dir = Filename.concat local "recipe" in
-    let recipe = match Artifact_recipe.stage_guest ~lib_dir:(Layout.lib_dir env.layout) ~out:recipe_dir
+    let recipe = ok_or_fail (Artifact_recipe.stage_guest ~lib_dir:(Layout.lib_dir env.layout) ~out:recipe_dir
       ~project:workload.project ~target:workload.target ~release_name:workload.release
-      ~compiler ~repository_commit:repo_commit ~repository_sha256:repo_sha with
-      | Ok value -> value | Error message -> failwith message in
+      ~compiler ~repository_commit:repo_commit ~repository_sha256:repo_sha) in
     match selected with
     | Some manifest ->
         Progress.phase "reuse";
@@ -2188,30 +2147,17 @@ let artifact_build_guest_store ?reuse env name ~revision ~opam_repository:(repos
     Unix.mkdir output 0o700;
     let shell = String.concat " " ((env.ssh_bin :: guest_ssh_options env) @ guest_jump_options env guest) in
     let remote path = guest_target guest ^ ":" ^ stage ^ "/" ^ path in
-    let retain_remote = ref false in
     let ssh command = ssh_checked env (guest_connection env guest @ [command]) in
-    let transfer src dst =
-      retain_remote := true;
-      rsync_checked env ["-az"; "--no-owner"; "--no-group"; "-e"; shell; "--"; src; dst];
-      retain_remote := false in
-    ignore (acquire_lock env ~command:("artifact build " ^ name) (Guest guest));
-    Fun.protect ~finally:(fun () ->
-      if !retain_remote then begin
-        Progress.outcome_unknown ();
-        Printf.eprintf "artifact build: %s stage %s and guest lock retained; inspect before serai unlock %s.\n%!"
-          name stage name
-      end else release_lock env (Guest guest)) (fun () ->
-      retain_remote := true;
-      ssh (secure_remote_stage_script ~stage:env.remote_stage ~subtree);
-      retain_remote := false;
-      let cleanup () = if not !retain_remote then begin
-        Progress.phase "cleanup";
-        retain_remote := true;
-        ssh ("set -eu\n# artifact-guest-cleanup:\nstage=" ^ Shell.quote stage
-          ^ "\n[ -d \"$stage\" ] && [ ! -L \"$stage\" ]\nrm -rf -- \"$stage\"\n[ ! -e \"$stage\" ] && [ ! -L \"$stage\" ]");
-        retain_remote := false
-      end in
-      let build () =
+    with_retained_stage env ~command:("artifact build " ^ name) ~host:(Guest guest)
+      ~retained:(Printf.sprintf
+        "artifact build: %s stage %s and guest lock retained; inspect before serai unlock %s." name stage name)
+      ~prepare:(fun retention ->
+        uncertain_while retention (fun () -> ssh (secure_remote_stage_script ~stage:env.remote_stage ~subtree)))
+      ~cleanup:(fun () -> ssh (remove_stage_script ~marker:"artifact-guest-cleanup" stage))
+      (fun retention ->
+        let transfer src dst =
+          uncertain_while retention (fun () ->
+            rsync_checked env ["-az"; "--no-owner"; "--no-group"; "-e"; shell; "--"; src; dst]) in
         Progress.phase "transfer";
         transfer (source ^ "/") (remote "source/");
         transfer source_receipt (remote "source-inventory");
@@ -2229,20 +2175,12 @@ let artifact_build_guest_store ?reuse env name ~revision ~opam_repository:(repos
           stage ^ "/repository-inventory"; repo_sha; compiler; stage ^ "/output";
           workload.project; workload.target; workload.release] in
         Progress.phase "build";
-        retain_remote := true;
-        ssh (String.concat "\n" (["set -eu"] @ checks @
-          ["exec sh " ^ String.concat " " (List.map Shell.quote args)]));
-        retain_remote := false;
+        uncertain_while retention (fun () ->
+          ssh (String.concat "\n" (["set -eu"] @ checks @
+            ["exec sh " ^ String.concat " " (List.map Shell.quote args)])));
         Progress.phase "transfer";
         List.iter (fun file -> transfer (remote ("output/" ^ file)) (Filename.concat output file))
-          ["release.tar"; "release.sha256"; "target-abi"; "dependencies"] in
-      match build () with
-      | () -> cleanup ()
-      | exception primary ->
-          let backtrace = Printexc.get_raw_backtrace () in
-          (match cleanup () with
-           | () -> Printexc.raise_with_backtrace primary backtrace
-           | exception secondary -> Printexc.raise_with_backtrace (Proc.Cleanup_failed (primary, secondary)) backtrace));
+          ["release.tar"; "release.sha256"; "target-abi"; "dependencies"]);
     Progress.phase "verify";
     let read file limit =
       let path = Filename.concat output file in
@@ -2257,15 +2195,13 @@ let artifact_build_guest_store ?reuse env name ~revision ~opam_repository:(repos
     let target_abi = match String.split_on_char '\n' (read "target-abi" 129) with
       | [value; ""] -> value | _ -> failwith "artifact build: invalid Linux ABI receipt" in
     artifact_guest_abi target_abi;
-    let dependencies = match Artifact_manifest.dependencies_of_inventory (read "dependencies" 1048576) with
-      | Ok value -> value | Error message -> failwith message in
+    let dependencies = ok_or_fail (Artifact_manifest.dependencies_of_inventory (read "dependencies" 1048576)) in
     (match dependencies with
      | [{Artifact_manifest.name="opam-repository"; version; sha256}]
        when String.equal version repo_commit && String.equal sha256 repo_sha -> ()
      | _ -> failwith "artifact build: guest repository receipt mismatch");
-    let manifest = match Artifact_manifest.create ~name ~source_commit ~target_abi ~dependencies
-      ~recipe_sha256:recipe.sha256 ~release_name:workload.release ~archive_sha256 with
-      | Ok value -> value | Error message -> failwith message in
+    let manifest = ok_or_fail (Artifact_manifest.create ~name ~source_commit ~target_abi ~dependencies
+      ~recipe_sha256:recipe.sha256 ~release_name:workload.release ~archive_sha256) in
     Progress.phase "publish";
     match Artifact_store.publish ~root:store ~manifest ~archive with
     | Ok _ -> Artifact_manifest.identity manifest | Error message -> failwith message)
@@ -2275,8 +2211,7 @@ let artifact_apply_guest ?(convert=false) env name ~store ~identity ~rollback =
   if convert && rollback then failwith "artifact apply: invalid guest operation";
   let guest = find_guest env name in
   let workload = guest_workload "artifact apply" guest in
-  let manifest, archive = match Artifact_store.load ~root:store ~identity with
-    | Ok value -> value | Error message -> failwith message in
+  let manifest, archive = ok_or_fail (Artifact_store.load ~root:store ~identity) in
   (match manifest.input with Artifact_manifest.Source_commit _ -> ()
    | _ -> failwith "artifact apply: a guest workload requires immutable source input");
   if manifest.name <> name || manifest.release_name <> workload.release then
@@ -2289,7 +2224,7 @@ let artifact_apply_guest ?(convert=false) env name ~store ~identity ~rollback =
   if not (env.confirm (Printf.sprintf "Apply %s artifact %s (files only; no database rollback)?" name identity)) then
     failwith "artifact apply: cancelled";
   let local = Filename.temp_dir "serai-guest-apply" "" in
-  Fun.protect ~finally:(fun () -> artifact_remove_tree local) (fun () ->
+  Fun.protect ~finally:(fun () -> remove_tree local) (fun () ->
     let scripts = List.map (fun name ->
       let path = Layout.lib_file env.layout name in
       if (Unix.lstat path).Unix.st_kind <> Unix.S_REG then failwith "artifact apply: unsafe guest helper";
@@ -2305,31 +2240,18 @@ let artifact_apply_guest ?(convert=false) env name ~store ~identity ~rollback =
     let stage = env.remote_stage ^ "/" ^ subtree in
     let shell = String.concat " " ((env.ssh_bin :: guest_ssh_options env) @ guest_jump_options env guest) in
     let ssh command = ssh_checked env (guest_connection env guest @ [command]) in
-    let retain_remote = ref false in
-    ignore (acquire_lock env ~command:("artifact apply " ^ name) (Guest guest));
-    Fun.protect ~finally:(fun () ->
-      if !retain_remote then begin
-        Progress.outcome_unknown ();
-        Printf.eprintf "artifact apply: %s stage %s and guest lock retained; inspect before serai unlock %s.\n%!"
-          name stage name
-      end else release_lock env (Guest guest)) (fun () ->
-      retain_remote := true;
-      ssh (secure_remote_stage_script ~stage:env.remote_stage ~subtree);
-      retain_remote := false;
-      let cleanup () = if not !retain_remote then begin
-        Progress.phase "cleanup";
-        retain_remote := true;
-        ssh ("set -eu\nstage=" ^ Shell.quote stage
-          ^ "\n[ -d \"$stage\" ] && [ ! -L \"$stage\" ]\nrm -rf -- \"$stage\"\n[ ! -e \"$stage\" ] && [ ! -L \"$stage\" ]");
-        retain_remote := false
-      end in
-      let apply () =
+    with_retained_stage env ~command:("artifact apply " ^ name) ~host:(Guest guest)
+      ~retained:(Printf.sprintf
+        "artifact apply: %s stage %s and guest lock retained; inspect before serai unlock %s." name stage name)
+      ~prepare:(fun retention ->
+        uncertain_while retention (fun () -> ssh (secure_remote_stage_script ~stage:env.remote_stage ~subtree)))
+      ~cleanup:(fun () -> ssh (remove_stage_script stage))
+      (fun retention ->
         Progress.phase "transfer";
         let transfer source name =
-          retain_remote := true;
-          rsync_checked env ["-az"; "--no-owner"; "--no-group"; "-e"; shell; "--"; source;
-            guest_target guest ^ ":" ^ stage ^ "/" ^ name];
-          retain_remote := false in
+          uncertain_while retention (fun () ->
+            rsync_checked env ["-az"; "--no-owner"; "--no-group"; "-e"; shell; "--"; source;
+              guest_target guest ^ ":" ^ stage ^ "/" ^ name]) in
         transfer archive "release.tar";
         List.iter (fun (name, path, _) -> transfer path name) scripts;
         let copy name digest = String.concat "\n"
@@ -2355,17 +2277,10 @@ let artifact_apply_guest ?(convert=false) env name ~store ~identity ~rollback =
                ^ String.concat " " [Shell.quote workload.release; Shell.quote workload.service_group;
                    Shell.quote identity; "\"$private/release.tar\""; Shell.quote manifest.archive_sha256]; activate]) in
         Progress.phase "apply";
-        retain_remote := true;
+        retention.uncertain <- true;
         let code = ssh_run env (("-t" :: guest_connection env guest) @ ["su -c " ^ Shell.quote command]) in
-        retain_remote := code >= 128;
-        if code <> 0 then failwith (Printf.sprintf "artifact apply %s: remote exited %d" name code) in
-      match apply () with
-      | () -> cleanup ()
-      | exception primary ->
-          let backtrace = Printexc.get_raw_backtrace () in
-          (match cleanup () with
-           | () -> Printexc.raise_with_backtrace primary backtrace
-           | exception secondary -> Printexc.raise_with_backtrace (Proc.Cleanup_failed (primary, secondary)) backtrace)))
+        retention.uncertain <- code >= 128;
+        if code <> 0 then failwith (Printf.sprintf "artifact apply %s: remote exited %d" name code)))
 
 let build_steps env guest (checkout, source_dir) =
   announce "build %s" (Guest_config.name guest);
