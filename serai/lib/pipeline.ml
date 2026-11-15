@@ -76,7 +76,11 @@ let rec step_of_sexp (sexp : Sexplib.Sexp.t) : step =
       Logging (Guest_sender guest, Option.get (guest_logging_step step))
   | List [ Atom "prefer"; hook_sexp; fallback ] ->
       Prefer (App_config.hook_of_sexp hook_sexp, step_of_sexp fallback)
-  | List (Atom "script" :: Atom name :: args) -> Script (name, List.map arg_of_sexp args)
+  | List (Atom "script" :: Atom name :: args) as sexp ->
+      (* Run from the app's directory, like an extra step: never a path out of it. *)
+      if not (Strategy_config.is_plain_file_name name) then
+        Sexplib.Conv.of_sexp_error "Pipeline: script must be a plain file name in the app's directory" sexp;
+      Script (name, List.map arg_of_sexp args)
   | sexp -> Sexplib.Conv.of_sexp_error "Pipeline.step_of_sexp: malformed step" sexp
 
 (* pipelines.sexp: a set of named default pipelines available to every app,

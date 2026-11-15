@@ -48,7 +48,7 @@ let of_string text =
   | exception Conv.Of_sexp_error (Failure message, _) -> Error message
   | exception Conv.Of_sexp_error (exn, _) -> Error (Printexc.to_string exn)
   | exception Failure message -> Error (context ^ ": " ^ message)
-  | exception Parsing.Parse_error -> Error (context ^ ": unreadable")
+  | exception Sexplib.Sexp.Parse_error { err_msg; _ } -> Error (context ^ ": " ^ err_msg)
 
 let ( let* ) = Result.bind
 

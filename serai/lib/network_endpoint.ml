@@ -105,7 +105,10 @@ let field_names = [ "name"; "ip"; "hostname"; "tailnet_ports"; "operator_ports" 
 let named_port_of_sexp (sexp : Sexplib.Sexp.t) =
   match sexp with
   | List [ Atom port_name; Atom port ] -> (
-      match Stdlib.int_of_string_opt port with
+      (* Decimal digits only: int_of_string would take 0x1f90 and 8_080. *)
+      let decimal = String.length port > 0 && String.length port <= 5
+                    && String.for_all port ~f:Char.is_digit in
+      match (if decimal then Stdlib.int_of_string_opt port else None) with
       | Some port -> { port_name; port }
       | None -> Sexplib.Conv.of_sexp_error (context ^ ": expected an integer port") sexp)
   | sexp -> Sexplib.Conv.of_sexp_error (context ^ ": expected (port_name port)") sexp

@@ -120,6 +120,15 @@ let () =
   config root web "echo broken >&2; exit 3\n";
   check "fixture: a config /bin/sh cannot source is named, with what it said"
     (List.mem (Filename.concat root web ^ ": cannot be sourced: broken") (declaration_drift root));
+  (* More than a pipe holds on stderr, and a read of stdin: neither may hang. *)
+  config root web
+    "i=0; while [ $i -lt 4000 ]; do echo 'a line of noise long enough to fill a pipe buffer quickly' >&2; i=$((i+1)); done
+     read -r _ || true
+exit 3
+";
+  check "fixture: a config that floods stderr and reads stdin is reported, not waited on"
+    (List.exists (String.starts_with ~prefix:(Filename.concat root web ^ ": cannot be sourced"))
+       (declaration_drift root));
   Sys.remove (Filename.concat root web);
   check "fixture: an app without a config of its own has nothing to drift"
     (not (List.exists (fun error -> String.starts_with ~prefix:(Filename.concat root web) error)

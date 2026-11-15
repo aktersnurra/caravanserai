@@ -320,7 +320,8 @@ let () =
       (parse "((config (git file:///c) (bookmark main)) (signers (ABCD)) (gnupghome /g))"
        = Ok { config_url = "file:///c"; config_bookmark = "main"; signers = [ "ABCD" ]; gnupghome = "/g" });
     List.iter (fun (name, text) -> check ("settings refused: " ^ name) (Result.is_error (parse text)))
-      [ "no signers", "((config (git u) (bookmark main)) (signers ()) (gnupghome /g))";
+      [ "a stray parenthesis", "((config (git u) (bookmark main)) (signers (A)) (gnupghome /g)))";
+        "no signers", "((config (git u) (bookmark main)) (signers ()) (gnupghome /g))";
         "a relative gnupghome", "((config (git u) (bookmark main)) (signers (A)) (gnupghome g))";
         "a missing bookmark", "((config (git u)) (signers (A)) (gnupghome /g))";
         "an unknown field", "((config (git u) (bookmark main)) (signers (A)) (gnupghome /g) (extra x))";

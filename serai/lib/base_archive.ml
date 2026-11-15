@@ -28,16 +28,24 @@ let ensure ~curl_bin ~cache ~url ~sha256 =
   let* () = private_directory directory in
   let archive = Filename.concat directory (sha256 ^ ".txz") in
   if Sys.file_exists archive then
-    if file_sha256 archive = sha256 then Ok archive
-    else Error ("base archive: cached " ^ archive ^ " does not match its digest; remove it")
+    match file_sha256 archive with
+    | digest when digest = sha256 -> Ok archive
+    | _ -> Error ("base archive: cached " ^ archive ^ " does not match its digest; remove it")
+    | exception Sys_error message -> Error ("base archive: " ^ message)
   else begin
     let partial = Filename.temp_file ~temp_dir:directory "download-" ".partial" in
     let discard () = if Sys.file_exists partial then Sys.remove partial in
-    match Proc.run curl_bin [ "-fsSL"; "--max-time"; "1800"; "-o"; partial; "--"; url ] with
-    | 0 when file_sha256 partial = sha256 ->
-        Unix.chmod partial 0o600;
-        Unix.rename partial archive;
-        Ok archive
-    | 0 -> discard (); Error ("base archive: " ^ url ^ " does not match the declared SHA-256")
-    | code -> discard (); Error (Printf.sprintf "base archive: downloading %s failed (exit %d)" url code)
+    (* Whatever ends the download -- an interrupt included -- the partial
+       file goes; only a verified one is renamed into place. *)
+    Fun.protect ~finally:discard (fun () ->
+      match Proc.run curl_bin [ "-fsSL"; "--max-time"; "1800"; "-o"; partial; "--"; url ] with
+      | 0 ->
+          (match file_sha256 partial with
+           | digest when digest = sha256 ->
+               Unix.chmod partial 0o600;
+               Unix.rename partial archive;
+               Ok archive
+           | _ -> Error ("base archive: " ^ url ^ " does not match the declared SHA-256")
+           | exception Sys_error message -> Error ("base archive: " ^ message))
+      | code -> Error (Printf.sprintf "base archive: downloading %s failed (exit %d)" url code))
   end

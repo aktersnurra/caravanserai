@@ -28,7 +28,7 @@ let config_of_string text =
   | exception Conv.Of_sexp_error (Failure message, _) -> Error message
   | exception Conv.Of_sexp_error (exn, _) -> Error (Printexc.to_string exn)
   | exception Failure message -> Error (context ^ ": " ^ message)
-  | exception Parsing.Parse_error -> Error (context ^ ": unreadable")
+  | exception Sexplib.Sexp.Parse_error { err_msg; _ } -> Error (context ^ ": " ^ err_msg)
 
 let deploy_bookmark = "deploy"
 let configuration_mirror = "configuration.serai"
@@ -170,7 +170,10 @@ let examine ~plan deps config paths ~handled =
       let apps = List.map (fun ({ name; _ } as app) ->
           let outcome =
             try app_outcome ~plan deps config paths env ~handled:(handled name) app
-            with Failure message -> Not_applied { commit = None; message } in
+            with
+            | Failure message -> Not_applied { commit = None; message }
+            | (Sys.Break | Out_of_memory | Stack_overflow) as fatal -> raise fatal
+            | error -> Not_applied { commit = None; message = "unexpected error: " ^ Printexc.to_string error } in
           name, outcome) (source_apps env) in
       { configuration = Configuration commit; apps }
 

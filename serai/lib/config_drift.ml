@@ -23,14 +23,32 @@ let message = function
 (* Every variable the config sets, or what /bin/sh said when it could not
    source it. *)
 let config_variables path =
-  let stdout, stdin, stderr =
-    Unix.open_process_args_full "/bin/sh"
-      [| "/bin/sh"; "-c"; {|set -a; . "$1"; exec env|}; "sh"; path |]
-      [| "PATH=/usr/bin:/bin" |]
+  (* stderr goes to a file and stdin is /dev/null: two pipes read one after
+     the other deadlock once the config fills the second, and a config that
+     reads its input would wait for ever. *)
+  let errors_file = Filename.temp_file "serai-config" ".err" in
+  let status, output, errors =
+    Fun.protect ~finally:(fun () -> try Sys.remove errors_file with Sys_error _ -> ()) (fun () ->
+      let read_end, write_end = Unix.pipe ~cloexec:true () in
+      let pid =
+        Fun.protect ~finally:(fun () -> Unix.close write_end) (fun () ->
+          let null = Unix.openfile "/dev/null" [ Unix.O_RDONLY; Unix.O_CLOEXEC ] 0 in
+          Fun.protect ~finally:(fun () -> Unix.close null) (fun () ->
+            let errors = Unix.openfile errors_file [ Unix.O_WRONLY; Unix.O_TRUNC; Unix.O_CLOEXEC ] 0o600 in
+            Fun.protect ~finally:(fun () -> Unix.close errors) (fun () ->
+              Unix.create_process_env "/bin/sh"
+                [| "/bin/sh"; "-c"; {|set -a; . "$1"; exec env|}; "sh"; path |]
+                [| "PATH=/usr/bin:/bin" |] null write_end errors)))
+      in
+      let output =
+        let channel = Unix.in_channel_of_descr read_end in
+        Fun.protect ~finally:(fun () -> In_channel.close channel) (fun () -> In_channel.input_all channel) in
+      let rec wait () =
+        try snd (Unix.waitpid [] pid) with Unix.Unix_error (Unix.EINTR, _, _) -> wait () in
+      let status = wait () in
+      status, output, In_channel.with_open_bin errors_file In_channel.input_all)
   in
-  let output = In_channel.input_all stdout in
-  let errors = In_channel.input_all stderr in
-  match Unix.close_process_full (stdout, stdin, stderr) with
+  match status with
   | Unix.WEXITED 0 ->
       Ok
         (String.split_on_char '\n' output

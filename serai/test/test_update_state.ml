@@ -50,6 +50,9 @@ let () =
        && Array.to_list (Sys.readdir dir) |> List.for_all (fun name -> name = "state.sexp" || name = "lock"));
     write (Filename.concat dir "state.sexp") "((apps";
     check "an unreadable state file is an error, never empty" (Result.is_error (load ~dir));
+    write (Filename.concat dir "state.sexp") "((apps ())))";
+    check "a state file with a stray parenthesis is an error, not an exception"
+      (match load ~dir with Error _ -> true | Ok _ -> false | exception _ -> false);
     let shared = Filename.concat root "shared" in
     Unix.mkdir shared 0o755;
     check "a state directory others can read is refused" (Result.is_error (load ~dir:shared));

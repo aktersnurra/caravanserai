@@ -1735,7 +1735,7 @@ let jail_test_destroy env app_name =
 (* serai new: the declaration a new app starts from, and nothing else: no
    host is touched. The files are written only if none exists, and the
    whole declaration must load and render afterwards, or they are removed
-   and topology.sexp is put back. *)
+   and serai.sexp is put back. *)
 type new_kind = New_phoenix | New_ocaml
 
 let new_app env name ~kind ~repo ~hostname =
@@ -1944,9 +1944,15 @@ let prepare_up ?local_source ?(target = Live) ~plan_only env app_name ~revision 
   let apply env =
     let statuses = Array.make (List.length up_steps) Not_run in
     let set step status = statuses.(step_index step) <- status in
+    (* Any error a step raises is that step's outcome -- a retained lock's
+       Cleanup_failed or a Unix_error as much as a Failure -- so the report
+       still says which steps ran. Only an interrupt passes through. *)
     let run step f = match f () with
       | value -> set step Done; Ok value
-      | exception Failure message -> set step (Failed message); Error (Step_failed (step, message)) in
+      | exception ((Sys.Break | Out_of_memory | Stack_overflow) as fatal) -> raise fatal
+      | exception error ->
+          let message = match error with Failure message -> message | error -> Printexc.to_string error in
+          set step (Failed message); Error (Step_failed (step, message)) in
     let ( let* ) = Result.bind in
     let result =
       let* () = match jail with
