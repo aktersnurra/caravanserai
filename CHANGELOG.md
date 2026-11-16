@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-11-16: Operator access to edge-host ports
+
+- `edge.sexp` takes an optional `operator_edge_ports`, e.g.
+  `((imaps 993) (submission 587))`: ports on the edge host itself that the
+  operator's devices may reach over the tailnet. The ACL renders them as one
+  operator rule to `tag:vps`, and omits it when none are declared, so
+  existing policies render unchanged.
+
 ## 2026-11-05: `serai drift`
 
 - `serai drift [--json]` shows in one read-only call where the live system
