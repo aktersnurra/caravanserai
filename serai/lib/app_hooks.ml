@@ -10,9 +10,9 @@ open Remote_host
 let render_jail_script ~command (app : App_config.t) =
   try Strategy.render_jail_script app with
   | Sexplib.Conv.Of_sexp_error (exn, _) ->
-      failwith
+      Run_state.fail ~cause:"render_failed"
         (Printf.sprintf "%s: %s's jail script does not render: %s" command app.endpoint.name (Printexc.to_string exn))
-  | Invalid_argument msg -> failwith (Printf.sprintf "%s: %s" command msg)
+  | Invalid_argument msg -> Run_state.fail ~cause:"render_failed" (Printf.sprintf "%s: %s" command msg)
 
 (* The app's jail script is rendered here and staged as compute/apps/<app>/jail
    in the staged app directory, beside the extra steps it runs, and run. *)

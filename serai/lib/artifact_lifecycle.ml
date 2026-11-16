@@ -12,18 +12,18 @@ let artifact_install env app_name ~identity ~archive ~sha256 =
   let env = app_env env app_name in
   (match app.strategy with
   | Strategy_config.Freebsd_native_elixir _ -> ()
-  | _ -> failwith "artifact install currently supports Phoenix releases only");
+  | _ -> Run_state.fail ~cause:"unsupported_for_workload" "artifact install currently supports Phoenix releases only");
   let safe c = is_stage_char c || c = '.' in
   if identity = "" || identity = "." || identity = ".."
      || String.length identity > 128 || not (String.for_all safe identity) then
-    failwith "invalid artifact identity";
+    Run_state.fail ~cause:"invalid_argument" "invalid artifact identity";
   if String.length sha256 <> 64 || not (String.for_all (function
       | '0' .. '9' | 'a' .. 'f' | 'A' .. 'F' -> true | _ -> false) sha256) then
-    failwith "invalid artifact SHA-256";
+    Run_state.fail ~cause:"invalid_argument" "invalid artifact SHA-256";
   (match Unix.lstat archive with
   | { Unix.st_kind = Unix.S_REG; _ } -> ()
-  | _ -> failwith "artifact archive must be a regular file"
-  | exception Unix.Unix_error _ -> failwith "artifact archive does not exist");
+  | _ -> Run_state.fail ~cause:"invalid_argument" "artifact archive must be a regular file"
+  | exception Unix.Unix_error _ -> Run_state.fail ~cause:"input_unavailable" "artifact archive does not exist");
   validate_stage env.remote_stage;
   let stage = Printf.sprintf "%s/artifacts/%s/%s" env.remote_stage app.endpoint.name identity in
   let installer = Layout.lib_file env.layout "artifact_install.sh" in
@@ -58,9 +58,9 @@ let run_build_jail env retention command =
   | 0 -> retention.uncertain <- false
   | code when code = build_torn_down_exit ->
       retention.uncertain <- false;
-      failwith "artifact build: the build failed (output above); its build jail was removed"
+      Run_state.fail ~cause:"build_failed" "artifact build: the build failed (output above); its build jail was removed"
   | code ->
-      failwith (Printf.sprintf
+      Run_state.fail ~cause:"command_failed" (Printf.sprintf
         "artifact build: remote exited %d; the build jail may remain, inspect before unlocking" code)
 
 type artifact_build_candidate = {
@@ -72,12 +72,15 @@ type artifact_build_candidate = {
   manifest : Artifact_manifest.t;
 }
 
-let artifact_file_sha256 = Fs.file_sha256 ~not_regular:"artifact build: input must be a regular file"
+let artifact_file_sha256 path =
+  let not_regular = "artifact build: input must be a regular file" in
+  try Fs.file_sha256 ~not_regular path
+  with Failure message when message = not_regular -> Run_state.fail ~cause:"invalid_argument" message
 
 (* The inventory of the tree staged at [root], written as [receipt] to
    travel with it: its identity. *)
 let write_inventory ~root ~commit ~receipt =
-  let inventory = ok_or_fail (Source_inventory.create ~root ~commit) in
+  let inventory = ok_or_fail ~cause:"invalid_source" (Source_inventory.create ~root ~commit) in
   write_private receipt (Source_inventory.canonical inventory);
   Source_inventory.identity inventory
 
@@ -85,8 +88,8 @@ let write_inventory ~root ~commit ~receipt =
 let require_opam_repository path =
   match Unix.lstat (Filename.concat path "repo") with
   | { Unix.st_kind = Unix.S_REG; _ } -> ()
-  | _ -> failwith "artifact build: invalid opam repository marker"
-  | exception Unix.Unix_error _ -> failwith "artifact build: missing opam repository marker"
+  | _ -> Run_state.fail ~cause:"invalid_source" "artifact build: invalid opam repository marker"
+  | exception Unix.Unix_error _ -> Run_state.fail ~cause:"invalid_source" "artifact build: missing opam repository marker"
 
 (* The engine's helpers [names] copied privately into [local], so what is
    sent is what was hashed: each as (name, copy, digest). *)
@@ -97,7 +100,7 @@ let snapshot_helpers env ~context ~local names =
     In_channel.with_open_bin source (fun input ->
       if (Unix.lstat source).Unix.st_kind <> Unix.S_REG
          || (Unix.fstat (Unix.descr_of_in_channel input)).Unix.st_kind <> Unix.S_REG
-      then failwith (context ^ ": unsafe helper");
+      then Run_state.fail ~cause:"input_unavailable" (context ^ ": unsafe helper");
       write_private snapshot (In_channel.input_all input));
     name, snapshot, artifact_file_sha256 snapshot) names
 
@@ -108,43 +111,43 @@ let read_evidence ~dir name limit =
   | { Unix.st_kind = Unix.S_REG; _ } ->
       In_channel.with_open_bin file (fun channel ->
         if In_channel.length channel > Int64.of_int limit then
-          failwith ("artifact build: oversized evidence: " ^ name);
+          Run_state.fail ~cause:"invalid_build_output" ("artifact build: oversized evidence: " ^ name);
         In_channel.input_all channel)
-  | _ -> failwith ("artifact build: unsafe evidence: " ^ name)
-  | exception Unix.Unix_error _ -> failwith ("artifact build: missing evidence: " ^ name)
+  | _ -> Run_state.fail ~cause:"invalid_build_output" ("artifact build: unsafe evidence: " ^ name)
+  | exception Unix.Unix_error _ -> Run_state.fail ~cause:"invalid_build_output" ("artifact build: missing evidence: " ^ name)
 
 (* The target-abi file's one line. *)
 let abi_evidence ~dir =
   match String.split_on_char '\n' (read_evidence ~dir "target-abi" 129) with
   | [ value; "" ] -> value
-  | _ -> failwith "artifact build: invalid target ABI"
+  | _ -> Run_state.fail ~cause:"invalid_build_output" "artifact build: invalid target ABI"
 
 let dependency_evidence ~dir =
-  ok_or_fail (Artifact_manifest.dependencies_of_inventory (read_evidence ~dir "dependencies" 1048576))
+  ok_or_fail ~cause:"invalid_build_output" (Artifact_manifest.dependencies_of_inventory (read_evidence ~dir "dependencies" 1048576))
 
 (* The base archive a build starts from: a regular file with the declared
    digest. [context] prefixes the refusal. *)
 let require_base_archive ~context ~base_archive ~base_sha256 =
-  if not (is_sha256 base_sha256) then failwith (context ^ ": invalid base SHA-256");
+  if not (is_sha256 base_sha256) then Run_state.fail ~cause:"invalid_argument" (context ^ ": invalid base SHA-256");
   (match Unix.lstat base_archive with
    | { Unix.st_kind = Unix.S_REG; _ } -> ()
-   | _ -> failwith (context ^ ": base archive must be regular")
-   | exception Unix.Unix_error _ -> failwith (context ^ ": base archive not found"));
+   | _ -> Run_state.fail ~cause:"invalid_argument" (context ^ ": base archive must be regular")
+   | exception Unix.Unix_error _ -> Run_state.fail ~cause:"input_unavailable" (context ^ ": base archive not found"));
   if artifact_file_sha256 base_archive <> base_sha256 then
-    failwith (context ^ ": base archive SHA-256 mismatch")
+    Run_state.fail ~cause:"input_mismatch" (context ^ ": base archive SHA-256 mismatch")
 
 (* The lock token names the build jail and its stage directory. *)
 let require_build_token env ~refusal =
   if env.lock_token = "" || String.length env.lock_token > 32
      || not (String.for_all (function 'a' .. 'z' | '0' .. '9' | '-' -> true | _ -> false) env.lock_token)
-  then failwith refusal
+  then Run_state.fail ~cause:"invalid_environment" refusal
 
 (* A pinned binary's URL: its template with ${VERSION} replaced. *)
 let binary_url ~context ~template ~version =
   match String.split_on_char '$' template with
   | [ before; after ] when String.starts_with ~prefix:"{VERSION}" after ->
       before ^ version ^ String.sub after 9 (String.length after - 9)
-  | _ -> failwith (context ^ ": invalid binary URL template")
+  | _ -> Run_state.fail ~cause:"invalid_declaration" (context ^ ": invalid binary URL template")
 
 let artifact_source_configuration env app_name opam_repository =
   match (find_app env app_name).strategy, opam_repository with
@@ -153,10 +156,10 @@ let artifact_source_configuration env app_name opam_repository =
   | Strategy_config.Freebsd_native_ocaml value, Some _ ->
       value.repo_path, app_name, value.packages, Some ("ocaml-base-compiler." ^ value.ocaml_switch)
   | Strategy_config.Freebsd_native_ocaml _, None ->
-      failwith "artifact build: OCaml requires immutable opam repository checkout and revision"
+      Run_state.fail ~cause:"invalid_argument" "artifact build: OCaml requires immutable opam repository checkout and revision"
   | Strategy_config.Freebsd_native_elixir _, Some _ ->
-      failwith "artifact build: Phoenix does not accept opam repository inputs"
-  | _ -> failwith "artifact build: expected declared source strategy"
+      Run_state.fail ~cause:"invalid_argument" "artifact build: Phoenix does not accept opam repository inputs"
+  | _ -> Run_state.fail ~cause:"unsupported_for_workload" "artifact build: expected declared source strategy"
 
 let artifact_web_bundle env app_name =
   match (find_app env app_name).strategy with
@@ -174,17 +177,17 @@ let artifact_build_web_bundle ~source ~script ~local =
   Proc.run_checked (Filename.concat work script) [ out ];
   (match Unix.lstat out with
    | { Unix.st_kind = Unix.S_DIR; _ } -> ()
-   | _ -> failwith "web bundle: output must be a directory"
-   | exception Unix.Unix_error _ -> failwith "web bundle: no output");
+   | _ -> Run_state.fail ~cause:"build_failed" "web bundle: output must be a directory"
+   | exception Unix.Unix_error _ -> Run_state.fail ~cause:"build_failed" "web bundle: no output");
   let names = Sys.readdir out in
-  if names = [||] then failwith "web bundle: empty output";
+  if names = [||] then Run_state.fail ~cause:"build_failed" "web bundle: empty output";
   Array.iter (fun name ->
     if name.[0] = '.' || not (String.for_all (function
         | 'a' .. 'z' | 'A' .. 'Z' | '0' .. '9' | '-' | '_' | '.' -> true | _ -> false) name)
-    then failwith ("web bundle: unsafe file name " ^ String.escaped name);
+    then Run_state.fail ~cause:"build_failed" ("web bundle: unsafe file name " ^ String.escaped name);
     match Unix.lstat (Filename.concat out name) with
     | { Unix.st_kind = Unix.S_REG; _ } -> ()
-    | _ -> failwith ("web bundle: not a regular file: " ^ name)) names;
+    | _ -> Run_state.fail ~cause:"build_failed" ("web bundle: not a regular file: " ^ name)) names;
   out
 
 let artifact_source_recipe ?opam_snapshots env ~local ~base_sha256 ~release_name ~packages ~compiler ~opam_repository ~web_bundle =
@@ -200,14 +203,14 @@ let artifact_source_recipe ?opam_snapshots env ~local ~base_sha256 ~release_name
               let path = Filename.concat local "repository" in
               Source_snapshot.stage ~jj_bin:env.jj_bin ~checkout ~revision ~out:path
               |> Result.map (fun commit -> commit, path) in
-        let commit, path = ok_or_fail (staged) in
+        let commit, path = ok_or_fail ~cause:"source_unavailable" (staged) in
         let receipt = Filename.concat local "repository-inventory" in
         let sha256 = write_inventory ~root:path ~commit ~receipt in
         require_opam_repository path;
         Artifact_recipe.stage_ocaml ~lib_dir:(Layout.lib_dir env.layout) ~out ~base_sha256 ~release_name ~packages
           ~compiler ~repository_commit:commit ~repository_sha256:sha256 ~web_bundle, Some (path, receipt, sha256)
-    | _ -> failwith "artifact build: inconsistent source recipe inputs" in
-  let recipe = ok_or_fail (staged) in
+    | _ -> Run_state.fail ~cause:"invalid_declaration" "artifact build: inconsistent source recipe inputs" in
+  let recipe = ok_or_fail ~cause:"source_unavailable" (staged) in
   recipe, repository
 
 let artifact_build_candidate ?checkout ?opam_repository ?opam_snapshots env app_name ~revision ~ip ~base_archive ~base_sha256 ~out =
@@ -217,16 +220,16 @@ let artifact_build_candidate ?checkout ?opam_repository ?opam_snapshots env app_
   let repo_path = Option.value checkout ~default:repo_path in
   validate_stage env.remote_stage;
   let declared = Network_endpoint.to_list env.endpoints |> List.map (fun endpoint -> endpoint.Network_endpoint.ip) in
-  ok_or_fail (Jail_test.validate_ip ~host:(jail_host env app_name) ~declared ip);
+  ok_or_fail ~cause:"invalid_argument" (Jail_test.validate_ip ~host:(jail_host env app_name) ~declared ip);
   require_base_archive ~context:"artifact build" ~base_archive ~base_sha256;
-  if out = "" || out = "." || out = ".." then failwith "artifact build: invalid output";
+  if out = "" || out = "." || out = ".." then Run_state.fail ~cause:"invalid_argument" "artifact build: invalid output";
   (match Unix.lstat out with
-   | _ -> failwith "artifact build: output already exists"
+   | _ -> Run_state.fail ~cause:"already_exists" "artifact build: output already exists"
    | exception Unix.Unix_error (Unix.ENOENT, _, _) -> ());
   (match Unix.lstat (Filename.dirname out) with
    | { Unix.st_kind = Unix.S_DIR; _ } -> ()
-   | _ -> failwith "artifact build: output parent must be a directory"
-   | exception Unix.Unix_error _ -> failwith "artifact build: output parent not found");
+   | _ -> Run_state.fail ~cause:"invalid_argument" "artifact build: output parent must be a directory"
+   | exception Unix.Unix_error _ -> Run_state.fail ~cause:"invalid_argument" "artifact build: output parent not found");
   require_build_token env ~refusal:"artifact build: invalid lock token for build jail";
   let local = Filename.temp_dir "serai-artifact-build" "" in
   Fun.protect ~finally:(fun () -> remove_tree local) (fun () ->
@@ -234,7 +237,7 @@ let artifact_build_candidate ?checkout ?opam_repository ?opam_snapshots env app_
     let source = Filename.concat local "source" in
     let source_commit, source_inventory_sha256, inventory_path =
       Progress.with_duration ~phase:"source" ~parent:None (fun () ->
-      let source_commit = ok_or_fail (Source_snapshot.stage ~jj_bin:env.jj_bin
+      let source_commit = ok_or_fail ~cause:"source_unavailable" (Source_snapshot.stage ~jj_bin:env.jj_bin
         ~checkout:repo_path ~revision ~out:source) in
       let inventory_path = Filename.concat local "inventory" in
       source_commit, write_inventory ~root:source ~commit:source_commit ~receipt:inventory_path, inventory_path) in
@@ -335,27 +338,27 @@ let artifact_build_candidate ?checkout ?opam_repository ?opam_snapshots env app_
           if not (is_sha256 archive_sha256)
              || (Unix.lstat archive).Unix.st_kind <> Unix.S_REG
              || artifact_file_sha256 archive <> archive_sha256 then
-            failwith "artifact build: candidate archive SHA-256 mismatch";
+            Run_state.fail ~cause:"invalid_build_output" "artifact build: candidate archive SHA-256 mismatch";
           let target_abi = abi_evidence ~dir in
           (match String.split_on_char ':' target_abi with
            | [ "FreeBSD"; major; arch ] when major <> "" && arch <> ""
                && String.for_all (function '0' .. '9' -> true | _ -> false) major
                && String.for_all (function 'a' .. 'z' | 'A' .. 'Z' | '0' .. '9' | '_' | '-' -> true | _ -> false) arch -> ()
-           | _ -> failwith "artifact build: invalid target ABI");
+           | _ -> Run_state.fail ~cause:"invalid_build_output" "artifact build: invalid target ABI");
           let dependencies = dependency_evidence ~dir in
           archive_sha256, target_abi, dependencies) in
-        let manifest = ok_or_fail (Artifact_manifest.create ~name:app_name ~source_commit ~target_abi
+        let manifest = ok_or_fail ~cause:"invalid_build_output" (Artifact_manifest.create ~name:app_name ~source_commit ~target_abi
           ~dependencies ~recipe_sha256 ~release_name ~archive_sha256) in
         Out_channel.with_open_bin (Filename.concat output_temp "manifest") (fun channel ->
           output_string channel (Artifact_manifest.canonical manifest));
         (match Unix.lstat out with
-         | _ -> failwith "artifact build: output already exists"
+         | _ -> Run_state.fail ~cause:"already_exists" "artifact build: output already exists"
          | exception Unix.Unix_error (Unix.ENOENT, _, _) -> ());
         Unix.rename output_temp out;
         { source_commit; source_inventory_sha256; target_abi; recipe_sha256; archive_sha256; manifest }))
 
 let artifact_build_store ?reuse ?checkout ?opam_repository ?opam_snapshots env app_name ~revision ~ip ~base_archive ~base_sha256 ~store =
-  ok_or_fail (Artifact_store.validate_root store);
+  ok_or_fail ~cause:"store_failed" (Artifact_store.validate_root store);
   let local = Filename.temp_dir "serai-artifact-publish" "" in
   Fun.protect ~finally:(fun () -> remove_tree local) (fun () ->
     match reuse with
@@ -368,15 +371,15 @@ let artifact_build_store ?reuse ?checkout ?opam_repository ?opam_snapshots env a
         match Artifact_store.publish ~root:store ~manifest:candidate.manifest
           ~archive:(Filename.concat out "release.tar") with
          | Ok _ -> Artifact_manifest.identity candidate.manifest
-         | Error message -> failwith message)
+         | Error message -> Run_state.fail ~cause:"store_failed" message)
     | Some identity ->
         Progress.phase "reuse";
-        let manifest, _ = ok_or_fail (Artifact_store.load ~root:store ~identity) in
+        let manifest, _ = ok_or_fail ~cause:"store_failed" (Artifact_store.load ~root:store ~identity) in
         let repo_path, release_name, packages, compiler =
           artifact_source_configuration env app_name opam_repository in
         let repo_path = Option.value checkout ~default:repo_path in
         require_base_archive ~context:"artifact reuse" ~base_archive ~base_sha256;
-        let source_commit = ok_or_fail (Source_snapshot.stage ~jj_bin:env.jj_bin
+        let source_commit = ok_or_fail ~cause:"source_unavailable" (Source_snapshot.stage ~jj_bin:env.jj_bin
           ~checkout:repo_path ~revision ~out:(Filename.concat local "source")) in
         let recipe, _ = artifact_source_recipe ?opam_snapshots env ~local ~base_sha256 ~release_name
           ~packages ~compiler ~opam_repository ~web_bundle:(artifact_web_bundle env app_name) in
@@ -386,7 +389,7 @@ let artifact_build_store ?reuse ?checkout ?opam_repository ?opam_snapshots env a
         if manifest.name <> app_name || not same_source
            || manifest.recipe_sha256 <> recipe.sha256
            || manifest.release_name <> release_name
-        then failwith "artifact reuse: requested inputs do not match stored artifact";
+        then Run_state.fail ~cause:"input_mismatch" "artifact reuse: requested inputs do not match stored artifact";
         identity)
 
 let artifact_build_executable_store ?reuse env app_name ~ip ~base_archive ~base_sha256 ~store =
@@ -403,26 +406,26 @@ let artifact_build_executable_store ?reuse env app_name ~ip ~base_archive ~base_
         Artifact_manifest.Upstream_binary {version=s.version; url; sha256=s.binary_sha256},
         ["SERAI_ARTIFACT_KIND=binary"; "SERAI_EXECUTABLE_SOURCE=" ^ Shell.quote url;
          "SERAI_EXECUTABLE_SHA256=" ^ Shell.quote s.binary_sha256]
-    | _ -> failwith "artifact build: expected package or pinned executable strategy" in
-  ok_or_fail (Artifact_store.validate_root store);
+    | _ -> Run_state.fail ~cause:"unsupported_for_workload" "artifact build: expected package or pinned executable strategy" in
+  ok_or_fail ~cause:"store_failed" (Artifact_store.validate_root store);
   validate_stage env.remote_stage;
   let declared = Network_endpoint.to_list env.endpoints |> List.map (fun e -> e.Network_endpoint.ip) in
-  ok_or_fail (Jail_test.validate_ip ~host:(jail_host env app_name) ~declared ip);
+  ok_or_fail ~cause:"invalid_argument" (Jail_test.validate_ip ~host:(jail_host env app_name) ~declared ip);
   require_base_archive ~context:"artifact build" ~base_archive ~base_sha256;
   require_build_token env ~refusal:"artifact build: invalid lock token";
   let local = Filename.temp_dir "serai-executable-build" "" in
   Fun.protect ~finally:(fun () -> remove_tree local) (fun () ->
     Progress.phase "recipe";
     let recipe_dir = Filename.concat local "recipe" in
-    let recipe = ok_or_fail (Artifact_recipe.stage_executable ~lib_dir:(Layout.lib_dir env.layout) ~out:recipe_dir
+    let recipe = ok_or_fail ~cause:"input_unavailable" (Artifact_recipe.stage_executable ~lib_dir:(Layout.lib_dir env.layout) ~out:recipe_dir
       ~base_sha256 ~release_name:release ~packages ~input) in
     match reuse with
     | Some identity ->
         Progress.phase "reuse";
-        let manifest, _ = ok_or_fail (Artifact_store.load ~root:store ~identity) in
+        let manifest, _ = ok_or_fail ~cause:"store_failed" (Artifact_store.load ~root:store ~identity) in
         if manifest.name <> app_name || manifest.input <> input
            || manifest.recipe_sha256 <> recipe.sha256 || manifest.release_name <> release
-        then failwith "artifact reuse: requested inputs do not match stored artifact";
+        then Run_state.fail ~cause:"input_mismatch" "artifact reuse: requested inputs do not match stored artifact";
         identity
     | None ->
     if not (approved env ~operation:"artifact.build"
@@ -441,7 +444,7 @@ let artifact_build_executable_store ?reuse env app_name ~ip ~base_archive ~base_
       retention.uncertain <- code >= 128;
       code in
     let refuse_exit code =
-      if code <> 0 then failwith (Printf.sprintf "artifact build: remote exited %d" code) in
+      if code <> 0 then Run_state.fail ~cause:"command_failed" (Printf.sprintf "artifact build: remote exited %d" code) in
     with_retained_stage env ~command:("artifact build " ^ app_name) ~host:Compute_host ~stage
       ~retained:(Printf.sprintf
         "artifact build: stage %s and host lock retained; inspect failed/uncertain build before serai unlock %s."
@@ -477,13 +480,13 @@ let artifact_build_executable_store ?reuse env app_name ~ip ~base_archive ~base_
     (match String.split_on_char ':' target_abi with
      | ["FreeBSD"; major; "amd64"] when major <> ""
          && String.for_all (function '0'..'9' -> true | _ -> false) major -> ()
-     | _ -> failwith "artifact build: incompatible executable ABI");
+     | _ -> Run_state.fail ~cause:"invalid_build_output" "artifact build: incompatible executable ABI");
     let dependencies = dependency_evidence ~dir:local in
-    let manifest = ok_or_fail (Artifact_manifest.create_input ~name:app_name ~input ~target_abi ~dependencies
+    let manifest = ok_or_fail ~cause:"invalid_build_output" (Artifact_manifest.create_input ~name:app_name ~input ~target_abi ~dependencies
       ~recipe_sha256:recipe.sha256 ~release_name:release ~archive_sha256) in
     Progress.phase "publish";
     match Artifact_store.publish ~root:store ~manifest ~archive:(Filename.concat local "release.tar") with
-    | Ok _ -> Artifact_manifest.identity manifest | Error message -> failwith message)
+    | Ok _ -> Artifact_manifest.identity manifest | Error message -> Run_state.fail ~cause:"store_failed" message)
 
 (* The port a check or an activation probes: the one named http, or the
    only one declared. *)
@@ -492,7 +495,7 @@ let check_port (endpoint : Network_endpoint.t) =
     List.find_opt (fun (p : Network_endpoint.named_port) -> p.port_name = "http") endpoint.tailnet_ports,
     endpoint.tailnet_ports with
   | Some p, _ | None, [ p ] -> p.port
-  | None, _ -> failwith (endpoint.name ^ ": no http tailnet port to check")
+  | None, _ -> Run_state.fail ~cause:"invalid_declaration" (endpoint.name ^ ": no http tailnet port to check")
 
 (* How a release activates: its release (the launcher under bin/), health
    path, executable anchor (- for none), the health status activation
@@ -559,13 +562,13 @@ let run_artifact_helper env ~context ~label ~subtree ~files ~helpers ~assignment
         let code = ssh_run env [env.compute_target; "doas sh -c " ^ Shell.quote
           (String.concat "\n" (["set -eu"] @ checks @ [command]))] in
         retention.uncertain <- code >= 128;
-        if code <> 0 then failwith (Printf.sprintf "%s: remote exited %d" label code)))
+        if code <> 0 then Run_state.fail ~cause:"command_failed" (Printf.sprintf "%s: remote exited %d" label code)))
 
 let artifact_apply ?(convert=false) ?rehearse_ip env app_name ~store ~identity ~rollback =
   let env = app_env env app_name in
   Progress.phase "verify";
   if (convert && rollback) || (Option.is_some rehearse_ip && (convert || rollback))
-  then failwith "artifact apply: invalid operation";
+  then Run_state.fail ~cause:"invalid_argument" "artifact apply: invalid operation";
   (* A rehearsal applies to the test jail <app>test at the test ip; every
      in-jail name stays the app's. *)
   let app, jail = match rehearse_ip with
@@ -574,10 +577,10 @@ let artifact_apply ?(convert=false) ?rehearse_ip env app_name ~store ~identity ~
         let app = find_app env app_name in
         (match Jail_test.retarget app ~ip with
          | Ok retargeted -> retargeted, Jail_test.name app
-         | Error errors -> failwith ("artifact apply: " ^ Network_endpoint.errors_message errors)) in
-  let manifest, archive = ok_or_fail (Artifact_store.load ~root:store ~identity) in
+         | Error errors -> Run_state.fail ~cause:"invalid_argument" ("artifact apply: " ^ Network_endpoint.errors_message errors)) in
+  let manifest, archive = ok_or_fail ~cause:"store_failed" (Artifact_store.load ~root:store ~identity) in
   if manifest.name <> app_name || not (String.starts_with ~prefix:"FreeBSD:" manifest.target_abi)
-  then failwith "artifact apply: workload or operating system mismatch";
+  then Run_state.fail ~cause:"input_mismatch" "artifact apply: workload or operating system mismatch";
   let settings = match source_release_settings app_name app.strategy, app.strategy, manifest.input with
     | Some settings, _, Artifact_manifest.Source_commit _ -> settings
     | None, Strategy_config.Freebsd_package s, Artifact_manifest.Package_archives package
@@ -589,15 +592,15 @@ let artifact_apply ?(convert=false) ?rehearse_ip env app_name ~store ~identity ~
     | None, Strategy_config.Fetch_binary s, Artifact_manifest.Upstream_binary input ->
         let url = binary_url ~context:"artifact apply" ~template:s.binary_url_template ~version:input.version in
         if input.url <> url || (not rollback && (input.version <> s.version || input.sha256 <> s.binary_sha256))
-        then failwith "artifact apply: immutable input does not match the declaration";
+        then Run_state.fail ~cause:"input_mismatch" "artifact apply: immutable input does not match the declaration";
         { release = s.binary_name; check_path = s.check_path; anchor = "/usr/local/bin/" ^ s.binary_name;
           health_status = "success"; migrate = false; service_status = "rc" }
-    | _ -> failwith "artifact apply: immutable input does not match the declaration" in
-  if manifest.release_name <> settings.release then failwith "artifact apply: release name mismatch";
+    | _ -> Run_state.fail ~cause:"input_mismatch" "artifact apply: immutable input does not match the declaration" in
+  if manifest.release_name <> settings.release then Run_state.fail ~cause:"input_mismatch" "artifact apply: release name mismatch";
   (* Conversion moves a legacy executable (package or pinned binary) under
      the release layout; Phoenix apps were adopted by a one-off since
      removed. *)
-  if convert && settings.anchor = "-" then failwith "artifact apply: conversion is for executables only";
+  if convert && settings.anchor = "-" then Run_state.fail ~cause:"unsupported_for_workload" "artifact apply: conversion is for executables only";
   let port = check_port app.endpoint in
   let url = Printf.sprintf "http://%s:%d%s" app.endpoint.ip port settings.check_path in
   let mode = if convert then "convert" else if rollback then "rollback" else "upgrade" in
@@ -627,9 +630,9 @@ let probe_releases env app_name =
   let env = app_env env app_name in
   match ssh_capture env [ env.compute_target; "doas sh -c " ^ Shell.quote (Release_probe.script ~app:app_name) ] with
   | 0, output -> (
-      ok_or_fail (Release_probe.check ~app:app_name output))
+      ok_or_fail ~cause:"host_state" (Release_probe.check ~app:app_name output))
   | code, _ ->
-      failwith (Printf.sprintf "probing %s's releases on %s failed (exit %d)"
+      Run_state.fail ~cause:"command_failed" (Printf.sprintf "probing %s's releases on %s failed (exit %d)"
         app_name (host_label env Compute_host) code)
 
 (* The release kept in .previous, reactivated where it is installed: no
@@ -642,15 +645,15 @@ let revert env app_name =
   let app = find_app env app_name in
   let settings = match source_release_settings app_name app.strategy with
     | Some settings -> settings
-    | None -> failwith "revert: only source-built apps revert" in
+    | None -> Run_state.fail ~cause:"unsupported_for_workload" "revert: only source-built apps revert" in
   if settings.migrate then
-    failwith (Printf.sprintf "revert: %s declares migrate; roll it back with serai artifact rollback" app_name);
+    Run_state.fail ~cause:"unsupported_for_workload" (Printf.sprintf "revert: %s declares migrate; roll it back with serai artifact rollback" app_name);
   validate_stage env.remote_stage;
   let previous =
     match probe_releases env app_name with
     | { previous = Some identity; _ } -> identity
-    | { previous = None; _ } -> failwith (Printf.sprintf "revert: %s has no previous release on the host" app_name)
-    | exception Failure message -> failwith ("revert: " ^ message) in
+    | { previous = None; _ } -> Run_state.fail ~cause:"host_state" (Printf.sprintf "revert: %s has no previous release on the host" app_name)
+    | exception Failure message -> Run_state.refail ~prefix:"revert: " ~otherwise:"command_failed" message in
   let url = Printf.sprintf "http://%s:%d%s" app.endpoint.ip (check_port app.endpoint) settings.check_path in
   if not (approved env ~operation:"revert"
             ~facts:[ "app", app_name; "host", host_label env Compute_host; "identity", previous; "check", url ]

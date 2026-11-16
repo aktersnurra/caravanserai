@@ -25,10 +25,10 @@
 - An approved `serai up` plan no longer applies pending edge changes: it
   plans them and stops for the operator with their plan id.
 - A result says what ran: `changed`, `hosts` and `ran`, on success and on a
-  failure after a change. `error.cause` names why in a word (`lock_held`,
-  `host_unreachable`, `command_failed`, `declined`, ...). `up` gives
+  failure after a change. `error.cause` names why in a word, for every
+  failure serai raises (the agent interface lists them); `up` gives
   `next_command` beside `next`. No plan is issued for an undeclared
-  workload.
+  workload or host.
 - `serai locks` shows who holds each host's lock and for how long;
   `serai status` shows each app's jail and releases. `serai revert <app>`
   is a command of its own.

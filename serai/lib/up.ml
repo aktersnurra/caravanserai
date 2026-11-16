@@ -84,15 +84,14 @@ let print_up_plan ?(target = Live) plan =
 let prepare_up ?local_source ?(target = Live) ~plan_only env app_name ~revision ~cache ~store =
   (* An update builds only what the remote has: never a local checkout. *)
   if target = Update && Option.is_some local_source then
-    failwith "update: builds pushed commits only, not a local checkout";
+    Run_state.fail ~cause:"invalid_argument" "update: builds pushed commits only, not a local checkout";
   let app = find_app env app_name in
   let rehearse_ip = match target with Rehearse ip -> Some ip | Live | Update -> None in
   let topology = match env.topology with
-    | Some topology -> topology | None -> failwith "up: configured topology required" in
-  let inputs = ok_or_fail (Up_inputs.of_app ~topology app) in
+    | Some topology -> topology | None -> Run_state.fail ~cause:"invalid_declaration" "up: configured topology required" in
+  let inputs = ok_or_fail ~cause:"invalid_declaration" (Up_inputs.of_app ~topology app) in
   let env = app_env env app_name in
-  let ok = ok_or_fail in
-  ok_or_fail (Artifact_store.validate_root store);
+  ok_or_fail ~cause:"store_failed" (Artifact_store.validate_root store);
   (* A rehearsal deploys into the test jail <app>test at [ip], probed
      read-only first: does it exist, and is its env in place. A missing jail
      is created, and the run stops for the operator to write its env. *)
@@ -103,16 +102,16 @@ let prepare_up ?local_source ?(target = Live) ~plan_only env app_name ~revision 
       match ssh_capture env [ env.compute_target; "doas sh -c " ^ Shell.quote probe ] with
       | 0, output ->
           let env_file = Jail_test.check_env_file ~app:app_name ~name:jail output in
-          (match ok (Jail_test.check_existing ~app:app_name ~name:jail ~ip output), env_file with
+          (match ok_or_fail ~cause:"host_state" (Jail_test.check_existing ~app:app_name ~name:jail ~ip output), env_file with
            | Jail_test.Same_ip, Ok () -> jail, ip
-           | Jail_test.Same_ip, Error message -> failwith ("up: " ^ message)
+           | Jail_test.Same_ip, Error message -> Run_state.fail ~cause:"host_state" ("up: " ^ message)
            | Jail_test.Absent, _ when plan_only ->
-               failwith (Printf.sprintf "up: %s does not exist yet; run without --plan to create it" jail)
+               Run_state.fail ~cause:"host_state" (Printf.sprintf "up: %s does not exist yet; run without --plan to create it" jail)
            | Jail_test.Absent, _ ->
                jail_test env app_name ~ip;
-               failwith (Printf.sprintf "up: created %s; %s" jail
+               Run_state.fail ~cause:"stopped_for_operator" (Printf.sprintf "up: created %s; %s" jail
                  (match env_file with Error message -> message | Ok () -> "run the same command again")))
-      | code, _ -> failwith (Printf.sprintf "up: probing %s on %s failed (exit %d)" jail (host_label env Compute_host) code))
+      | code, _ -> Run_state.fail ~cause:"command_failed" (Printf.sprintf "up: probing %s on %s failed (exit %d)" jail (host_label env Compute_host) code))
       rehearse_ip in
   (* The app's own jail, unless rehearsing: a new app's is created here, at
      an address no other jail holds, declared or not. *)
@@ -121,23 +120,23 @@ let prepare_up ?local_source ?(target = Live) ~plan_only env app_name ~revision 
     | None -> (
         match ssh_capture env [ env.compute_target; "doas sh -c " ^ Shell.quote (Jail_probe.script ~app:app_name) ] with
         | 0, output -> (
-            match ok (Jail_probe.check ~app:app_name ~ip:app.endpoint.ip output) with
+            match ok_or_fail ~cause:"host_state" (Jail_probe.check ~app:app_name ~ip:app.endpoint.ip output) with
             | Jail_probe.Absent -> Jail_create
             | Jail_probe.Present (Ok ()) -> Jail_ready
             | Jail_probe.Present (Error message) -> Jail_needs_env message)
-        | code, _ -> failwith (Printf.sprintf "up: probing jail %s on %s failed (exit %d)" app_name (host_label env Compute_host) code)) in
+        | code, _ -> Run_state.fail ~cause:"command_failed" (Printf.sprintf "up: probing jail %s on %s failed (exit %d)" app_name (host_label env Compute_host) code)) in
   Progress.phase "source";
   let checkout, commit = match local_source with
     | Some path -> path, revision
     | None ->
-        let mirror = ok (Source_mirror.sync ~jj_bin:env.jj_bin ~cache ~name:app_name ~url:inputs.source_url) in
-        Source_mirror.path mirror, ok (Source_mirror.resolve ~jj_bin:env.jj_bin mirror ~revision) in
+        let mirror = ok_or_fail ~cause:"source_unavailable" (Source_mirror.sync ~jj_bin:env.jj_bin ~cache ~name:app_name ~url:inputs.source_url) in
+        Source_mirror.path mirror, ok_or_fail ~cause:"source_unavailable" (Source_mirror.resolve ~jj_bin:env.jj_bin mirror ~revision) in
   let opam_repository = Option.map (fun (pinned : Strategy_config.pinned_git) ->
-      let mirror = ok (Source_mirror.sync ~jj_bin:env.jj_bin ~cache ~name:"opam-repository" ~url:pinned.url) in
-      Source_mirror.path mirror, ok (Source_mirror.resolve ~jj_bin:env.jj_bin mirror ~revision:pinned.commit))
+      let mirror = ok_or_fail ~cause:"source_unavailable" (Source_mirror.sync ~jj_bin:env.jj_bin ~cache ~name:"opam-repository" ~url:pinned.url) in
+      Source_mirror.path mirror, ok_or_fail ~cause:"source_unavailable" (Source_mirror.resolve ~jj_bin:env.jj_bin mirror ~revision:pinned.commit))
     inputs.opam_repository in
   let base_sha256 = inputs.build.base_sha256 in
-  let base_archive = ok (Base_archive.ensure ~curl_bin:env.curl_bin ~cache ~url:inputs.build.base_url ~sha256:base_sha256) in
+  let base_archive = ok_or_fail ~cause:"input_unavailable" (Base_archive.ensure ~curl_bin:env.curl_bin ~cache ~url:inputs.build.base_url ~sha256:base_sha256) in
   Progress.phase "recipe";
   (* The pinned opam tree is exported once per commit, not on every run. *)
   let opam_snapshots = Filename.concat cache "opam-snapshots" in
@@ -147,7 +146,7 @@ let prepare_up ?local_source ?(target = Live) ~plan_only env app_name ~revision 
     Fun.protect ~finally:(fun () -> remove_tree local) (fun () ->
       (fst (artifact_source_recipe ~opam_snapshots env ~local ~base_sha256 ~release_name ~packages ~compiler
               ~opam_repository ~web_bundle:(artifact_web_bundle env app_name))).sha256) in
-  let existing = ok (Artifact_store.find ~root:store ~f:(fun (m : Artifact_manifest.t) ->
+  let existing = ok_or_fail ~cause:"store_failed" (Artifact_store.find ~root:store ~f:(fun (m : Artifact_manifest.t) ->
       m.name = app_name && m.input = Artifact_manifest.Source_commit commit
       && m.recipe_sha256 = recipe_sha256 && m.release_name = release_name)) in
   let plan = {
@@ -217,7 +216,7 @@ let prepare_up ?local_source ?(target = Live) ~plan_only env app_name ~revision 
               announce "check %s" inputs.public_url;
               match Proc.run env.curl_bin [ "-fsS"; "--max-time"; "15"; "-o"; "/dev/null"; "--"; inputs.public_url ] with
               | 0 -> ()
-              | code -> failwith (Printf.sprintf "up: %s answered with an error (curl exit %d)" inputs.public_url code)) in
+              | code -> Run_state.fail ~cause:"check_failed" (Printf.sprintf "up: %s answered with an error (curl exit %d)" inputs.public_url code)) in
           Ok (Deployed identity) in
     { steps = List.map (fun step -> step, statuses.(step_index step)) up_steps;
       result = (match result with Ok result | Error result -> result) } in
@@ -236,10 +235,10 @@ let up_run ?local_source ?target ?expect_plan env app_name ~revision ~cache ~sto
                  "up: stale plan: approved %s, now %s; run serai up %s --revision %s --plan again"
                  (Plan_id.to_string expected) (Plan_id.to_string current) app_name revision))) expect_plan;
   let question = match plan.jail, target with
-    | Jail_needs_env message, Some Update -> failwith ("update: " ^ message)
+    | Jail_needs_env message, Some Update -> Run_state.fail ~cause:"host_state" ("update: " ^ message)
     | Jail_create, Some Update ->
-        failwith (Printf.sprintf "update: %s has no jail; create it with serai up" app_name)
-    | Jail_needs_env message, _ -> failwith ("up: " ^ message)
+        Run_state.fail ~cause:"host_state" (Printf.sprintf "update: %s has no jail; create it with serai up" app_name)
+    | Jail_needs_env message, _ -> Run_state.fail ~cause:"host_state" ("up: " ^ message)
     | Jail_create, _ -> Printf.sprintf "create jail %s at %s?" app_name (find_app env app_name).endpoint.ip
     | Jail_ready, _ -> Printf.sprintf "deploy %s at %s?" app_name (short plan.commit) in
   if not (env.confirm question) then Run_state.fail ~cause:"declined" "up: not applied";
@@ -256,10 +255,10 @@ let up ?local_source ?target ?expect_plan env app_name ~revision ~cache ~store =
       announce "%s is up in %s at %s (%s); destroy it when done: serai jail-test %s --destroy"
         app_name jail ip identity app_name
   | Deployed identity, None -> announce "%s is up at %s (%s)" app_name (short plan.commit) identity
-  | Stopped_for_env message, _ -> failwith ("up: " ^ message)
+  | Stopped_for_env message, _ -> Run_state.fail ~cause:"stopped_for_operator" ("up: " ^ message)
   | Stopped_for_edge id, _ ->
-      failwith (Printf.sprintf
+      Run_state.fail ~cause:"stopped_for_operator" (Printf.sprintf
         "up: %s is released, but edge changes are pending and this plan did not cover them; \
          approve them with serai edge --expect-plan %s, then serai check %s"
         app_name (Plan_id.to_string id) app_name)
-  | Step_failed (_, message), _ -> failwith message
+  | Step_failed (_, message), _ -> Run_state.refail ~otherwise:"command_failed" message

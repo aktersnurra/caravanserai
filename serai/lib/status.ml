@@ -47,7 +47,7 @@ let locks ?only env =
   | Some label ->
       (match host_of_label env label with
        | Some host -> [ lock_of env host ]
-       | None -> failwith "locks: expected a configured host ID or guest name")
+       | None -> Run_state.fail ~cause:"invalid_argument" "locks: expected a configured host ID or guest name")
 
 type jail = Jail_absent | Jail_ready | Jail_needs_env of string
 

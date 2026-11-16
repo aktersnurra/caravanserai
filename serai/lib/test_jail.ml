@@ -18,9 +18,9 @@ let validate_test_jail env (app : App_config.t) ~ip =
   let test_name = Jail_test.name app in
   validate_app_name test_name;
   let declared = declared_endpoints env in
-  ok_or_fail
+  ok_or_fail ~cause:"invalid_argument"
     (Jail_test.validate_name ~declared:(List.map (fun (e : Network_endpoint.t) -> e.name) declared) test_name);
-  ok_or_fail (Jail_test.validate_ip ~host:(jail_host env app.endpoint.name)
+  ok_or_fail ~cause:"invalid_argument" (Jail_test.validate_ip ~host:(jail_host env app.endpoint.name)
     ~declared:(List.map (fun (e : Network_endpoint.t) -> e.ip) declared) ip);
   test_name
 
@@ -32,10 +32,10 @@ let jail_test env app_name ~ip =
   let script =
     match Jail_test.render app ~ip with
     | Ok script -> script
-    | Error errors -> failwith ("jail-test: " ^ Network_endpoint.errors_message errors)
+    | Error errors -> Run_state.fail ~cause:"invalid_argument" ("jail-test: " ^ Network_endpoint.errors_message errors)
     | exception Sexplib.Conv.Of_sexp_error (exn, _) ->
-        failwith (Printf.sprintf "jail-test: %s's jail script does not render: %s" app_name (Printexc.to_string exn))
-    | exception Invalid_argument msg -> failwith ("jail-test: " ^ msg)
+        Run_state.fail ~cause:"render_failed" (Printf.sprintf "jail-test: %s's jail script does not render: %s" app_name (Printexc.to_string exn))
+    | exception Invalid_argument msg -> Run_state.fail ~cause:"render_failed" ("jail-test: " ^ msg)
   in
   let dataset = Jail_test.dataset app in
   let stage = jail_test_stage env test_name in
@@ -49,8 +49,8 @@ let jail_test env app_name ~ip =
       | 0, output ->
           (match Jail_test.check_existing ~app:app.endpoint.name ~name:test_name ~ip output with
            | Ok (Jail_test.Absent | Jail_test.Same_ip) -> ()
-           | Error message -> failwith message)
-      | code, _ -> failwith (Printf.sprintf "jail-test: staging guard on %s failed (exit %d)" (host_label env Compute_host) code));
+           | Error message -> Run_state.fail ~cause:"host_state" message)
+      | code, _ -> Run_state.fail ~cause:"command_failed" (Printf.sprintf "jail-test: staging guard on %s failed (exit %d)" (host_label env Compute_host) code));
       with_local_stage [ ("jail", script) ] (fun local ->
           (* jail is excluded from the app-dir rsync, so only the rendered
              script is ever at the path that runs as root. --no-perms keeps
@@ -99,18 +99,18 @@ let jail_test_destroy env app_name =
   let env = app_env env app_name in
   let test_name = Jail_test.name app in
   validate_app_name test_name;
-  ok_or_fail
+  ok_or_fail ~cause:"invalid_argument"
     (Jail_test.validate_name
        ~declared:(List.map (fun (e : Network_endpoint.t) -> e.name) (declared_endpoints env))
        test_name);
   let dataset =
     try Jail_test.dataset app with
     | Sexplib.Conv.Of_sexp_error (exn, _) ->
-        failwith (Printf.sprintf "jail-test --destroy: %s: %s" app_name (Printexc.to_string exn))
-    | Invalid_argument msg -> failwith ("jail-test --destroy: " ^ msg)
+        Run_state.fail ~cause:"render_failed" (Printf.sprintf "jail-test --destroy: %s: %s" app_name (Printexc.to_string exn))
+    | Invalid_argument msg -> Run_state.fail ~cause:"render_failed" ("jail-test --destroy: " ^ msg)
   in
   let target =
-    ok_or_fail (Jail_test.validate_destroy_target ~name:test_name ?dataset ())
+    ok_or_fail ~cause:"invalid_argument" (Jail_test.validate_destroy_target ~name:test_name ?dataset ())
   in
   let script = Jail_test.destroy_script target in
   announce "jail-test %s --destroy" app.endpoint.name;

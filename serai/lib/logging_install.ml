@@ -26,7 +26,7 @@ type compute_logging_mode = Converge | Replace
 let logging_receiver env policy =
   match App_config.find env.config (Logging_policy.receiver policy) with
   | Some app -> Logging_relay.receiver (App_config.endpoint app)
-  | None -> failwith ("logging: undeclared receiver " ^ Logging_policy.receiver policy)
+  | None -> Run_state.fail ~cause:"invalid_declaration" ("logging: undeclared receiver " ^ Logging_policy.receiver policy)
 
 let install_compute_logging ?(mode = Converge) env =
   validate_stage env.remote_stage;
@@ -41,7 +41,7 @@ let install_compute_logging ?(mode = Converge) env =
         if (Topology.guest topology (Guest_config.name g)).host = host.id then Some (Guest_config.endpoint g)
         else None) env.guests in
   let relay = match Result.bind (logging_receiver env policy) (fun receiver -> Logging_relay.v ~receiver ~host ~guests) with
-    | Ok relay -> relay | Error e -> failwith ("logging: " ^ Logging_relay.error_message e) in
+    | Ok relay -> relay | Error e -> Run_state.fail ~cause:"invalid_declaration" ("logging: " ^ Logging_relay.error_message e) in
   announce "install compute logging";
   Run_state.changing ();
   with_locks env ~command:"install compute logging" [ Compute_host ] (fun _records ->
@@ -86,7 +86,7 @@ let install_edge_logging_component ?(action = Normal_logging) env component =
     | Edge_sender ->
         let policy = Logging_policy.load ~layout:env.layout ~apps:env.config in
         let receiver = match logging_receiver env policy with
-          | Ok receiver -> receiver | Error e -> failwith ("logging: " ^ Logging_relay.error_message e) in
+          | Ok receiver -> receiver | Error e -> Run_state.fail ~cause:"invalid_declaration" ("logging: " ^ Logging_relay.error_message e) in
         let template = In_channel.with_open_bin (Layout.edge_sender_template env.layout) In_channel.input_all in
         [ ("edge/syslog-ng-victoria.conf", Logging_relay.render_edge_sender receiver ~template);
           ("edge/logging-receiver", Logging_relay.render_receiver receiver) ] in

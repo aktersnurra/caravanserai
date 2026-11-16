@@ -63,6 +63,13 @@ has '"ran":["bootstrap hello"]' 'the result does not list the steps that ran'
 serai bootstrap nosuchapp --plan --json
 has '"code":"not_applied"' 'an unknown app is not refused'
 has '"cause":"unknown_workload"' 'the refusal does not name its cause'
+serai unlock nosuchhost --plan --json
+has '"cause":"invalid_argument"' 'an unknown host is not an invalid argument'
+serai jail-test hello --ip 10.20.0.2 --plan --json
+has '"code":"not_applied"' 'a test jail at a declared address is not refused'
+has '"cause":"invalid_argument"' 'a taken test-jail address is not an invalid argument'
+serai artifact upgrade hello --identity "$(printf 'a%.0s' $(seq 64))" --store "$TMP/nostore" --plan --json
+has '"cause":"store_failed"' 'a missing store is not a store failure'
 
 # The same plan id from the terminal form.
 serai bootstrap hello --plan

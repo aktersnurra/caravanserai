@@ -7,7 +7,7 @@ open Artifact_lifecycle
 open Logging_install
 
 let find_guest env name =
-  if not (name <> "" && String.for_all is_app_char name) then failwith "invalid guest name";
+  if not (name <> "" && String.for_all is_app_char name) then Run_state.fail ~cause:"invalid_name" "invalid guest name";
   match List.find_opt (fun guest -> Guest_config.name guest = name) env.guests with
   | Some guest -> guest
   | None -> Run_state.fail ~cause:"unknown_workload" "unknown guest"
@@ -90,7 +90,7 @@ let resolve_source_checkout env (guest : Guest_config.t) =
   let checkout = Option.value env.source_checkout_override ~default:guest.source_checkout in
   let source_dir = Layout.config_path env.layout checkout in
   if not (Sys.file_exists source_dir && Sys.is_directory source_dir) then
-    failwith ("source checkout not found: " ^ source_dir);
+    Run_state.fail ~cause:"input_unavailable" ("source checkout not found: " ^ source_dir);
   (checkout, source_dir)
 
 (* The source is pushed, not cloned: a guest's source may be private, and the
@@ -105,14 +105,14 @@ let artifact_guest_abi value =
        | ["glibc"; version] ->
            (match String.split_on_char '.' version with
             | [major; minor] when number major && number minor -> ()
-            | _ -> failwith "artifact build: invalid Linux/glibc ABI")
-       | _ -> failwith "artifact build: invalid Linux/glibc ABI")
-  | _ -> failwith "artifact build: requires native Linux/glibc ABI"
+            | _ -> Run_state.fail ~cause:"invalid_build_output" "artifact build: invalid Linux/glibc ABI")
+       | _ -> Run_state.fail ~cause:"invalid_build_output" "artifact build: invalid Linux/glibc ABI")
+  | _ -> Run_state.fail ~cause:"invalid_build_output" "artifact build: requires native Linux/glibc ABI"
 
 let guest_workload action (guest : Guest_config.t) =
   match guest.workload with
   | Some workload -> workload
-  | None -> failwith (Printf.sprintf "%s: guest %s declares no workload" action (Guest_config.name guest))
+  | None -> Run_state.fail ~cause:"unsupported_for_workload" (Printf.sprintf "%s: guest %s declares no workload" action (Guest_config.name guest))
 
 let artifact_build_guest_store ?reuse env name ~revision ~opam_repository:(repository_checkout, repository_revision)
     ~compiler ~store =
@@ -120,17 +120,17 @@ let artifact_build_guest_store ?reuse env name ~revision ~opam_repository:(repos
   let workload = guest_workload "artifact build" guest in
   validate_stage env.remote_stage;
   validate_app_name env.lock_token;
-  ok_or_fail (Artifact_store.validate_root store);
+  ok_or_fail ~cause:"store_failed" (Artifact_store.validate_root store);
   let selected = Option.map (fun identity ->
     match Artifact_store.load ~root:store ~identity with
-    | Ok (manifest, _) -> manifest | Error message -> failwith message) reuse in
+    | Ok (manifest, _) -> manifest | Error message -> Run_state.fail ~cause:"store_failed" message) reuse in
   let _, checkout = resolve_source_checkout env guest in
   let local = Filename.temp_dir "serai-guest-artifact" "" in
   Fun.protect ~finally:(fun () -> remove_tree local) (fun () ->
     Progress.phase "source";
     let snapshot checkout revision label =
       let path = Filename.concat local label in
-      let commit = ok_or_fail (Source_snapshot.stage ~jj_bin:env.jj_bin ~checkout ~revision ~out:path) in
+      let commit = ok_or_fail ~cause:"source_unavailable" (Source_snapshot.stage ~jj_bin:env.jj_bin ~checkout ~revision ~out:path) in
       let receipt = Filename.concat local (label ^ "-inventory") in
       path, receipt, commit, write_inventory ~root:path ~commit ~receipt in
     let source, source_receipt, source_commit, source_sha = snapshot checkout revision "source" in
@@ -138,7 +138,7 @@ let artifact_build_guest_store ?reuse env name ~revision ~opam_repository:(repos
     require_opam_repository repository;
     Progress.phase "recipe";
     let recipe_dir = Filename.concat local "recipe" in
-    let recipe = ok_or_fail (Artifact_recipe.stage_guest ~lib_dir:(Layout.lib_dir env.layout) ~out:recipe_dir
+    let recipe = ok_or_fail ~cause:"input_unavailable" (Artifact_recipe.stage_guest ~lib_dir:(Layout.lib_dir env.layout) ~out:recipe_dir
       ~project:workload.project ~target:workload.target ~release_name:workload.release
       ~compiler ~repository_commit:repo_commit ~repository_sha256:repo_sha) in
     match selected with
@@ -149,7 +149,7 @@ let artifact_build_guest_store ?reuse env name ~revision ~opam_repository:(repos
           | Artifact_manifest.Source_commit value -> String.equal value source_commit | _ -> false in
         if manifest.name <> name || manifest.release_name <> workload.release
            || not source_matches || manifest.recipe_sha256 <> recipe.sha256
-        then failwith "artifact reuse: requested inputs do not match stored artifact";
+        then Run_state.fail ~cause:"input_mismatch" "artifact reuse: requested inputs do not match stored artifact";
         Artifact_manifest.identity manifest
     | None ->
     if not (approved env ~operation:"artifact.build"
@@ -198,35 +198,35 @@ let artifact_build_guest_store ?reuse env name ~revision ~opam_repository:(repos
           ["release.tar"; "release.sha256"; "target-abi"; "dependencies"]);
     Progress.phase "verify";
     let archive = Filename.concat output "release.tar" in
-    if (Unix.lstat archive).Unix.st_kind <> Unix.S_REG then failwith "artifact build: unsafe guest archive";
+    if (Unix.lstat archive).Unix.st_kind <> Unix.S_REG then Run_state.fail ~cause:"invalid_build_output" "artifact build: unsafe guest archive";
     let archive_sha256 = artifact_file_sha256 archive in
-    if read_evidence ~dir:output "release.sha256" 65 <> archive_sha256 ^ "\n" then failwith "artifact build: guest archive checksum mismatch";
+    if read_evidence ~dir:output "release.sha256" 65 <> archive_sha256 ^ "\n" then Run_state.fail ~cause:"invalid_build_output" "artifact build: guest archive checksum mismatch";
     let target_abi = abi_evidence ~dir:output in
     artifact_guest_abi target_abi;
     let dependencies = dependency_evidence ~dir:output in
     (match dependencies with
      | [{Artifact_manifest.name="opam-repository"; version; sha256}]
        when String.equal version repo_commit && String.equal sha256 repo_sha -> ()
-     | _ -> failwith "artifact build: guest repository receipt mismatch");
-    let manifest = ok_or_fail (Artifact_manifest.create ~name ~source_commit ~target_abi ~dependencies
+     | _ -> Run_state.fail ~cause:"invalid_build_output" "artifact build: guest repository receipt mismatch");
+    let manifest = ok_or_fail ~cause:"invalid_build_output" (Artifact_manifest.create ~name ~source_commit ~target_abi ~dependencies
       ~recipe_sha256:recipe.sha256 ~release_name:workload.release ~archive_sha256) in
     Progress.phase "publish";
     match Artifact_store.publish ~root:store ~manifest ~archive with
-    | Ok _ -> Artifact_manifest.identity manifest | Error message -> failwith message)
+    | Ok _ -> Artifact_manifest.identity manifest | Error message -> Run_state.fail ~cause:"store_failed" message)
 
 let artifact_apply_guest ?(convert=false) env name ~store ~identity ~rollback =
   Progress.phase "verify";
-  if convert && rollback then failwith "artifact apply: invalid guest operation";
+  if convert && rollback then Run_state.fail ~cause:"invalid_argument" "artifact apply: invalid guest operation";
   let guest = find_guest env name in
   let workload = guest_workload "artifact apply" guest in
-  let manifest, archive = ok_or_fail (Artifact_store.load ~root:store ~identity) in
+  let manifest, archive = ok_or_fail ~cause:"store_failed" (Artifact_store.load ~root:store ~identity) in
   (match manifest.input with Artifact_manifest.Source_commit _ -> ()
-   | _ -> failwith "artifact apply: a guest workload requires immutable source input");
+   | _ -> Run_state.fail ~cause:"input_mismatch" "artifact apply: a guest workload requires immutable source input");
   if manifest.name <> name || manifest.release_name <> workload.release then
-    failwith "artifact apply: guest workload mismatch";
+    Run_state.fail ~cause:"input_mismatch" "artifact apply: guest workload mismatch";
   artifact_guest_abi manifest.target_abi;
   let port = match List.find_opt (fun (p : Network_endpoint.named_port) -> p.port_name="http") guest.endpoint.tailnet_ports with
-    | Some p -> p.port | None -> failwith "artifact apply: missing guest HTTP readiness port" in
+    | Some p -> p.port | None -> Run_state.fail ~cause:"invalid_declaration" "artifact apply: missing guest HTTP readiness port" in
   let url = Printf.sprintf "http://%s:%d/health" guest.endpoint.ip port in
   validate_stage env.remote_stage;
   if not (approved env
@@ -283,7 +283,7 @@ let artifact_apply_guest ?(convert=false) env name ~store ~identity ~rollback =
         retention.uncertain <- true;
         let code = ssh_run env (("-t" :: guest_connection env guest) @ ["su -c " ^ Shell.quote command]) in
         retention.uncertain <- code >= 128;
-        if code <> 0 then failwith (Printf.sprintf "artifact apply %s: remote exited %d" name code)))
+        if code <> 0 then Run_state.fail ~cause:"command_failed" (Printf.sprintf "artifact apply %s: remote exited %d" name code)))
 
 let build_steps env guest (checkout, source_dir) =
   announce "build %s" (Guest_config.name guest);

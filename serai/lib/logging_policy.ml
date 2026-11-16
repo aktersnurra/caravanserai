@@ -68,7 +68,7 @@ let load ~layout ~apps =
     Sys.file_exists conf && not (Sys.is_directory conf) in
   match parse ~apps ~reviewed (Sexplib.Sexp.load_sexp (Layout.logging layout)) with
   | Ok policy -> policy
-  | Error error -> failwith ("logging policy: " ^ error)
+  | Error error -> Run_state.fail ~cause:"invalid_declaration" ("logging policy: " ^ error)
 
 let render_targets policy =
   let source_name = function

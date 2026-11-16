@@ -37,6 +37,10 @@ val fail : cause:string -> string -> 'a
 (** The cause recorded for exactly this message, if any. *)
 val cause_of : string -> string option
 
+(** Passes on a failure already raised with [message]: keeps its cause,
+    or [otherwise] when it had none. *)
+val refail : ?prefix:string -> otherwise:string -> string -> 'a
+
 (** What the run did, in order: each step it announced, and each host
     whose lock it took. *)
 val ran : string -> unit

@@ -18,9 +18,10 @@ let validate_stage stage =
     when List.for_all (fun p -> p <> "" && String.for_all is_stage_char p) rest
     -> ()
   | _ ->
-      failwith "OPS_REMOTE_STAGE must be a dedicated non-root directory beneath /tmp"
+      Run_state.fail ~cause:"invalid_environment" "OPS_REMOTE_STAGE must be a dedicated non-root directory beneath /tmp"
 
-let ok_or_fail = function Ok value -> value | Error message -> failwith message
+(* A Result's error as a failure, with why it failed. *)
+let ok_or_fail ~cause = function Ok value -> value | Error message -> Run_state.fail ~cause message
 
 let is_sha256 = Hex.is_sha256
 let remove_tree = Fs.remove_tree
@@ -120,7 +121,7 @@ let app_env env name = match env.topology with
    network, and without a topology there is no network to assume. *)
 let jail_host env name = match env.topology with
   | Some topology -> Topology.jail_host topology name
-  | None -> failwith ("no topology places " ^ name ^ " on a network")
+  | None -> Run_state.fail ~cause:"invalid_declaration" ("no topology places " ^ name ^ " on a network")
 
 let configured_host env target = match env.topology with
   | None -> None
@@ -143,7 +144,7 @@ let ssh_args env args =
 let require_direct_hook env =
   if List.exists (fun target -> target_connection env target <> [target])
       [env.compute_target; env.edge_target] then
-    failwith "legacy hook cannot express this SSH route; use the artifact lifecycle"
+    Run_state.fail ~cause:"unsupported_for_workload" "legacy hook cannot express this SSH route; use the artifact lifecycle"
 
 let ssh_run env args = Proc.run env.ssh_bin (ssh_args env args)
 let ssh_checked env args = Proc.run_checked env.ssh_bin (ssh_args env args)
@@ -269,7 +270,7 @@ let acquire_lock env ~command host =
            label (Remote_lock.stale_after_seconds / 60) label)
   | code, _ when code = ssh_unreachable_exit ->
       Run_state.fail ~cause:"host_unreachable" (Printf.sprintf "could not reach %s (%s)" label target)
-  | code, _ -> failwith (Printf.sprintf "locking %s failed (exit %d)" label code)
+  | code, _ -> Run_state.fail ~cause:"lock_failed" (Printf.sprintf "locking %s failed (exit %d)" label code)
 
 (* Best effort: a failed release must not mask the error that ended the
    run, so it warns instead of raising. The connect timeout bounds how long
@@ -372,7 +373,7 @@ let remove_stage_script ?marker stage =
 
 let unlock env label =
   match host_of_label env label with
-  | None -> failwith "unlock: expected a configured host ID or guest name"
+  | None -> Run_state.fail ~cause:"invalid_argument" "unlock: expected a configured host ID or guest name"
   | Some host ->
       announce "unlock %s" label;
       Run_state.changing ();
@@ -384,8 +385,8 @@ let current_revision env =
   | 0, output -> (
       match Applied_record.revision_of_jj_output output with
       | Ok revision -> revision
-      | Error msg -> failwith ("edge: " ^ msg))
-  | code, _ -> failwith (Printf.sprintf "edge: could not read the jj revision of %s (exit %d)" (Layout.config env.layout) code)
+      | Error msg -> Run_state.fail ~cause:"source_unavailable" ("edge: " ^ msg))
+  | code, _ -> Run_state.fail ~cause:"source_unavailable" (Printf.sprintf "edge: could not read the jj revision of %s (exit %d)" (Layout.config env.layout) code)
 
 (* [record_output] is what the host's lock acquire printed. *)
 let show_applied_record env host record_output =

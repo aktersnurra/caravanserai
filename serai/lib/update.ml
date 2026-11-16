@@ -248,7 +248,7 @@ let record (state : Update_state.t) report =
 let run deps config paths =
   Update_state.with_run_lock ~dir:paths.state_dir (fun () ->
     let state = match Update_state.load ~dir:paths.state_dir with
-      | Ok state -> state | Error message -> failwith message in
+      | Ok state -> state | Error message -> Run_state.fail ~cause:"invalid_environment" message in
     let report =
       examine ~plan:false deps config paths ~handled:(fun name -> (Update_state.find state name).handled) in
     let candidates =
@@ -260,7 +260,7 @@ let run deps config paths =
             (line name outcome)) report.apps in
     let reported = List.filter (fun (last, text, _) -> Update_decision.should_report ~last ~current:text) candidates in
     (match Update_state.save ~dir:paths.state_dir (record state report) with
-     | Ok () -> () | Error message -> failwith message);
+     | Ok () -> () | Error message -> Run_state.fail ~cause:"invalid_environment" message);
     { report;
       lines = List.map (fun (_, text, _) -> text) reported;
       failed = List.exists (fun (_, _, failure) -> failure) reported })

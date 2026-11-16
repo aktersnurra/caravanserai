@@ -16,6 +16,8 @@ let reset () = approval := Ask; changed := false; kept := []; cause := None; ste
 
 let fail ~cause:code message = cause := Some (code, message); failwith message
 let cause_of message = match !cause with Some (code, m) when m = message -> Some code | _ -> None
+let refail ?(prefix = "") ~otherwise message =
+  fail ~cause:(Option.value (cause_of message) ~default:otherwise) (prefix ^ message)
 let ran step = steps := step :: !steps
 let steps_ran () = List.rev !steps
 let locked host = if not (List.mem host !hosts) then hosts := host :: !hosts

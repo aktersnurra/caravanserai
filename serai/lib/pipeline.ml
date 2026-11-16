@@ -163,11 +163,11 @@ let rec guests = function
 let run env registry app_name pipeline_name =
   let app = Dispatcher.find_app env app_name in
   match find registry ~app:app.endpoint.name ~name:pipeline_name with
-  | None -> failwith "unknown pipeline"
+  | None -> Run_state.fail ~cause:"invalid_argument" "unknown pipeline"
   | Some step ->
       (* Every guest the pipeline names is declared, before any step runs. *)
       let declared = Dispatcher.list_guests env in
       List.iter (fun guest ->
-        if not (List.mem guest declared) then failwith ("pipeline names an undeclared guest: " ^ guest))
+        if not (List.mem guest declared) then Run_state.fail ~cause:"invalid_declaration" ("pipeline names an undeclared guest: " ^ guest))
         (guests step);
       eval env app_name step

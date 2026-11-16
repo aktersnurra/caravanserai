@@ -16,7 +16,7 @@ let compute_envs env = match env.topology with
         |> List.filter (fun (e : Network_endpoint.t) -> List.mem e.name names)
         |> Network_endpoint.validate_all in
       let endpoints = match endpoints with Ok x -> x | Error errors ->
-        failwith (Network_endpoint.errors_message errors) in
+        Run_state.fail ~cause:"invalid_declaration" (Network_endpoint.errors_message errors) in
       {env with compute_target=host.ssh; endpoints})
 
 let pf_output_path env compute = match env.topology with
@@ -154,7 +154,7 @@ let diff_components env =
       | 0 -> None
       | code when code = changes_pending_exit -> Some (env, component, diff)
       | code ->
-          failwith
+          Run_state.fail ~cause:"command_failed"
             (Printf.sprintf "edge: diff for %s failed (exit %d)"
                (edge_component_label component) code))
     (edge_jobs env)
@@ -205,7 +205,7 @@ let write_applied_record env ~revision host components =
   | code -> Printf.eprintf "warning: applied record for %s not written (exit %d)\n%!" (host_label env host) code
 
 let rendered_files env =
-  match render_edge env with Ok files -> files | Error msg -> failwith ("edge render: " ^ msg)
+  match render_edge env with Ok files -> files | Error msg -> Run_state.fail ~cause:"render_failed" ("edge render: " ^ msg)
 
 (* One locked edge run: render locally and read the jj revision (failing
    before any remote command), take both hosts' locks, show what each host
@@ -296,7 +296,7 @@ let edge_run ?expect_plan env =
 let edge ?expect_plan env =
   match (edge_run ?expect_plan env).failed with
   | None -> ()
-  | Some (_, _, message) -> failwith message
+  | Some (_, _, message) -> Run_state.refail ~otherwise:"command_failed" message
 
 (* What edge does not do: edge/02-caddy's unconditional run, which builds
    the binary if needed (or always, under CADDY_FORCE_BUILD=1), writes the
@@ -307,7 +307,7 @@ let caddy_install env =
   let env = edge_env env in
   validate_stage env.remote_stage;
   let files =
-    match render_caddy env with Ok files -> files | Error msg -> failwith ("caddy-install render: " ^ msg)
+    match render_caddy env with Ok files -> files | Error msg -> Run_state.fail ~cause:"render_failed" ("caddy-install render: " ^ msg)
   in
   announce "caddy-install";
   with_locks env ~command:"caddy-install" [ Edge_host ] (fun _records ->

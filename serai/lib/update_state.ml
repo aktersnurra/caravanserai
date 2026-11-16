@@ -82,7 +82,7 @@ let save ~dir t =
 
 let with_run_lock ~dir f =
   match private_directory dir with
-  | Error message -> failwith message
+  | Error message -> Run_state.fail ~cause:"invalid_environment" message
   | Ok () ->
       let fd = Unix.openfile (Filename.concat dir "lock") [ O_RDWR; O_CREAT ] 0o600 in
       Fun.protect ~finally:(fun () -> Unix.close fd) (fun () ->

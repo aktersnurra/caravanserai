@@ -16,7 +16,7 @@ let xdg name fallback =
   | _ ->
       (match Sys.getenv_opt "HOME" with
        | Some home when home <> "" -> Filename.concat home fallback
-       | _ -> failwith (Printf.sprintf "neither %s nor HOME is set" name))
+       | _ -> Run_state.fail ~cause:"invalid_environment" (Printf.sprintf "neither %s nor HOME is set" name))
 
 (* A yes/no question on the terminal; anything but y or yes is no. *)
 let ask question =
@@ -45,19 +45,19 @@ let installed_engine () =
 let locate_layout () =
   match Layout.discover ~from:(Sys.getcwd ()) ~installed:(installed_engine ()) with
   | Ok layout -> layout
-  | Error message -> failwith message
+  | Error message -> Run_state.fail ~cause:"input_unavailable" message
 
 let load_declaration layout =
   match Declaration.load ~layout with
   | Ok declaration -> declaration
-  | Error error -> failwith (Declaration.error_message error)
+  | Error error -> Run_state.fail ~cause:"invalid_declaration" (Declaration.error_message error)
 
 let env_of_layout ~assume_yes layout : Dispatcher.env =
   let declaration = load_declaration layout in
   List.iter (fun key -> match Sys.getenv_opt key with
-    | Some value when value <> "" -> failwith (key ^ ": configure hosts in serai.sexp instead")
+    | Some value when value <> "" -> Run_state.fail ~cause:"invalid_environment" (key ^ ": configure hosts in serai.sexp instead")
     | _ -> ()) ["COMPUTE_TARGET"; "EDGE_TARGET"];
-  let topology = match declaration.topology with Some value -> value | None -> failwith "missing topology" in
+  let topology = match declaration.topology with Some value -> value | None -> Run_state.fail ~cause:"invalid_declaration" "missing topology" in
   let compute_target = match Topology.compute_hosts topology with
     | host :: _ -> host.ssh | [] -> "" in
   let getenv_nonempty name =
@@ -122,7 +122,7 @@ let build_env ~assume_yes () : Dispatcher.env * Pipeline.t =
 let write_files dir files =
   match Rendered_output.write ~dir files with
   | Ok () -> ()
-  | Error error -> failwith (Rendered_output.error_message error)
+  | Error error -> Run_state.fail ~cause:"invalid_argument" (Rendered_output.error_message error)
 
 (* Runs without build_env: validate needs no jj, operator, lock token or
    network, only the declaration, the shell configs that repeat it, the
@@ -133,12 +133,13 @@ let validate ~out =
   let declaration = load_declaration layout in
   ignore (Logging_policy.load ~layout ~apps:declaration.apps);
   ignore (Pipeline.load (Layout.pipelines layout));
-  (match Idp_declaration.load ~layout with Ok _ -> () | Error message -> failwith message);
+  (match Idp_declaration.load ~layout with
+   | Ok _ -> () | Error message -> Run_state.fail ~cause:"invalid_declaration" message);
   (match Config_drift.check declaration with
    | [] -> ()
-   | drift -> failwith (String.concat "\n" (List.map Config_drift.message drift)));
+   | drift -> Run_state.fail ~cause:"invalid_declaration" (String.concat "\n" (List.map Config_drift.message drift)));
   match Validation.render_all declaration with
-  | Error msg -> failwith msg
+  | Error msg -> Run_state.fail ~cause:"render_failed" msg
   | Ok files ->
       Option.iter (fun dir -> write_files dir files) out;
       print_endline (Validation.summary declaration files)
@@ -151,12 +152,12 @@ let artifact_plan ?revision name =
   let plan = match app, guest with
     | Some app, None -> Artifact_plan.of_app ?revision app
     | None, Some guest -> Artifact_plan.of_guest ?revision guest
-    | None, None -> Error ("unknown workload: " ^ name)
-    | Some _, Some _ -> Error ("ambiguous workload: " ^ name)
+    | None, None -> Run_state.fail ~cause:"unknown_workload" ("unknown workload: " ^ name)
+    | Some _, Some _ -> Run_state.fail ~cause:"invalid_declaration" ("ambiguous workload: " ^ name)
   in
   match plan with
   | Ok plan -> print_endline (Artifact_plan.render plan)
-  | Error message -> failwith message
+  | Error message -> Run_state.fail ~cause:"invalid_declaration" message
 
 let artifact_source_stage name ~revision ~out =
   Progress.phase "source";
@@ -169,15 +170,15 @@ let artifact_source_stage name ~revision ~out =
         (match app.strategy with
          | Strategy_config.Freebsd_native_elixir strategy -> strategy.repo_path
          | Strategy_config.Freebsd_native_ocaml strategy -> strategy.repo_path
-         | _ -> failwith (name ^ ": source staging requires a source-built workload"))
+         | _ -> Run_state.fail ~cause:"unsupported_for_workload" (name ^ ": source staging requires a source-built workload"))
     | None, Some guest -> guest.source_checkout
-    | None, None -> failwith ("unknown workload: " ^ name)
-    | Some _, Some _ -> failwith ("ambiguous workload: " ^ name)
+    | None, None -> Run_state.fail ~cause:"unknown_workload" ("unknown workload: " ^ name)
+    | Some _, Some _ -> Run_state.fail ~cause:"invalid_declaration" ("ambiguous workload: " ^ name)
   in
   let checkout = Layout.config_path layout checkout in
   match Source_snapshot.stage ~jj_bin:(getenv_default "JJ_BIN" "jj") ~checkout ~revision ~out with
   | Ok commit -> Printf.printf "source commit: %s\nstaged at: %s\n%!" commit out
-  | Error message -> failwith message
+  | Error message -> Run_state.fail ~cause:"source_unavailable" message
 
 (* Mirrors and base archives are reproducible downloads; the store holds
    verified artifacts worth keeping. Both are private to this user. *)
@@ -224,7 +225,7 @@ let parse_up argv =
 let new_kind = function
   | "phoenix" -> Dispatcher.New_phoenix
   | "ocaml" -> Dispatcher.New_ocaml
-  | kind -> failwith ("new: --kind is phoenix or ocaml, not " ^ kind)
+  | kind -> Run_state.fail ~cause:"invalid_argument" ("new: --kind is phoenix or ocaml, not " ^ kind)
 
 let new_app ?hostname env app ~kind ~repo =
   Dispatcher.new_app env app ~kind:(new_kind kind) ~repo ~hostname
@@ -389,8 +390,9 @@ let update_paths () =
 
 let update_settings path =
   match In_channel.with_open_bin path In_channel.input_all with
-  | text -> (match Update.config_of_string text with Ok config -> config | Error message -> failwith message)
-  | exception Sys_error message -> failwith ("update: " ^ message)
+  | text -> (match Update.config_of_string text with
+    | Ok config -> config | Error message -> Run_state.fail ~cause:"invalid_environment" message)
+  | exception Sys_error message -> Run_state.fail ~cause:"invalid_environment" ("update: " ^ message)
 
 let update_deps () =
   { Update.jj_bin = getenv_default "JJ_BIN" "jj"; env_of_layout = env_of_layout ~assume_yes:true }
@@ -537,12 +539,14 @@ let idp argv =
   let planned () =
     let layout = locate_layout () in
     let declaration = match Idp_declaration.load ~layout with
-      | Ok (Some d) -> d | Ok None -> failwith (no_declaration layout) | Error message -> failwith message in
+      | Ok (Some d) -> d
+      | Ok None -> Run_state.fail ~cause:"invalid_declaration" (no_declaration layout)
+      | Error message -> Run_state.fail ~cause:"invalid_declaration" message in
     match fetch_result declaration.url with
-    | Error message -> failwith message
+    | Error message -> Run_state.fail ~cause:"service_unavailable" message
     | Ok (session, live) ->
         let t = Idp_plan.plan declaration live in
-        Option.iter failwith t.lockout;
+        Option.iter (Run_state.fail ~cause:"would_lock_out") t.lockout;
         session, live, t in
   if json && yes then begin
     let response = with_stdout_on_stderr
@@ -738,6 +742,8 @@ let dispatch (context : (Dispatcher.env * Pipeline.t) Lazy.t) (inv : Cli_spec.in
          let apps = Dispatcher.list_apps env and guests = Dispatcher.list_guests env in
          if not ((kind <> "guest" && known apps name) || (kind <> "app" && known guests name)) then
            Run_state.fail ~cause:"unknown_workload" (Printf.sprintf "unknown %s: %s" kind name)
+     | ("host-id|guest", _) :: _, name :: _ when Remote_host.host_of_label env name = None ->
+         Run_state.fail ~cause:"invalid_argument" ("expected a configured host ID or guest name, not " ^ name)
      | _ -> ());
     ignore (Remote_host.approved env ~operation:(String.concat "." inv.command.path)
               ~facts:(request_facts inv) (Cli_spec.name inv.command))

@@ -81,11 +81,37 @@ What an error means depends on where the run stood:
   operator's, after looking at the host.
 
 `error.code` says how the run ended; `error.cause` says why, in a word set
-where the failure was raised, or null when none was: `lock_held`,
-`lock_stale`, `host_unreachable`, `command_failed` (a remote or local
-command exited non-zero), `declined`, `approval_needed`, `unknown_workload`,
-`invalid_name`, `unsupported_for_workload`. More may be added; treat an
-unknown cause as null.
+where the failure was raised. Every failure serai raises names one (a
+lint test keeps it so). `cause` is null when the code already says it all
+(`stale_plan`, `invalid_request`) and for an error serai did not raise
+itself (`internal_error`, or a failure from a library underneath). More
+causes may be added: treat an unknown one as you would null.
+
+| Cause | Meaning |
+| --- | --- |
+| `invalid_argument` | A command-line value is malformed or names nothing declared. |
+| `unknown_workload` | No app or guest by that name. |
+| `unsupported_for_workload` | The workload's strategy does not support this. |
+| `invalid_declaration` | The declaration does not load, render or agree with itself. |
+| `render_failed` | A jail script, the edge or a template does not render. |
+| `invalid_environment` | A setting serai reads is wrong: an environment variable, `update.sexp`, its state directory. |
+| `input_unavailable` | A local file, checkout, download or engine script is missing or unreadable. |
+| `input_mismatch` | A digest, identity or recorded input differs from what was asked for. |
+| `already_exists` | Something serai would create is already there. |
+| `source_unavailable` | Source cannot be fetched, resolved or exported. |
+| `invalid_source` | Staged source or an opam repository is not as required. |
+| `store_failed` | The artifact store, or an entry in it, cannot be used. |
+| `approval_needed` / `declined` | Nobody approved, or the operator said no. |
+| `would_lock_out` | The identity-provider plan would lock the operator out. |
+| `lock_held` / `lock_stale` / `lock_failed` | A host's lock is held, old, or could not be taken. |
+| `host_unreachable` | ssh could not reach the host. |
+| `host_state` | What a probe found on the host blocks this: a jail without its env, a held address, no previous release. |
+| `service_unavailable` | A service serai calls (Pocket ID) did not answer usefully. |
+| `command_failed` | A remote or local command exited non-zero. |
+| `build_failed` | The build failed; its build jail was removed. |
+| `invalid_build_output` | A build's output is missing, malformed or does not match. |
+| `check_failed` | The public health check failed. |
+| `stopped_for_operator` | The run stopped for the operator to act (write an env, approve an edge plan). |
 
 A result object also says what the run did: `changed` (a host may have
 changed), `hosts` (each host whose lock it took) and `ran` (each step it

@@ -39,6 +39,14 @@ let () =
     (says r {|"code":"not_applied"|} && says r {|"cause":"lock_held"|});
   let r = respond (fun () -> ignore (try Run_state.fail ~cause:"declined" "first" with Failure _ -> ()); failwith "second") in
   check "a cause belongs to its own message, not to a later failure" (says r {|"cause":null|});
+  let r = respond (fun () ->
+      try Run_state.fail ~cause:"host_state" "no previous release"
+      with Failure message -> Run_state.refail ~prefix:"revert: " ~otherwise:"command_failed" message) in
+  check "a failure passed on keeps its cause under a new prefix"
+    (says r {|"message":"revert: no previous release"|} && says r {|"cause":"host_state"|});
+  let r = respond (fun () ->
+      try failwith "plain" with Failure message -> Run_state.refail ~otherwise:"command_failed" message) in
+  check "a failure passed on without a cause takes the fallback" (says r {|"cause":"command_failed"|});
   Run_state.locked "compute"; Run_state.ran "bootstrap hello"; Run_state.changing ();
   let r = respond (fun () -> Ok (Json.Object [ "workload", Json.String "hello" ])) in
   check "a result says what ran and on which hosts"

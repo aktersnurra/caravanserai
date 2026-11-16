@@ -61,32 +61,32 @@ type new_kind = New_phoenix | New_ocaml
 let new_app env name ~kind ~repo ~hostname =
   let read path = In_channel.with_open_bin path In_channel.input_all in
   let repo = if Filename.is_relative repo then Filename.concat (Sys.getcwd ()) repo else repo in
-  if not (Sys.file_exists repo && Sys.is_directory repo) then failwith ("new: " ^ repo ^ " is not a directory");
+  if not (Sys.file_exists repo && Sys.is_directory repo) then Run_state.fail ~cause:"invalid_argument" ("new: " ^ repo ^ " is not a directory");
   let source = match Source_mirror.origin_url ~jj_bin:env.jj_bin repo with
     | Ok url -> url
-    | Error message -> failwith (Printf.sprintf "new: %s: %s (builds fetch the origin)" repo message) in
+    | Error message -> Run_state.fail ~cause:"source_unavailable" (Printf.sprintf "new: %s: %s (builds fetch the origin)" repo message) in
   let kind = match kind with
     | New_ocaml -> App_scaffold.Ocaml
     | New_phoenix ->
         let mix_exs = Filename.concat repo "mix.exs" in
-        if not (Sys.file_exists mix_exs) then failwith ("new: no mix.exs in " ^ repo);
+        if not (Sys.file_exists mix_exs) then Run_state.fail ~cause:"invalid_argument" ("new: no mix.exs in " ^ repo);
         let release_ex release =
           let path = Filename.concat repo (Printf.sprintf "lib/%s/release.ex" release) in
           if Sys.file_exists path then Some (read path) else None in
         match App_scaffold.phoenix ~mix_exs:(read mix_exs) ~release_ex with
         | Ok kind -> kind
-        | Error message -> failwith ("new: " ^ message) in
+        | Error message -> Run_state.fail ~cause:"invalid_argument" ("new: " ^ message) in
   let declaration = match Declaration.load ~layout:env.layout with
     | Ok declaration -> declaration
-    | Error error -> failwith ("new: " ^ Declaration.error_message error) in
+    | Error error -> Run_state.fail ~cause:"invalid_declaration" ("new: " ^ Declaration.error_message error) in
   let topology_path = Layout.topology env.layout in
   let topology = read topology_path in
   let templates = Caddy_render.template_names (Layout.caddy_sites env.layout) in
-  let plan = ok_or_fail (App_scaffold.plan declaration ~topology ~templates
+  let plan = ok_or_fail ~cause:"invalid_declaration" (App_scaffold.plan declaration ~topology ~templates
                      { name; kind; repo_path = repo; source; hostname }) in
   let app_dir = Layout.app_dir env.layout name in
   List.iter (fun path ->
-      if Sys.file_exists path then failwith ("new: " ^ path ^ " already exists"))
+      if Sys.file_exists path then Run_state.fail ~cause:"already_exists" ("new: " ^ path ^ " already exists"))
     (app_dir :: List.map (fun (f : App_scaffold.file) -> Layout.config_path env.layout f.path) plan.files);
   let write path contents = Out_channel.with_open_bin path (fun out -> output_string out contents) in
   let undo () =
@@ -103,7 +103,7 @@ let new_app env name ~kind ~repo ~hostname =
              (Result.map_error Declaration.error_message (Declaration.load ~layout:env.layout))
              Validation.render_all with
      | Ok _ -> ()
-     | Error message -> failwith ("new: the declaration does not render with " ^ name ^ ": " ^ message)
+     | Error message -> Run_state.fail ~cause:"invalid_declaration" ("new: the declaration does not render with " ^ name ^ ": " ^ message)
    with exn -> undo (); raise exn);
   plan
 
@@ -117,7 +117,7 @@ let is_guest env name = List.exists (fun guest -> Guest_config.name guest = name
    so the choice never depends on lookup order. *)
 let deploy_app_or_guest env name =
   match (App_config.find env.config name, is_guest env name) with
-  | Some _, true -> failwith (Printf.sprintf "deploy: %s is both an app and a guest" name)
+  | Some _, true -> Run_state.fail ~cause:"invalid_declaration" (Printf.sprintf "deploy: %s is both an app and a guest" name)
   | None, true -> deploy_guest env name
   | _, false -> deploy env name
 
