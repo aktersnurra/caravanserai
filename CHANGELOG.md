@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-11-24: `serai update` reports an unloadable configuration once
+
+- A configuration whose declaration the installed engine cannot load (one
+  written for a newer engine, or malformed) is reported once as
+  `configuration: unavailable: ...`, like an unsigned one, instead of
+  raising out of the run. Before, it printed on every run, so cron mailed
+  it every minute.
+
 ## 2026-11-23: 32-bit compatibility libraries in jails
 
 - A build host's `(build ...)` in `serai.sexp` takes an optional

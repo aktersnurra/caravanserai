@@ -168,7 +168,11 @@ let examine ~plan deps config paths ~handled =
   match verified_configuration deps config paths with
   | Error configuration -> { configuration; apps = [] }
   | Ok (commit, layout) ->
-      let env = deps.env_of_layout layout in
+  (* A declaration this engine cannot load, say one written for a newer
+     engine, is the configuration's failure: reported once, not raised. *)
+  match deps.env_of_layout layout with
+  | exception Failure message -> { configuration = Configuration_unavailable message; apps = [] }
+  | env ->
       let apps = List.map (fun ({ name; _ } as app) ->
           let outcome =
             try app_outcome ~plan deps config paths env ~handled:(handled name) app

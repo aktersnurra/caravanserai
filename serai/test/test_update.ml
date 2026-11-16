@@ -88,8 +88,10 @@ let () =
     let failing = String.make 40 'c' and retried = String.make 40 '7' in
     ignore (stored failing); ignore (stored retried);
 
+    (* As serai's own: a declaration that does not load raises. *)
     let env_of_layout layout : Dispatcher.env =
-      let d = Result.get_ok (Declaration.load ~layout) in
+      let d = match Declaration.load ~layout with
+        | Ok d -> d | Error error -> failwith (Declaration.error_message error) in
       { layout; topology = Some topology;
         compute_target = "compute"; edge_target = "edge"; remote_stage = "/tmp/serai-update-test";
         ssh_bin = "ssh"; rsync_bin = "rsync"; curl_bin = "curl"; config = d.apps;
@@ -216,6 +218,28 @@ let () =
          check "and is reported" (outcome.failed && List.length outcome.lines = 1)
      | None, _ -> check "the configuration run takes the run lock" false);
     signature_of := (fun _ -> "good " ^ key);
+
+    (* A configuration the installed engine cannot load: reported once, as
+       a configuration line, not raised out of the run on every cron tick. *)
+    let serai_sexp = Filename.concat tree "serai.sexp" in
+    let declared = In_channel.with_open_bin serai_sexp In_channel.input_all in
+    write serai_sexp "((unknown_field x))";
+    (match run () with
+     | Some outcome, calls ->
+         check "a configuration that does not load stops the run"
+           ((match outcome.report.configuration with Update.Configuration_unavailable _ -> true | _ -> false)
+            && outcome.report.apps = []);
+         check "before any host is reached" (ssh calls = []);
+         check "and is reported as a failure"
+           (outcome.failed && (match outcome.lines with
+              | [ line ] -> contains "configuration:" line && contains "unknown_field" line
+              | _ -> false))
+     | None, _ -> check "the unloadable configuration run takes the run lock" false);
+    (match run () with
+     | Some outcome, _ ->
+         check "an unloadable configuration is reported once" (outcome.lines = [] && not outcome.failed)
+     | None, _ -> check "the repeat unloadable run takes the run lock" false);
+    write serai_sexp declared;
 
     (* A release that fails after its switch, on an app that migrates: no revert. *)
     let reset commit =
