@@ -42,6 +42,12 @@ let () =
   check "operator_ports empty" (e.operator_ports = [])
 
 let () =
+  List.iter (fun port ->
+      check ("a port written as " ^ port ^ " is rejected: decimal digits only")
+        (rejects_with ~needle:"integer port"
+           (Printf.sprintf {|(name drill) (ip 10.40.0.2) (hostname drill.example)
+                             (tailnet_ports ((http %s))) (operator_ports ())|} port)))
+    [ "0x1f90"; "8_080"; "-1"; "0b11" ];
   check "unknown field rejected, naming it"
     (rejects_with ~needle:"jail_ip" (drill_fields ^ "(jail_ip 10.40.0.2)"));
   check "duplicate field rejected, naming it"

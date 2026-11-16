@@ -30,6 +30,6 @@ let of_app ~topology (app : App_config.t) =
     | exception Failure message -> Error message in
   let* build = match host.build with
     | Some build -> Ok build
-    | None -> Error (Printf.sprintf "%s: host %s declares no (build ...) in topology.sexp" name host.id) in
+    | None -> Error (Printf.sprintf "%s: host %s declares no (build ...) in %s" name host.id Layout.Relative.topology) in
   Ok { app; kind; host; build; source_url; opam_repository;
        public_url = "https://" ^ app.endpoint.hostname ^ check_path }

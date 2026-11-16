@@ -55,7 +55,7 @@ grep -Fq 'ERROR: CADDY_SOURCE is required; run serai edge (config) or serai cadd
 [ ! -e "$tmp/called" ] || fail "ran $(tr '\n' ' ' <"$tmp/called")without CADDY_SOURCE"
 grep -Fxq keep-me "$tmp/caddy/Caddyfile" || fail 'live Caddyfile touched without CADDY_SOURCE'
 [ ! -e "$tmp/unit" ] || fail 'unit written without CADDY_SOURCE'
-! ls "$tmp" | grep -q 'caddy.backup' || fail 'backup written without CADDY_SOURCE'
+! compgen -G "$tmp/*caddy.backup*" >/dev/null || fail 'backup written without CADDY_SOURCE'
 rm -f "$tmp/caddy/Caddyfile"
 mv "$tmp/secrets.env" "$tmp/caddy/secrets.env"
 

@@ -131,6 +131,12 @@ let () =
   check "parse: script carries its name and resolves $COMPUTE_TARGET/$EDGE_TARGET"
     (Pipeline.step_of_sexp (sexp_of_string "(script seed-videos $COMPUTE_TARGET literal-arg)")
     = Pipeline.Script ("seed-videos", [ Compute_target; Literal "literal-arg" ]));
+  List.iter (fun name ->
+      check ("parse: script " ^ name ^ " is refused: a plain file name in the app's directory only")
+        (match Pipeline.step_of_sexp (sexp_of_string (Printf.sprintf "(script %s)" name)) with
+         | exception Sexplib.Conv.Of_sexp_error _ -> true
+         | _ -> false))
+    [ "../other/deploy"; "/bin/sh"; "sub/step"; ".hidden" ];
   check "parse: an unknown hook name is a load-time error, not a silent no-op"
     (match Pipeline.step_of_sexp (sexp_of_string "bogus-hook") with
     | exception Sexplib.Conv.Of_sexp_error _ -> true

@@ -32,20 +32,12 @@ let script ~app =
 
 type t = { active : string option; source : string option; previous : string option }
 
-let is_hex length value =
-  String.length value = length
-  && String.for_all (function '0' .. '9' | 'a' .. 'f' -> true | _ -> false) value
+let is_hex length value = String.length value = length && Hex.is_lower value
 
 let ( let* ) = Result.bind
 
 let answer ~marker output =
-  match
-    String.split_on_char '\n' output
-    |> List.filter_map (fun line ->
-           if String.starts_with ~prefix:marker line then
-             Some (String.sub line (String.length marker) (String.length line - String.length marker))
-           else None)
-  with
+  match Shell.answers ~marker output with
   | [ value ] -> Ok value
   | _ -> Error (Printf.sprintf "release probe: expected one %S answer" (String.trim marker))
 

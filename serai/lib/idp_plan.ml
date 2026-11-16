@@ -241,14 +241,14 @@ let lines t =
       t.undeclared
 
 let action_to_json =
-  let open Agent_cli in
-  let strings xs = Array (List.map (fun x -> Text x) xs) in
+  let open Json in
+  let strings xs = Array (List.map (fun x -> String x) xs) in
   let change = function
-    | Value field -> Object [ ("field", Text field) ]
+    | Value field -> Object [ ("field", String field) ]
     | Set { field; added; removed } ->
-        Object [ ("field", Text field); ("added", strings added); ("removed", strings removed) ] in
+        Object [ ("field", String field); ("added", strings added); ("removed", strings removed) ] in
   let entry action kind name extra =
-    Object ([ ("action", Text action); ("kind", Text (kind_name kind)); ("name", Text name) ] @ extra) in
+    Object ([ ("action", String action); ("kind", String (kind_name kind)); ("name", String name) ] @ extra) in
   let changes cs = [ ("changes", Array (List.map change cs)) ] in
   let keys = function None -> Null | Some ks -> strings ks in
   let action = function
@@ -263,21 +263,21 @@ let action_to_json =
     | Set_cimd { resource; permissions } -> entry "set_cimd" Api resource [ ("permissions", keys permissions) ]
     | Set_grant { resource; grant } ->
         entry "set_grant" Api resource
-          [ ("client", Text grant.client); ("user_delegated", keys grant.user_delegated);
+          [ ("client", String grant.client); ("user_delegated", keys grant.user_delegated);
             ("client_credentials", keys grant.client_credentials) ]
-    | Remove_grant { resource; client } -> entry "remove_grant" Api resource [ ("client", Text client) ]
+    | Remove_grant { resource; client } -> entry "remove_grant" Api resource [ ("client", String client) ]
   in
   action
 
 let to_json t =
-  let open Agent_cli in
-  let strings xs = Array (List.map (fun x -> Text x) xs) in
+  let open Json in
+  let strings xs = Array (List.map (fun x -> String x) xs) in
   Object
     [ ("pending", Bool (pending t));
-      ("plan_id", match t.plan_id with Some id -> Text (Plan_id.to_string id) | None -> Null);
+      ("plan_id", match t.plan_id with Some id -> String (Plan_id.to_string id) | None -> Null);
       ("actions", Array (List.map action_to_json t.actions));
       ("undeclared", Array (List.map (fun (kind, name) ->
-           Object [ ("kind", Text (kind_name kind)); ("name", Text name) ]) t.undeclared));
+           Object [ ("kind", String (kind_name kind)); ("name", String name) ]) t.undeclared));
       ("secrets_needed", strings t.secrets_needed) ]
 
 (* Pocket ID stores these when a client sets none (v2.19.1). *)

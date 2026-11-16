@@ -3,9 +3,7 @@ type entry = { path : string; executable : bool }
 let ( let* ) value next = Result.bind value next
 let error text = Error ("source snapshot: " ^ text)
 
-let is_hex value =
-  (String.length value = 40 || String.length value = 64)
-  && String.for_all (function '0' .. '9' | 'a' .. 'f' -> true | _ -> false) value
+let is_hex = Hex.is_object_id
 
 let is_revision value =
   value <> "" && String.length value <= 256
@@ -78,13 +76,6 @@ let entries_of_output output =
   in
   parse [] [] parts
 
-let rec remove_tree path =
-  match (Unix.lstat path).Unix.st_kind with
-  | Unix.S_DIR ->
-      Array.iter (fun name -> remove_tree (Filename.concat path name)) (Sys.readdir path);
-      Unix.rmdir path
-  | _ -> Unix.unlink path
-
 let rec ensure_parent root components =
   match components with
   | [] -> root
@@ -145,7 +136,7 @@ let stage ~jj_bin ~checkout ~revision ~out =
     else
       let temporary = Filename.temp_dir ~temp_dir:parent "source-snapshot-" "-tmp" in
       Fun.protect ~finally:(fun () ->
-        if Sys.file_exists temporary then remove_tree temporary)
+        if Sys.file_exists temporary then Fs.remove_tree temporary)
         (fun () ->
           Unix.chmod temporary 0o700;
           List.iter (export_entry jj_bin checkout commit temporary) entries;
@@ -160,11 +151,8 @@ let stage ~jj_bin ~checkout ~revision ~out =
 let stage_cached ~jj_bin ~checkout ~revision ~cache =
   try
     let* commit = resolve jj_bin checkout revision in
-    let* () = match Unix.lstat cache with
-      | { Unix.st_kind = Unix.S_DIR; st_uid; st_perm; _ }
-        when st_uid = Unix.geteuid () && st_perm land 0o077 = 0 -> Ok ()
-      | _ -> error "snapshot cache must be a private directory"
-      | exception Unix.Unix_error (Unix.ENOENT, _, _) -> Unix.mkdir cache 0o700; Ok () in
+    let* () = if Fs.ensure_private_directory cache then Ok ()
+      else error "snapshot cache must be a private directory" in
     let tree = Filename.concat cache commit in
     match Unix.lstat tree with
     | { Unix.st_kind = Unix.S_DIR; _ } -> Ok (commit, tree)

@@ -20,8 +20,7 @@ let to_string t =
                 @ [ Sexp.List [ Atom "apps"; Sexp.List (List.map app t.apps) ] ]))
   ^ "\n"
 
-let is_commit value =
-  String.length value = 40 && String.for_all (function '0' .. '9' | 'a' .. 'f' -> true | _ -> false) value
+let is_commit = Hex.is_commit
 
 let of_sexp sexp =
   let atom = Sexp_fields.atom ~context in
@@ -48,23 +47,15 @@ let of_string text =
   | exception Conv.Of_sexp_error (Failure message, _) -> Error message
   | exception Conv.Of_sexp_error (exn, _) -> Error (Printexc.to_string exn)
   | exception Failure message -> Error (context ^ ": " ^ message)
-  | exception Parsing.Parse_error -> Error (context ^ ": unreadable")
+  | exception Sexplib.Sexp.Parse_error { err_msg; _ } -> Error (context ^ ": " ^ err_msg)
 
 let ( let* ) = Result.bind
 
 (* Missing directories are created private; an existing one must be this
    user's and closed to everyone else, as the store and caches are. *)
-let rec private_directory path =
-  match Unix.lstat path with
-  | { Unix.st_kind = Unix.S_DIR; st_uid; st_perm; _ } when st_uid = Unix.geteuid () && st_perm land 0o077 = 0 ->
-      Ok ()
-  | _ -> Error (Printf.sprintf "%s: %s must be a private directory" context path)
-  | exception Unix.Unix_error (Unix.ENOENT, _, _) ->
-      let parent = Filename.dirname path in
-      let* () =
-        if parent = path || Sys.file_exists parent then Ok () else private_directory parent in
-      Unix.mkdir path 0o700;
-      Ok ()
+let private_directory path =
+  if Fs.ensure_private_directory path then Ok ()
+  else Error (Printf.sprintf "%s: %s must be a private directory" context path)
 
 let state_file dir = Filename.concat dir "state.sexp"
 
@@ -91,7 +82,7 @@ let save ~dir t =
 
 let with_run_lock ~dir f =
   match private_directory dir with
-  | Error message -> failwith message
+  | Error message -> Run_state.fail ~cause:"invalid_environment" message
   | Ok () ->
       let fd = Unix.openfile (Filename.concat dir "lock") [ O_RDWR; O_CREAT ] 0o600 in
       Fun.protect ~finally:(fun () -> Unix.close fd) (fun () ->

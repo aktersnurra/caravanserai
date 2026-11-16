@@ -5,6 +5,38 @@ procedure is the serai-operations skill a configuration carries in
 `.agents/skills/`.
 There is no MCP server, separate agent executor or implicit permission layer.
 
+## Every command
+
+```sh
+serai commands --json
+```
+
+lists every command with its arguments, flags, a `synopsis`, its `effect`
+(`offline`, `reads_hosts`, `changes_local_files` or `changes_hosts`) and
+whether it takes a plan. The parser, the usage text and this list come from
+one table. Every command takes `--json`: one result object on stdout,
+everything else on stderr. Flags come in any order, each at most once.
+
+A command whose effect is `changes_hosts` applies, under `--json`, only a
+plan the operator approved (see "Plan binding"):
+
+```sh
+serai bootstrap hello --plan --json                    # exit 2: the plan and its plan_id
+serai bootstrap hello --yes --json --expect-plan <id>  # only that plan
+```
+
+Without `--plan`, or `--yes --expect-plan <id>`, it is `invalid_request`
+before anything is read. A plan's `data` holds `operation`, `plan_id`,
+`question`, `facts` (what the id covers) and `applied: false`.
+
+Two read-only commands report live state. `serai locks [host] --json`
+gives each host's lock: `state` (`free`, `held`, `unavailable`) and, when
+held, `holder`, `age_seconds`, `stale` and `holder_alive` (true or false
+when the holder is a run on this machine, null otherwise). `serai status
+[app] --json` gives each app's `jail` (`absent`, `ready`, `needs_env`) and
+`release` (`active`, `source_commit`, `previous`), or `unavailable` with
+the reason; one connection per app.
+
 ## Version 1: read-only results
 
 ```sh
@@ -32,11 +64,65 @@ validation renders in memory without writing them. The illustration omits them.
 | --- | --- |
 | `schema_version` | Integer 1. Reject unsupported versions. |
 | `operation` | `inspect`, `validate`, `artifact.plan`, or the refused requested operation. |
-| `status` | `succeeded`, `refused`, `failed`, or `interrupted`. |
+| `status` | `succeeded`, `refused`, `failed`, `unknown`, or `interrupted`. |
 | `data` | Operation result on success; null otherwise. |
-| `error` | Null on success; `{code, message}` otherwise. Branch on code, not message. |
+| `error` | Null on success; `{code, message, cause}` otherwise. Branch on `code` and `cause`, not the message. |
 
-Exit codes: 0 for success, 1 for refusal/failure, 130 for interruption. Require both
+What an error means depends on where the run stood:
+
+- `refused`: nothing changed. Fix the request and run it again.
+- `failed`: a host may have changed (`apply_failed`), or a step failed
+  after earlier ones ran (`step_failed`, with `data` saying which). Read
+  `serai status` and `serai drift` before deciding what to run.
+- `unknown` (`outcome_unknown`, exit 3): the outcome on a host is not
+  known, so its stage and lock were left in place. `data.retained` names
+  each `host` and `stage`, with `inspect` and `unlock_after_inspection` as
+  commands. Do not retry and do not unlock: report it. Unlocking is the
+  operator's, after looking at the host.
+
+`error.code` says how the run ended; `error.cause` says why, in a word set
+where the failure was raised. Every failure serai raises names one (a
+lint test keeps it so). `cause` is null when the code already says it all
+(`stale_plan`, `invalid_request`) and for an error serai did not raise
+itself (`internal_error`, or a failure from a library underneath). More
+causes may be added: treat an unknown one as you would null.
+
+| Cause | Meaning |
+| --- | --- |
+| `invalid_argument` | A command-line value is malformed or names nothing declared. |
+| `unknown_workload` | No app or guest by that name. |
+| `unsupported_for_workload` | The workload's strategy does not support this. |
+| `invalid_declaration` | The declaration does not load, render or agree with itself. |
+| `render_failed` | A jail script, the edge or a template does not render. |
+| `invalid_environment` | A setting serai reads is wrong: an environment variable, `update.sexp`, its state directory. |
+| `input_unavailable` | A local file, checkout, download or engine script is missing or unreadable. |
+| `input_mismatch` | A digest, identity or recorded input differs from what was asked for. |
+| `already_exists` | Something serai would create is already there. |
+| `source_unavailable` | Source cannot be fetched, resolved or exported. |
+| `invalid_source` | Staged source or an opam repository is not as required. |
+| `store_failed` | The artifact store, or an entry in it, cannot be used. |
+| `approval_needed` / `declined` | Nobody approved, or the operator said no. |
+| `would_lock_out` | The identity-provider plan would lock the operator out. |
+| `lock_held` / `lock_stale` / `lock_failed` | A host's lock is held, old, or could not be taken. |
+| `host_unreachable` | ssh could not reach the host. |
+| `host_state` | What a probe found on the host blocks this: a jail without its env, a held address, no previous release. |
+| `service_unavailable` | A service serai calls (Pocket ID) did not answer usefully. |
+| `command_failed` | A remote or local command exited non-zero. |
+| `build_failed` | The build failed; its build jail was removed. |
+| `invalid_build_output` | A build's output is missing, malformed or does not match. |
+| `check_failed` | The public health check failed. |
+| `stopped_for_operator` | The run stopped for the operator to act (write an env, approve an edge plan). |
+
+A result object also says what the run did: `changed` (a host may have
+changed), `hosts` (each host whose lock it took) and `ran` (each step it
+announced, in order). A `failed` or `unknown` result carries the same
+fields, so a failure still shows how far the run got. A command with
+nothing else to report names its `workload`; `check` adds the `service` and
+the URLs it `checked`. `up` gives `next` as a sentence and `next_command`
+as the command to run, or null when the next move is the operator's alone.
+
+Exit codes: 0 for success, 1 for refusal/failure, 2 for a plan or pending
+changes, 3 for unknown, 130 for interruption. Require both
 exit zero and `status=succeeded`. Consumers may tolerate additional fields but
 must not treat unknown status values as success. Output transport failure can
 prevent a result from being delivered; missing/invalid JSON is not success.
@@ -44,7 +130,7 @@ prevent a result from being delivered; missing/invalid JSON is not success.
 Stable error codes are `invalid_request`, `unsupported_operation`,
 `input_unavailable`, `invalid_declaration`, `unknown_workload`, `invalid_plan`,
 `render_failed`, `internal_error`, `interrupted`, `not_applied`,
-`step_failed` and `stale_plan`.
+`step_failed`, `stale_plan`, `apply_failed` and `outcome_unknown`.
 
 ### Inspect
 
@@ -101,7 +187,7 @@ serai up hello --revision master --yes --json --expect-plan <plan_id>
 Operation `up`. It applies only with `--yes`, because there is no terminal
 to ask in: without it the request is refused as unsupported, and `--yes` is
 the operator's approval, never the agent's. It applies only the plan the
-operator approved: `--expect-plan` is required, in this order after
+operator approved: `--expect-plan` is required together with
 `--yes`, and a plan that changed since is `stale_plan` (see "Plan
 binding"). Everything the run prints goes
 to stderr; stdout holds the one result. A refusal before anything changed
@@ -290,6 +376,19 @@ JSON apply must name the id of the plan the operator approved:
    `stale_plan`, exit 1, nothing changed. Plan again and have the new plan
    approved; never apply it on the old approval.
 
+`artifact build`, `artifact upgrade`, `rollback` and `convert`, `revert`,
+`caddy-install` and `jail-test` ask for approval at the point of change,
+on the facts they act on (the jail, host, identity and archive digest; the
+builder, base, source commit and recipe; the rendered files' digests).
+`bootstrap`, `deploy`, `provision`, `build`, `rollout`, `run`, `unlock` and
+`artifact install` ask nothing themselves: their plan is the request as
+given.
+
+An approved `up` plan showed no edge change, so it applies none. When edge
+changes are pending after the release, `up` plans them and stops:
+`outcome` is `stopped_for_operator`, the edge step is `pending`, and
+`edge_plan_id` is the plan to have approved and applied with `serai edge`.
+
 What an id covers: for `up`, the app, compute host, source, commit, local or
 pushed, release (reused identity, or builder and base), jail action,
 rehearsal and public URL; for `edge`, each pending component's name, host
@@ -302,9 +401,9 @@ runs print `plan <id>` after the plan and take `--expect-plan` optionally.
 
 ## Mutation boundary remains explicit
 
-JSON result mode refuses every other operation, including an `up` without
-`--yes` and any JSON apply without `--expect-plan`, **before repository
-loading or remote work**. `update` is the one
+JSON result mode refuses a host-changing command without a plan request or
+an approved plan, including an `up` without `--yes` and any JSON apply
+without `--expect-plan`, **before repository loading or remote work**. `update` is the one
 exception, because its authority is the signed commit, as above. `--yes`,
 extra arguments and duplicate `--json` are not silently accepted by the
 supported read-only requests. Do not automatically remove a

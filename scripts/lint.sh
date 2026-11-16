@@ -27,51 +27,24 @@ fail=0
 # ---------------------------------------------------------------------------
 # 1. Shellcheck
 # ---------------------------------------------------------------------------
-SHELL_SCRIPTS=(
-  compute/01-base
-  compute/apps/_lib/logging/bootstrap.sh
-  compute/apps/_lib/logging/central-logging.rc.template
-  compute/apps/_lib/logging/installed-state.sh
-  compute/apps/_lib/logging/target-manifest.sh
-  example/apps/logs/check-forwarding
-  example/guests/ledger/logging
-  edge/00-headscale
-  edge/01-tailscale
-  edge/02-caddy
-  edge/03-logging
-  edge/04-vmui-auth
-  scripts/install.sh
-  scripts/lint.sh
-  scripts/push.sh
-  tests/test_caddy_lifecycle.sh
-  tests/test_hooks.sh
-  tests/test_artifact_install.sh
-  tests/test_artifact_build_phoenix.sh
-  tests/test_artifact_build_jail.sh
-  tests/test_artifact_verify_source.sh
-  tests/test_artifact_activate.sh
-  tests/test_artifact_apply.sh
-  tests/test_artifact_apply_cli.sh
-  tests/test_artifact_lifecycle.sh
-  tests/test_topology_cli.sh
-  tests/test_up_cli.sh
-  tests/test_agent_cli.sh
-  tests/test_artifact_host_runner.sh
-  tests/test_logging_policy_contract.sh
-  tests/test_logging_retry.sh
-  tests/test_logging_recovery.sh
-  tests/test_freebsd_forwarding.sh
-  tests/test_caddy_access_redaction.sh
-  tests/test_vmui_auth_contract.sh
-  tests/test_edge_logging_contract.sh
-  tests/stat-field
-)
+# Every script is found, not listed: a new one cannot be left out. A file
+# with a shell shebang is checked in that dialect; the sourced libraries
+# without one are named with theirs.
+shell_scripts() {
+  local file
+  while IFS= read -r file; do
+    case "$(head -c 64 "$file" | head -n 1)" in
+      '#!'*sh*) printf '%s\n' "$file" ;;
+    esac
+  done < <(find compute edge scripts tests example -type f | LC_ALL=C sort)
+  printf '%s\n' compute/apps/_lib/logging/central-logging.rc.template
+}
 SHELL_LIBS=(
   compute/apps/_lib/check.sh
   compute/apps/_lib/deploy.sh
 )
 # Artifact helpers run under FreeBSD /bin/sh (or the guest's sh): check them
-# all in that dialect, so a new helper cannot be left out of the list.
+# all in that dialect.
 SHELL_SH_LIBS=(compute/apps/_lib/artifact_*.sh)
 
 echo "→ shellcheck"
@@ -79,9 +52,10 @@ if ! command -v shellcheck >/dev/null 2>&1; then
   red "  shellcheck not installed"
   fail=1
 else
-  for s in "${SHELL_SCRIPTS[@]}"; do
+  while IFS= read -r s; do
+    case "$s" in compute/apps/_lib/artifact_*.sh) continue ;; esac
     shellcheck --severity=warning --exclude=SC1091 "$s" || fail=1
-  done
+  done < <(shell_scripts | LC_ALL=C sort -u)
   for s in "${SHELL_LIBS[@]}"; do
     shellcheck --severity=warning --exclude=SC1091 --shell=bash "$s" || fail=1
   done

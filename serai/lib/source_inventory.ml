@@ -1,9 +1,7 @@
 type file = { path : string; mode : string; sha256 : string }
 type t = { commit : string; files : file list }
 
-let is_hex value =
-  (String.length value = 40 || String.length value = 64)
-  && String.for_all (function '0' .. '9' | 'a' .. 'f' -> true | _ -> false) value
+let is_hex = Hex.is_object_id
 
 let is_path path =
   path <> "" && String.length path <= 4096
@@ -17,18 +15,7 @@ let is_path path =
             | _ -> false) component)
        (String.split_on_char '/' path)
 
-let sha256_file path =
-  let channel = open_in_bin path in
-  Fun.protect ~finally:(fun () -> close_in channel) (fun () ->
-    if (Unix.fstat (Unix.descr_of_in_channel channel)).Unix.st_kind <> Unix.S_REG then
-      failwith "source inventory: file changed type during hashing";
-    let bytes = Bytes.create 65536 in
-    let rec consume state =
-      let length = input channel bytes 0 (Bytes.length bytes) in
-      if length = 0 then state
-      else consume (Digestif.SHA256.feed_string state (Bytes.sub_string bytes 0 length))
-    in
-    Digestif.SHA256.(to_hex (get (consume empty))))
+let sha256_file = Fs.file_sha256 ~not_regular:"source inventory: file changed type during hashing"
 
 let create ~root ~commit =
   try

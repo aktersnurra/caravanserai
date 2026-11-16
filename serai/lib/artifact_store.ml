@@ -3,14 +3,18 @@ let ( let* ) result f = Result.bind result f
 let protect_root root =
   if Filename.is_relative root then Error "artifact store: root must be absolute"
   else
-    match Unix.lstat root with
-    | metadata when metadata.Unix.st_kind = Unix.S_DIR
-        && metadata.Unix.st_uid = Unix.geteuid ()
-        && metadata.Unix.st_perm land 0o077 = 0 -> Ok ()
-    | _ -> Error "artifact store: root must be a private owned directory"
-    | exception Unix.Unix_error _ -> Error "artifact store: root not found"
+    match Fs.private_directory root with
+    | Private -> Ok ()
+    | Unsafe -> Error "artifact store: root must be a private owned directory"
+    | Missing | exception Unix.Unix_error _ -> Error "artifact store: root not found"
 
 let validate_root = protect_root
+
+let private_entry ?(missing = "artifact store: missing entry") entry =
+  match Fs.private_directory entry with
+  | Private -> Ok ()
+  | Unsafe -> Error "artifact store: unsafe entry"
+  | Missing | exception Unix.Unix_error _ -> Error missing
 
 let entry_path root manifest =
   Filename.concat root (Artifact_manifest.identity manifest)
@@ -34,12 +38,7 @@ let reuse ~root ~manifest =
   try
     let* () = protect_root root in
     let entry = entry_path root manifest in
-    let* () = match Unix.lstat entry with
-      | metadata when metadata.Unix.st_kind = Unix.S_DIR
-          && metadata.Unix.st_uid = Unix.geteuid ()
-          && metadata.Unix.st_perm land 0o077 = 0 -> Ok ()
-      | _ -> Error "artifact store: unsafe entry"
-      | exception Unix.Unix_error _ -> Error "artifact store: missing entry" in
+    let* () = private_entry entry in
     if not (canonical_matches (Filename.concat entry "manifest")
       (Artifact_manifest.canonical manifest)) then
       Error "artifact store: manifest mismatch"
@@ -53,15 +52,9 @@ let reuse ~root ~manifest =
 let load ~root ~identity =
   try
     let* () = protect_root root in
-    let* () = if String.length identity = 64
-      && String.for_all (function '0'..'9' | 'a'..'f' -> true | _ -> false) identity
-      then Ok () else Error "artifact store: invalid identity" in
+    let* () = if Hex.is_sha256 identity then Ok () else Error "artifact store: invalid identity" in
     let entry = Filename.concat root identity in
-    let* () = match Unix.lstat entry with
-      | metadata when metadata.Unix.st_kind = Unix.S_DIR
-          && metadata.Unix.st_uid = Unix.geteuid ()
-          && metadata.Unix.st_perm land 0o077 = 0 -> Ok ()
-      | _ -> Error "artifact store: unsafe entry" in
+    let* () = private_entry ~missing:"artifact store: cannot load entry" entry in
     let path = Filename.concat entry "manifest" in
     let* () = if regular path then Ok () else Error "artifact store: unsafe manifest" in
     let* manifest = In_channel.with_open_bin path (fun channel ->
@@ -76,8 +69,7 @@ let load ~root ~identity =
   with Sys_error _ | Unix.Unix_error _ | End_of_file ->
     Error "artifact store: cannot load entry"
 
-let is_identity name =
-  String.length name = 64 && String.for_all (function '0'..'9' | 'a'..'f' -> true | _ -> false) name
+let is_identity = Hex.is_sha256
 
 let stored_manifest root identity =
   let path = Filename.concat (Filename.concat root identity) "manifest" in
@@ -98,13 +90,7 @@ let find ~root ~f =
       let* _ = load ~root ~identity in
       Ok (Some identity)
 
-let rec remove_tree path =
-  match Unix.lstat path with
-  | { Unix.st_kind = Unix.S_DIR; _ } ->
-      Array.iter (fun name -> remove_tree (Filename.concat path name)) (Sys.readdir path);
-      Unix.rmdir path
-  | _ -> Unix.unlink path
-  | exception Unix.Unix_error (Unix.ENOENT, _, _) -> ()
+let remove_tree = Fs.remove_tree
 
 let write_file path write =
   let descriptor = Unix.openfile path [ Unix.O_WRONLY; Unix.O_CREAT; Unix.O_EXCL ] 0o600 in

@@ -73,7 +73,7 @@ let of_sexp sexp =
 
 let of_string s = of_sexp (Sexplib.Sexp.of_string s)
 
-let short_commit commit = if String.length commit > 12 then String.sub commit 0 12 else commit
+let short_commit = Hex.short
 
 let summary t =
   Printf.sprintf "last applied %s (%s) %s by %s" (short_commit t.revision.commit)

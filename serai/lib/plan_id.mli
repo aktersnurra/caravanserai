@@ -14,3 +14,7 @@ val make : operation:string -> string list -> t
 val parse : string -> (t, string) result
 
 val to_string : t -> string
+
+(** An apply's plan is not the one approved. Raised before anything changes;
+    the message says what was approved and what the plan is now. *)
+exception Stale of string

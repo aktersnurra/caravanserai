@@ -126,7 +126,7 @@ let () =
         Dispatcher.up_run (env ~confirm:(fun _ -> true)) "hello" ~revision:"main" ~cache ~store) in
     let statuses (outcome : Dispatcher.up_outcome) =
       List.map (fun (step, status) -> Dispatcher.step_name step, (match status with
-        | Dispatcher.Done -> "done" | Skipped -> "skipped" | Not_run -> "not_run" | Failed _ -> "failed"))
+        | Dispatcher.Done -> "done" | Skipped -> "skipped" | Not_run -> "not_run" | Failed _ -> "failed" | Pending _ -> "pending"))
         outcome.steps in
     let _, outcome = up_run () in
     check "a reused release: jail and build skipped, then release, edge and check done"
@@ -182,11 +182,27 @@ let () =
       let result =
         try Ok (Proc.Mock.run mock (fun () ->
           Dispatcher.up_run ~expect_plan (env ~confirm:(fun _ -> incr asked; true)) "hello" ~revision:"main" ~cache ~store))
-        with Agent_cli.Stale_plan message -> Error message in
+        with Plan_id.Stale message -> Error message in
       result, Proc.Mock.calls mock in
     (match bound id with
      | Ok (_, outcome), _ -> check "the approved plan is applied" (outcome.result = Dispatcher.Deployed identity)
      | Error m, _ -> failwith ("the approved plan was refused: " ^ m));
+    (* An approved up plan showed no edge change, so it applies none. *)
+    (let mock = Proc.Mock.create ~outputs
+        ~exit_codes:(fun r -> if List.exists (contains "_DIFF_ONLY=1") r.Proc.args then 10 else 0) () in
+     let _, outcome = Proc.Mock.run mock (fun () ->
+       Dispatcher.up_run ~expect_plan:id (env ~confirm:(fun _ -> true)) "hello" ~revision:"main" ~cache ~store) in
+     let installs = List.exists (fun (r : Proc.request) ->
+         r.prog = "ssh" && List.exists (fun a -> (contains "edge/02-caddy" a || contains "01-pf-rules" a
+                                                   || contains "01-headscale-policy" a)
+                                                  && not (contains "_DIFF_ONLY=1" a)) r.args) (Proc.Mock.calls mock) in
+     check "an approved plan stops for the operator when edge changes are pending"
+       (match outcome.result with Dispatcher.Stopped_for_edge _ -> true | _ -> false);
+     check "the pending edge changes are planned, never installed" (not installs);
+     check "the edge step is pending and the check has not run"
+       (List.assoc Dispatcher.Edge outcome.steps <> Dispatcher.Done
+        && List.assoc Dispatcher.Check outcome.steps = Dispatcher.Not_run
+        && List.assoc Dispatcher.Release outcome.steps = Dispatcher.Done));
     asked := 0;
     source_commit := String.make 40 'd';
     (match bound id with

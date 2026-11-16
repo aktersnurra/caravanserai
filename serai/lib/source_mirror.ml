@@ -4,11 +4,8 @@ let path mirror = mirror
 let ( let* ) = Result.bind
 
 let make_private_directory path =
-  match Unix.lstat path with
-  | { Unix.st_kind = Unix.S_DIR; st_uid; st_perm; _ }
-    when st_uid = Unix.geteuid () && st_perm land 0o077 = 0 -> Ok ()
-  | _ -> Error ("source mirror: " ^ path ^ " must be a private directory")
-  | exception Unix.Unix_error (Unix.ENOENT, _, _) -> Unix.mkdir path 0o700; Ok ()
+  if Fs.ensure_private_directory path then Ok ()
+  else Error ("source mirror: " ^ path ^ " must be a private directory")
 
 let jj ?extra_env jj_bin mirror arguments =
   match Proc.capture ?extra_env jj_bin ([ "--ignore-working-copy"; "-R"; mirror ] @ arguments) with
@@ -49,9 +46,7 @@ let sync ~jj_bin ~cache ~name ~url =
     | code -> Error (Printf.sprintf "source mirror: cloning %s failed (exit %d)" url code)
 
 (* No revset syntax reaches jj: a bookmark name or a full commit id only. *)
-let is_full_commit revision =
-  String.length revision = 40
-  && String.for_all (function '0' .. '9' | 'a' .. 'f' -> true | _ -> false) revision
+let is_full_commit = Hex.is_commit
 
 let is_bookmark revision =
   revision <> "" && String.length revision <= 128 && revision.[0] <> '-'

@@ -83,7 +83,33 @@ expect_exit 0 'pf: several current rules' pf "$tmp/rules.multi"
 printf '%s\n' 'pass in on $ts_if proto tcp from __EDGE__ to 10.40.0.2 port 4002 keep state  # drill' "$two" >"$tmp/rules.multi"
 expect_exit 10 'pf: several rules, one changed' pf "$tmp/rules.multi"
 grep -Fq '+pass in on $ts_if proto tcp from 100.64.0.1 to 10.40.0.2 port 4002' "$tmp/out" || fail 'pf: multi-rule diff missing the changed rule'
-ls "$tmp" | grep -q 'pf.conf.backup' && fail 'pf: diff-only mode wrote a backup'
+! compgen -G "$tmp/pf.conf.backup*" >/dev/null || fail 'pf: diff-only mode wrote a backup'
+
+# A BEGIN without its END is refused: the splice would drop the rest of
+# pf.conf, and pfctl -n accepts the truncated file.
+printf '%s\n' 'set skip on lo' "$begin" 'pass old' 'block return all' >"$tmp/pf.conf"
+cp "$tmp/pf.conf" "$tmp/pf.conf.orig"
+expect_exit 1 'pf: BEGIN without END' pf "$tmp/rules.new"
+grep -Fq 'markers' "$tmp/err" || fail 'pf: the unbalanced markers are not named'
+printf '%s\n' 'set skip on lo' "$end" 'pass old' "$begin" >"$tmp/pf.conf"
+expect_exit 1 'pf: END before BEGIN' pf "$tmp/rules.new"
+
+# Install mode: only the anchored block changes, the rest of pf.conf stays,
+# and the previous file is backed up.
+mkdir -p "$tmp/install-bin"
+cat >"$tmp/install-bin/install" <<'EOF_INSTALL'
+#!/usr/bin/env bash
+cp "${@: -2:1}" "${@: -1}"
+EOF_INSTALL
+chmod +x "$tmp/install-bin/install"
+printf '%s\n' 'set skip on lo' "$begin" 'pass old' "$end" 'block return all' >"$tmp/pf.conf"
+PATH="$tmp/install-bin:$tmp/bin:$PATH" PF_CONF="$tmp/pf.conf" EDGE_TS_IP=100.64.0.1 PF_SOURCE="$tmp/rules.new" \
+  sh "$root/compute/01-pf-rules" >/dev/null 2>&1 || fail 'pf: install failed'
+printf '%s\n' 'set skip on lo' "$begin" \
+  'pass in on $ts_if proto tcp from 100.64.0.1 to 10.40.0.2 port 4001 keep state  # drill' "$end" 'block return all' |
+  cmp -s - "$tmp/pf.conf" || fail "pf: install did not splice only the block: $(cat "$tmp/pf.conf")"
+compgen -G "$tmp/pf.conf.backup*" >/dev/null || fail 'pf: install wrote no backup'
+rm -f "$tmp"/pf.conf.backup.*
 
 # --- headscale policy ---------------------------------------------------
 printf '%s\n' '{ "acls": [] }' >"$tmp/acls.yaml"
@@ -113,7 +139,7 @@ printf '%s\n' 'demo.example.org {' '    respond "new"' '}' >"$tmp/source/conf.d/
 expect_exit 10 'caddy: changed' caddy_diff
 grep -Fq '+    respond "new"' "$tmp/out" || fail 'caddy: diff missing the changed line'
 [ ! -e "$tmp/unit" ] || fail 'caddy: diff-only mode wrote the systemd unit'
-ls "$tmp" | grep -q 'caddy.backup' && fail 'caddy: diff-only mode wrote a backup'
+! compgen -G "$tmp/*caddy.backup*" >/dev/null || fail 'caddy: diff-only mode wrote a backup'
 grep -Fxq 'demo.example.org {' "$tmp/caddy/conf.d/40-demo.caddy" && ! grep -q respond "$tmp/caddy/conf.d/40-demo.caddy" || fail 'caddy: diff-only mode modified live config'
 header 'caddy: changed fragment' "$tmp/out" "$tmp/caddy/conf.d/40-demo.caddy" staged/conf.d/40-demo.caddy
 same_twice caddy caddy_diff

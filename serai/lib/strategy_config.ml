@@ -119,9 +119,7 @@ let git_source_of_sexp = function
 
 let commit_of_sexp sexp =
   let commit = atom_of_sexp sexp in
-  if String.length commit = 40
-     && String.for_all (function '0' .. '9' | 'a' .. 'f' -> true | _ -> false) commit
-  then commit
+  if Hex.is_commit commit then commit
   else Sexplib.Conv.of_sexp_error "Strategy: commit must be a full 40-hex commit id" sexp
 
 let pinned_git_of_sexp = function

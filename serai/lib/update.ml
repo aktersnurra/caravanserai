@@ -28,7 +28,7 @@ let config_of_string text =
   | exception Conv.Of_sexp_error (Failure message, _) -> Error message
   | exception Conv.Of_sexp_error (exn, _) -> Error (Printexc.to_string exn)
   | exception Failure message -> Error (context ^ ": " ^ message)
-  | exception Parsing.Parse_error -> Error (context ^ ": unreadable")
+  | exception Sexplib.Sexp.Parse_error { err_msg; _ } -> Error (context ^ ": " ^ err_msg)
 
 let deploy_bookmark = "deploy"
 let configuration_mirror = "configuration.serai"
@@ -105,6 +105,7 @@ let deploy paths env ~name ~commit ~migrate =
   | exception Failure message -> Not_applied { commit = Some commit; message }
   | _, { result = Deployed identity; _ } -> Deployed { commit; identity }
   | _, { result = Stopped_for_env _; _ } -> invalid_arg "update: up stopped for an env it never creates"
+  | _, { result = Stopped_for_edge _; _ } -> invalid_arg "update: up stopped for an edge it never touches"
   | _, { result = Step_failed (Release, message); _ } -> (
       (* Whether the switch happened decides between retrying and a final
          failure, and whether there is anything to revert. *)
@@ -113,7 +114,8 @@ let deploy paths env ~name ~commit ~migrate =
           Failed { commit; step = Release; message;
                    revert = Not_attempted ("could not tell whether the new release is active: " ^ probe) }
       | { source; _ } when source <> Some commit -> Not_applied { commit = Some commit; message }
-      | _ when Update_decision.should_revert ~step:Release ~migrate ~active_is_desired:true ->
+      (* The new release is active and files are all that changed: revert. *)
+      | _ when not migrate ->
           let revert = match Dispatcher.revert env name with
             | () -> Reverted
             | exception Failure failure -> Revert_failed failure in
@@ -170,13 +172,16 @@ let examine ~plan deps config paths ~handled =
       let apps = List.map (fun ({ name; _ } as app) ->
           let outcome =
             try app_outcome ~plan deps config paths env ~handled:(handled name) app
-            with Failure message -> Not_applied { commit = None; message } in
+            with
+            | Failure message -> Not_applied { commit = None; message }
+            | (Sys.Break | Out_of_memory | Stack_overflow) as fatal -> raise fatal
+            | error -> Not_applied { commit = None; message = "unexpected error: " ^ Printexc.to_string error } in
           name, outcome) (source_apps env) in
       { configuration = Configuration commit; apps }
 
 let plan deps config paths = examine ~plan:true deps config paths ~handled:(fun _ -> None)
 
-let short commit = if String.length commit > 12 then String.sub commit 0 12 else commit
+let short = Hex.short
 
 let configuration_line = function
   | Configuration _ -> None
@@ -243,7 +248,7 @@ let record (state : Update_state.t) report =
 let run deps config paths =
   Update_state.with_run_lock ~dir:paths.state_dir (fun () ->
     let state = match Update_state.load ~dir:paths.state_dir with
-      | Ok state -> state | Error message -> failwith message in
+      | Ok state -> state | Error message -> Run_state.fail ~cause:"invalid_environment" message in
     let report =
       examine ~plan:false deps config paths ~handled:(fun name -> (Update_state.find state name).handled) in
     let candidates =
@@ -255,7 +260,7 @@ let run deps config paths =
             (line name outcome)) report.apps in
     let reported = List.filter (fun (last, text, _) -> Update_decision.should_report ~last ~current:text) candidates in
     (match Update_state.save ~dir:paths.state_dir (record state report) with
-     | Ok () -> () | Error message -> failwith message);
+     | Ok () -> () | Error message -> Run_state.fail ~cause:"invalid_environment" message);
     { report;
       lines = List.map (fun (_, text, _) -> text) reported;
       failed = List.exists (fun (_, _, failure) -> failure) reported })

@@ -15,10 +15,7 @@ type t = {
   archive_sha256 : string;
 }
 
-let is_lower_hex value =
-  String.for_all (function '0' .. '9' | 'a' .. 'f' -> true | _ -> false) value
-
-let is_sha256 value = String.length value = 64 && is_lower_hex value
+let is_sha256 = Hex.is_sha256
 
 let is_component ?(extra = "") value =
   value <> "" && value <> "." && value <> ".." && String.length value <= 128
@@ -74,7 +71,7 @@ let create_input ~name ~input ~target_abi ~(dependencies : dependency list) ~rec
   let* () = require "workload name" (is_component name) in
   let* () = match input with
     | Source_commit commit -> require "source commit"
-        ((String.length commit = 40 || String.length commit = 64) && is_lower_hex commit)
+        (Hex.is_object_id commit)
     | Package_archives package -> require "resolved package origin"
         (is_component ~extra:"+" package && List.exists (fun (d : dependency) -> d.name = package) dependencies)
     | Upstream_binary {version; url; sha256} ->
@@ -188,19 +185,9 @@ let verify_archive manifest ~archive =
     let metadata = Unix.lstat archive in
     if metadata.Unix.st_kind <> Unix.S_REG then Error ("not a regular archive: " ^ archive)
     else
-      let channel = open_in_bin archive in
-      Fun.protect ~finally:(fun () -> close_in channel) (fun () ->
-        if (Unix.fstat (Unix.descr_of_in_channel channel)).Unix.st_kind <> Unix.S_REG then
-          Error ("not a regular archive: " ^ archive)
-        else
-          let bytes = Bytes.create 65536 in
-          let rec hash context =
-            let count = input channel bytes 0 (Bytes.length bytes) in
-            if count = 0 then context
-            else hash (Digestif.SHA256.feed_string context (Bytes.sub_string bytes 0 count))
-          in
-          let observed = Digestif.SHA256.(to_hex (get (hash empty))) in
-          if String.equal observed manifest.archive_sha256 then Ok ()
-          else Error ("archive SHA-256 mismatch: " ^ archive))
+      match Fs.file_sha256 ~not_regular:"" archive with
+      | observed when String.equal observed manifest.archive_sha256 -> Ok ()
+      | _ -> Error ("archive SHA-256 mismatch: " ^ archive)
+      | exception Failure _ -> Error ("not a regular archive: " ^ archive)
   with
   | Unix.Unix_error _ | Sys_error _ -> Error ("cannot read archive: " ^ archive)

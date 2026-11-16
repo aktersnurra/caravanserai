@@ -17,8 +17,11 @@ Linux edge (Caddy, Headscale). `README.md` covers the layout,
 
 - Use jj, not git. Commit directly on `master`; do not create jj
   workspaces (they break the tests and strand the checkout).
-- Do not push. The operator pushes with `jj push --bookmark master`, which
-  runs lint first.
+- Do not push `master`. The operator pushes it with
+  `jj push --bookmark master`, which runs lint first.
+- A cloud session has no jj checkout and loses its container: there, commit
+  with git on the session's own branch and push that branch, never
+  `master`.
 - Before claiming a change works, run the checks it touches:
   - `./scripts/lint.sh`: shellcheck, `dune build` and `dune test`, the
     example's render and every `tests/*.sh`

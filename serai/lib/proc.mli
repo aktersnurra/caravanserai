@@ -8,6 +8,11 @@ type request = {
     Both causes are retained; ordinary interrupts during reaping are retried. *)
 exception Cleanup_failed of exn * exn
 
+(** Called from an exception handler with the exception it caught: runs
+    [cleanup], then re-raises that exception with its backtrace, or
+    [Cleanup_failed] when cleanup raised as well. *)
+val reraise_after_cleanup : exn -> (unit -> unit) -> 'a
+
 (** Explicit overrides replace inherited values; later overrides win. *)
 val run : ?extra_env:(string * string) list -> string -> string list -> int
 val capture : ?extra_env:(string * string) list -> string -> string list -> int * string

@@ -91,16 +91,8 @@ let existing_ip_script ?(jail_conf = "/etc/jail.conf") ?(jails_dir = "/jails") ~
    did not clearly answer is refused. *)
 type existing = Absent | Same_ip
 
-(* The probe lines after [marker], in order. *)
-let answers ~marker output =
-  String.split_on_char '\n' output
-  |> List.filter_map (fun line ->
-         if String.starts_with ~prefix:marker line then
-           Some (String.sub line (String.length marker) (String.length line - String.length marker))
-         else None)
-
 let check_existing ~app ~name ~ip output =
-  let answers = answers ~marker:existing_marker output in
+  let answers = Shell.answers ~marker:existing_marker output in
   let destroy_first = Printf.sprintf "destroy it first: serai jail-test %s --destroy" app in
   match answers with
   | [ "absent" ] -> Ok Absent
@@ -136,7 +128,7 @@ let check_env_file ~app ~name output =
   let file = Printf.sprintf "/jails/%s/etc/%s/env" name app in
   let fix = Printf.sprintf "doas jexec %s chown root:%s /etc/%s/env && doas jexec %s chmod 0640 /etc/%s/env"
       name app app name app in
-  match answers ~marker:env_marker output with
+  match Shell.answers ~marker:env_marker output with
   | [ owner ] when owner = Printf.sprintf "root:%s:640" app -> Ok ()
   | [ "absent" ] ->
       Error

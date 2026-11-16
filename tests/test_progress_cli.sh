@@ -82,7 +82,7 @@ with tempfile.TemporaryDirectory(prefix='serai-progress-', dir=root / 'serai/_bu
     uncertain = run('artifact', 'build', 'garage', '--ip', '10.20.0.200',
                     '--base', str(base), '--sha256', hashlib.sha256(base.read_bytes()).hexdigest(),
                     '--store', str(store), '--yes', '--progress=jsonl')
-    assert uncertain.returncode == 1
+    assert uncertain.returncode == 3, 'a retained stage and lock exit 3, not a plain failure'
     observed = events(uncertain)
     assert observed and observed[-1]['status'] == 'unknown', 'uncertain transport must not claim a known outcome'
     assert observed[-1]['phase'] == 'build'
@@ -103,7 +103,7 @@ with tempfile.TemporaryDirectory(prefix='serai-progress-', dir=root / 'serai/_bu
     source_failure = run('artifact', 'build', 'hello', '--revision', '@-', '--ip', '10.20.0.200',
                          '--base', str(base), '--sha256', hashlib.sha256(base.read_bytes()).hexdigest(),
                          '--store', str(store), '--yes', '--progress=jsonl')
-    assert source_failure.returncode == 1, source_failure.stderr
+    assert source_failure.returncode == 3, source_failure.stderr
     spans = [json.loads(line) for line in source_failure.stderr.splitlines() if line.startswith('{')]
     spans = [item for item in spans if item.get('event') == 'serai.phase_duration']
     assert spans, source_failure.stderr

@@ -4,25 +4,7 @@ type t = { service : string; script : string }
    names and words, already restricted by Strategy_config and
    Network_endpoint, so none of them can carry shell syntax. *)
 let fill template bindings =
-  List.fold_left
-    (fun text (key, value) ->
-      let key = "{" ^ key ^ "}" in
-      let buffer = Buffer.create (String.length text) in
-      let rec go i =
-        match String.index_from_opt text i '{' with
-        | Some j when j + String.length key <= String.length text
-                      && String.sub text j (String.length key) = key ->
-            Buffer.add_string buffer (String.sub text i (j - i));
-            Buffer.add_string buffer value;
-            go (j + String.length key)
-        | Some j ->
-            Buffer.add_string buffer (String.sub text i (j - i + 1));
-            go (j + 1)
-        | None -> Buffer.add_string buffer (String.sub text i (String.length text - i))
-      in
-      go 0;
-      Buffer.contents buffer)
-    template bindings
+  Template.substitute ~placeholders:(List.map (fun (key, value) -> "{" ^ key ^ "}", value) bindings) template
 
 let header ~require = {|#!/bin/sh
 #

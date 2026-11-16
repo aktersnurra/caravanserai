@@ -8,7 +8,7 @@ let config = {|((hosts ((entry (os linux) (ssh gateway))
  (jails ((hello east) (counter west)))
  (guests ((ledger (host west) (via west))))
  (edge entry) (proxy (hello ledger)))|}
-let replace a b s = Caddy_render.substitute ~placeholders:[a,b] s
+let replace a b s = Template.substitute ~placeholders:[a,b] s
 let () =
  let t = parse config in
  check "jail placement selects configured second host" ((Topology.jail_host t "hello").ssh = "east-box");

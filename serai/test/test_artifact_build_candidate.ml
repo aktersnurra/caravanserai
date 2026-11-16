@@ -268,7 +268,10 @@ let () =
     let events = Filename.concat fixture "interrupt-events" in
     write interrupted_ssh ("#!/bin/sh\ncase \"$*\" in\n"
       ^ " *SERAI_LOCK_HELD=1*) printf 'apply\\n' >>" ^ Shell.quote events
-      ^ "; kill -INT \"$PPID\"; sleep 0.1 ;;\n"
+      (* Waits before signalling, as test_proc's children do: a signal that
+         lands before the parent blocks in waitpid is handled only after
+         the child exits, inside a finally. *)
+      ^ "; sleep 0.05; kill -INT \"$PPID\"; sleep 0.1 ;;\n"
       ^ " *'rm -rf --'*) printf 'cleanup\\n' >>" ^ Shell.quote events ^ " ;;\n"
       ^ " *'rm -rf \"$lock\"'*) printf 'release\\n' >>" ^ Shell.quote events ^ " ;;\nesac\n");
     write interrupted_rsync "#!/bin/sh\nexit 0\n";

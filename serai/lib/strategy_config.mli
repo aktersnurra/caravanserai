@@ -92,5 +92,9 @@ val parse : strategy:Sexplib.Sexp.t -> config:Sexplib.Sexp.t -> (t, error) resul
 (** Extra steps are file names spliced into the generated jail script:
     each must be a plain, non-hidden file name beside it. *)
 val parse_extra_steps : string list -> (string list, error) result
+
+(** A file name beside the app's scripts: letters, digits, [._-], not hidden,
+    no path. *)
+val is_plain_file_name : string -> bool
 val error_message : error -> string
 val offending_sexp : error -> Sexplib.Sexp.t

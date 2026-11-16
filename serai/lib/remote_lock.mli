@@ -11,3 +11,11 @@ val acquire_script :
   stage:string -> token:string -> holder:string -> record:string -> wait_seconds:int -> string
 val release_script : stage:string -> token:string -> string
 val unlock_script : stage:string -> string
+
+(* Read-only: prints the holder and the lock's age, or nothing when free. *)
+val inspect_script : stage:string -> string
+
+type held = { holder : string; age_seconds : int; stale : bool }
+
+(* What [inspect_script] printed: [None] when the lock is free. *)
+val inspect : string -> (held option, string) result

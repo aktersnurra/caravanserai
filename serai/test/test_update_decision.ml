@@ -69,18 +69,6 @@ let () =
   check "an unsigned commit that is already deployed is current"
     (examine ~desired ~deployed:(Some desired) ~signature:Source_mirror.Unsigned ~allowed ~descends:false = Current);
 
-  (* should_revert: only a release that failed after its switch, files only. *)
-  let steps = Dispatcher.[ Jail; Build; Release; Edge; Check ] in
-  check "revert only a failed release step, without migrate, with the new release active"
-    (List.for_all (fun step ->
-         List.for_all (fun migrate ->
-             List.for_all (fun active_is_desired ->
-                 should_revert ~step ~migrate ~active_is_desired
-                 = (step = Dispatcher.Release && (not migrate) && active_is_desired))
-               [ true; false ])
-           [ true; false ])
-       steps);
-
   (* should_report: a line goes out once, until it changes. *)
   check "a first line is reported" (should_report ~last:None ~current:"a");
   check "the same line again is not" (not (should_report ~last:(Some "a") ~current:"a"));

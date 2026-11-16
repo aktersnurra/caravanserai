@@ -25,6 +25,17 @@ phase durations.
 
 Application build compilers remain declared separately; a guest may use OxCaml.
 
+## Commands
+
+`serai commands` prints every command with its arguments and flags;
+`serai commands --json` is the same table as data. Flags come in any order.
+Every command takes `--json`; a command that changes a host also takes
+`--plan` (what it would do, ending in `plan <id>`, exit 2) and
+`--expect-plan <id>` (apply that plan or refuse). `serai locks` shows who
+holds each host's lock, `serai status` each app's jail and releases. An
+exit of 3 means a stage and lock were left on a host: inspect before
+`serai unlock`.
+
 ## Declaring an app: `serai new`
 
 ```sh
@@ -798,12 +809,22 @@ serai/
   lib/strategy.ml          jail sh generation per app strategy
   lib/network_endpoint.ml  the shared endpoint type (name, ip, hostname, named ports)
   lib/sexp_fields.ml       shared (key value) field-list parsing
+  lib/hex.ml               digests and commit ids as text; lib/fs.ml: private directories,
+                           file hashes, tree removal; lib/template.ml: literal substitution
   lib/guest_config.ml      sexp parsing for guests/<name>/guest.sexp (endpoint, login user, source checkout)
   lib/edge_config.ml       sexp parsing for edge/edge.sexp (base_domain, operator, operator_edge_ports)
   lib/headscale_acl.ml     Headscale ACL rendering
   lib/pf_rules.ml          compute host pf rule rendering
   lib/caddy_render.ml      fills the hand-written edge/caddy templates
-  lib/dispatcher.ml        bootstrap/deploy/check/edge/update-version and the guest lifecycle
+  lib/dispatcher.ml        the one interface over everything done to a host; includes:
+  lib/remote_host.ml         the run's environment, ssh routing, host locks, the guarded stage
+  lib/app_hooks.ml           bootstrap and the deploy hook
+  lib/artifact_lifecycle.ml  artifact build, store, apply and revert in jails
+  lib/edge_apply.ml          edge render, stage, plan and install
+  lib/logging_install.ml     central logging's senders
+  lib/test_jail.ml           running and destroying <app>test
+  lib/up.ml                  serai up: plan and steps
+  lib/guest_lifecycle.ml     a guest's provision, build, deploy and artifacts
   lib/jail_test.ml         serai jail-test: test-jail rules and the destroy script
   lib/pipeline.ml          the DSL: step type, sexp parser, effectful evaluator
   bin/main.ml              CLI parsing + wires Proc.live around Dispatcher/Pipeline

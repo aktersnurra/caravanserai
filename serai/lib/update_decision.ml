@@ -30,12 +30,9 @@ let examine ~desired ~deployed ~signature ~allowed ~descends =
     | Ok (), Some _ when descends -> Deploy
     | Ok (), Some deployed -> Refuse (Not_newer { deployed })
 
-let should_revert ~step ~migrate ~active_is_desired =
-  step = Dispatcher.Release && (not migrate) && active_is_desired
-
 let should_report ~last ~current = last <> Some current
 
-let short commit = if String.length commit > 12 then String.sub commit 0 12 else commit
+let short = Hex.short
 
 let refusal_message = function
   | Unsigned -> "not signed"

@@ -41,7 +41,7 @@ let () =
 
 let () =
   check "substitute: every occurrence replaced"
-    (Caddy_render.substitute ~placeholders:[ ("__A__", "x") ] "__A__ and __A__" = "x and x");
+    (Template.substitute ~placeholders:[ ("__A__", "x") ] "__A__ and __A__" = "x and x");
   check "find_unsubstituted: clean text" (Caddy_render.find_unsubstituted "a {$SECRET} b" = None);
   check "find_unsubstituted: names the leftover"
     (Caddy_render.find_unsubstituted "reverse_proxy __DEMO_JAIL_IP__:1" = Some "__DEMO_JAIL_IP__");
@@ -53,10 +53,10 @@ let () =
     (Caddy_render.find_unsubstituted "rewrite * {rp.header.X-Accel-Redirect}" = None
     && Caddy_render.find_unsubstituted "_____" = None);
   check "substitute: match at the very end, left-to-right like sed"
-    (Caddy_render.substitute ~placeholders:[ ("__A__", "x") ] "y__A__" = "yx"
-    && Caddy_render.substitute ~placeholders:[ ("aa", "b") ] "aaa" = "ba");
+    (Template.substitute ~placeholders:[ ("__A__", "x") ] "y__A__" = "yx"
+    && Template.substitute ~placeholders:[ ("aa", "b") ] "aaa" = "ba");
   check "substitute: an empty pattern is a caller bug, not a hang"
-    (match Caddy_render.substitute ~placeholders:[ ("", "x") ] "abc" with
+    (match Template.substitute ~placeholders:[ ("", "x") ] "abc" with
     | _ -> false
     | exception Invalid_argument _ -> true);
   check "find_unsubstituted: digit-bearing placeholder caught"

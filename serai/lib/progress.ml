@@ -12,17 +12,7 @@ type session = {
 
 let current : session option ref = ref None
 
-let quote value =
-  let buffer = Buffer.create (String.length value + 2) in
-  Buffer.add_char buffer '"';
-  String.iter value ~f:(function
-    | '"' -> Buffer.add_string buffer "\\\""
-    | '\\' -> Buffer.add_string buffer "\\\\"
-    | character when Char.to_int character < 32 ->
-        Buffer.add_string buffer (Printf.sprintf "\\u%04x" (Char.to_int character))
-    | character -> Buffer.add_char buffer character);
-  Buffer.add_char buffer '"';
-  Buffer.contents buffer
+let quote = Json.quote
 
 (* Use unbuffered stderr: a failed buffered write can be retried at exit. *)
 let write_line line =

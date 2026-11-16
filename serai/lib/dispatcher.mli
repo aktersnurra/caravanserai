@@ -1,4 +1,4 @@
-type env = {
+type env = Remote_host.env = {
   layout : Layout.t;
   topology : Topology.t option;
   compute_target : string;
@@ -172,11 +172,19 @@ val up_plan_id_of :
 val print_up_plan : ?target:up_target -> up_plan -> unit
 
 type up_step = Jail | Build | Release | Edge | Check
-type step_status = Done | Skipped | Failed of string | Not_run
+type step_status =
+  | Done
+  | Skipped
+  | Failed of string
+  | Pending of string  (** waits for an approval of its own *)
+  | Not_run
 
 type up_result =
   | Deployed of string  (** this identity is active and healthy *)
   | Stopped_for_env of string  (** the jail was created; what the operator does next *)
+  | Stopped_for_edge of Plan_id.t
+      (** released under an approved plan, with edge changes pending that
+          the plan did not show: this edge plan needs its own approval *)
   | Step_failed of up_step * string
 
 (** Every step in order, with what happened to it. *)
@@ -187,7 +195,7 @@ val step_name : up_step -> string
 (** [up] without its reporting: the plan and the outcome of each step. A
     [Failure] means nothing changed: the plan was refused or not confirmed.
     With [expect_plan], a plan with another id raises
-    [Agent_cli.Stale_plan] before the prompt: only the read-only probes the
+    [Plan_id.Stale] before the prompt: only the read-only probes the
     plan makes have reached a host. *)
 val up_run : ?local_source:string -> ?target:up_target -> ?expect_plan:Plan_id.t -> env -> string -> revision:string ->
   cache:string -> store:string -> up_plan * up_outcome
@@ -216,7 +224,7 @@ val plan_edge : env -> edge_plan
 (** Stages, diffs, and installs what is pending once confirmed; applied
     records only when every install succeeded. With [expect_plan], under
     the session's locks and before the prompt, any other plan raises
-    [Agent_cli.Stale_plan]. *)
+    [Plan_id.Stale]. *)
 val edge_run : ?expect_plan:Plan_id.t -> env -> edge_outcome
 
 (** [edge_run], failing with the failed install's message. *)
