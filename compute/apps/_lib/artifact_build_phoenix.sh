@@ -38,7 +38,12 @@ npm_config_maxsockets=1
 NODE_OPTIONS=--dns-result-order=ipv4first
 # Keep public registry request outcomes visible when a disposable jail is cleaned.
 npm_config_loglevel=verbose
-export npm_config_maxsockets NODE_OPTIONS npm_config_loglevel
+# Installs use what npm-prefetch below put in the cache, without asking the
+# registry again, and skip the audit request.
+npm_config_prefer_offline=true
+npm_config_audit=false
+export npm_config_maxsockets NODE_OPTIONS npm_config_loglevel npm_config_prefer_offline \
+    npm_config_audit
 # A production build throughout. Exported, not prefixed to each timed call:
 # FreeBSD sh does not pass a function call's assignments on to its commands.
 MIX_ENV=prod
@@ -95,6 +100,21 @@ timed tool-prepare "$mix_bin" local.hex --force --if-missing
 timed tool-prepare "$mix_bin" local.rebar --force --if-missing
 timed dependency-fetch "$mix_bin" deps.get --only prod
 timed dependency-compile "$mix_bin" deps.compile
+# Some connections to the registry (Cloudflare) stall from the home network,
+# 13 to 27 s and now and then for good, even mid-download, which npm does not
+# retry (2026-11-22: 5 of 20 fetches from the NUC, 2 of 6 from a laptop; it
+# failed Tore's build three times). Fetch the locked packages into npm's cache
+# first, retrying the whole fetch; each try keeps what earlier ones fetched,
+# and the app's own npm ci in asset-build then installs from the cache.
+timed npm-prefetch sh -eu -c '
+    [ -f assets/package-lock.json ] || exit 0
+    attempt=1
+    until npm ci --prefix assets --ignore-scripts --no-fund; do
+        [ "$attempt" -lt 4 ] || exit 1
+        attempt=$((attempt + 1))
+        echo "npm-prefetch: the registry stalled; try $attempt of 4" >&2
+        sleep 5
+    done'
 timed asset-build "$elixir_bin" -r "$asset_script" -S "$mix_bin" infra.assets
 # mix release may compile too; this is not a compile-only interval.
 timed release-archive sh -eu -c 'MIX_ENV=prod "$1" release
