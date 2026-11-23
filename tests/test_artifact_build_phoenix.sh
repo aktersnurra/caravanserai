@@ -73,7 +73,7 @@ python3 - "$TMP/events" <<'PYTEST'
 import json,sys
 e=[json.loads(s) for s in open(sys.argv[1]) if s.startswith('{')]
 e=[i for i in e if i.get('event')=='serai.phase_duration']
-assert [i['phase'] for i in e]==['asset-prepare','tool-prepare','tool-prepare','dependency-fetch','dependency-compile','asset-build','release-archive'],e
+assert [i['phase'] for i in e]==['asset-prepare','tool-prepare','tool-prepare','dependency-fetch','dependency-compile','npm-prefetch','asset-build','release-archive'],e
 assert all(i['parent']=='remote-total' and i['duration_seconds']==2.125 and i['status']=='completed' for i in e)
 PYTEST
 cat >"$TMP/expected" <<EOF
