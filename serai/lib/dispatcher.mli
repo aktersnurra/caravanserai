@@ -52,7 +52,7 @@ type artifact_build_candidate = {
   manifest : Artifact_manifest.t;
 }
 val artifact_build_candidate : ?checkout:string -> ?opam_repository:(string * string) -> ?opam_snapshots:string ->
-  env -> string -> revision:string -> ip:string ->
+  ?lib32:(string * string) -> env -> string -> revision:string -> ip:string ->
   base_archive:string -> base_sha256:string -> out:string -> artifact_build_candidate
 
 (** Build and publish a verified source candidate. OCaml requires
@@ -64,9 +64,11 @@ val artifact_build_candidate : ?checkout:string -> ?opam_repository:(string * st
     Reuse does not attest compatibility with a live target or activate it.
     [checkout] replaces the declared repo_path, e.g. with a source mirror.
     [opam_snapshots] keeps the exported opam repository by commit
-    ({!Source_snapshot.stage_cached}); without it each call exports it anew. *)
+    ({!Source_snapshot.stage_cached}); without it each call exports it anew.
+    [lib32=(archive, sha256)] is FreeBSD's lib32.txz, verified like the base,
+    extracted over it in the build jail and bound into the recipe. *)
 val artifact_build_store : ?reuse:string -> ?checkout:string -> ?opam_repository:(string * string) -> ?opam_snapshots:string ->
-  env -> string -> revision:string -> ip:string ->
+  ?lib32:(string * string) -> env -> string -> revision:string -> ip:string ->
   base_archive:string -> base_sha256:string -> store:string -> string
 
 (** Build and store a declared package or checksum-pinned executable, without
@@ -142,7 +144,8 @@ type up_jail =
 
 type up_release =
   | Reuse of string  (** this stored identity *)
-  | Build of { ip : string; base_sha256 : string }  (** in the build jail at [ip], from this base *)
+  | Build of { ip : string; base_sha256 : string; lib32_sha256 : string option }
+      (** in the build jail at [ip], from this base and lib32 archive *)
 
 type up_plan = private {
   app : string;

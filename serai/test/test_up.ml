@@ -28,16 +28,19 @@ let () =
   Fun.protect ~finally:(fun () -> remove_tree fixture) (fun () ->
     let d = Result.get_ok (Declaration.load ~layout:(Repo_root.example ())) in
     let base_bytes = "synthetic base archive" in
-    let topology = Topology.of_sexp (Sexplib.Sexp.of_string (Printf.sprintf
+    let lib32_bytes = "synthetic lib32 archive" in
+    let topology_with lib32 = Topology.of_sexp (Sexplib.Sexp.of_string (Printf.sprintf
       {|((hosts ((compute (os freebsd) (ssh compute) (network (subnet 10.20.0.0/24) (gateway 10.20.0.1) (guest_bridge 10.20.0.254))
-          (build (ip 10.20.0.11) (base (url https://example.invalid/base.txz) (sha256 %s))))
+          (build (ip 10.20.0.11) (base (url https://example.invalid/base.txz) (sha256 %s))%s))
          (edge (os linux) (ssh edge))))
         (jails ((hello compute) (counter compute) (logs compute)))
         (guests ((ledger (host compute) (via compute)))) (edge edge)
-        (proxy (hello counter logs ledger)))|} (sha256 base_bytes))) in
+        (proxy (hello counter logs ledger)))|} (sha256 base_bytes) lib32)) in
+    let topology = topology_with "" in
     let cache = Filename.concat fixture "cache" and store = Filename.concat fixture "store" in
     List.iter (fun dir -> Unix.mkdir dir 0o700) [ cache; store; Filename.concat cache "base" ];
     write (Filename.concat cache ("base/" ^ sha256 base_bytes ^ ".txz")) base_bytes;
+    write (Filename.concat cache ("base/" ^ sha256 lib32_bytes ^ ".txz")) lib32_bytes;
     let env ~confirm : Dispatcher.env = {
       layout = d.layout; topology = Some topology;
       compute_target = "compute"; edge_target = "edge"; remote_stage = "/tmp/serai-up-test";
@@ -88,7 +91,7 @@ let () =
       | Strategy_config.Freebsd_native_elixir s -> s.packages, s.release_name
       | _ -> assert false in
     let recipe = Result.get_ok (Artifact_recipe.stage ~lib_dir:(Layout.lib_dir d.layout)
-      ~out:(Filename.concat fixture "recipe") ~base_sha256:(sha256 base_bytes) ~release_name ~packages) in
+      ~out:(Filename.concat fixture "recipe") ~base_sha256:(sha256 base_bytes) ~lib32_sha256:None ~release_name ~packages) in
     let archive = Filename.concat fixture "release.tar" in
     write archive "release bytes";
     let manifest = Result.get_ok (Artifact_manifest.create ~name:"hello" ~source_commit:commit
@@ -118,6 +121,16 @@ let () =
     check "the public check uses the app's hostname"
       (List.exists (fun (r : Proc.request) -> r.prog = "curl"
          && List.mem "https://hello.example.org/" r.args) calls);
+
+    (* A declared lib32 archive is part of the recipe: the artifact stored
+       without it is not reused, and the plan names both archives. *)
+    let with_lib32 = { (env ~confirm:(fun _ -> true)) with topology = Some (topology_with (Printf.sprintf
+      " (lib32 (url https://example.invalid/lib32.txz) (sha256 %s))" (sha256 lib32_bytes))) } in
+    let plan = Proc.Mock.run (Proc.Mock.create ~outputs ()) (fun () ->
+      Dispatcher.up_plan with_lib32 "hello" ~revision:"main" ~cache ~store) in
+    check "a declared lib32 archive builds anew, from base and lib32"
+      (plan.release = Dispatcher.Build { ip = "10.20.0.11"; base_sha256 = sha256 base_bytes;
+                                         lib32_sha256 = Some (sha256 lib32_bytes) });
 
     (* up_run: every step's outcome, as up --json reports it. *)
     let up_run ?exit_codes () =
@@ -160,10 +173,12 @@ let () =
     differs "commit" base (of_ ~commit:(String.make 40 'd') ());
     differs "local" base (of_ ~local:true ());
     differs "the reused identity" base (of_ ~release:(Dispatcher.Reuse "a2") ());
-    differs "reuse or build" base (of_ ~release:(Dispatcher.Build { ip = "a1"; base_sha256 = "" }) ());
-    let build ip base_sha256 = of_ ~release:(Dispatcher.Build { ip; base_sha256 }) () in
+    differs "reuse or build" base (of_ ~release:(Dispatcher.Build { ip = "a1"; base_sha256 = ""; lib32_sha256 = None }) ());
+    let build ?lib32_sha256 ip base_sha256 = of_ ~release:(Dispatcher.Build { ip; base_sha256; lib32_sha256 }) () in
     differs "the builder ip" (build "10.20.0.11" "b1") (build "10.20.0.12" "b1");
     differs "the build base" (build "10.20.0.11" "b1") (build "10.20.0.11" "b2");
+    differs "a lib32 archive" (build "10.20.0.11" "b1") (build ~lib32_sha256:"l1" "10.20.0.11" "b1");
+    differs "the lib32 archive" (build ~lib32_sha256:"l1" "10.20.0.11" "b1") (build ~lib32_sha256:"l2" "10.20.0.11" "b1");
     differs "a jail to create" base (of_ ~jail:Dispatcher.Jail_create ());
     differs "a jail without its env" base (of_ ~jail:(Dispatcher.Jail_needs_env "write it") ());
     differs "the env message" (of_ ~jail:(Dispatcher.Jail_needs_env "write it") ())

@@ -174,7 +174,8 @@ touches no host; `data` names the `app`, its `ip`, `port`, `hostname` and the
 addresses other jails hold, the env file's owner, never its contents), then
 returns the `commit`, `jail.action` (`none`, `create`, or `refused` with a
 `message`), `release.action` (`reuse` with an `identity`, or `build` with the
-`builder_ip` and `base_sha256`), `public_url` and `plan_id` (see "Plan
+`builder_ip`, `base_sha256` and `lib32_sha256`, null when no lib32
+archive is declared), `public_url` and `plan_id` (see "Plan
 binding"), with `host_inspected` true and `applied` false. Either refused or failed means nothing was written or changed:
 `not_applied`, with the reason as the message.
 

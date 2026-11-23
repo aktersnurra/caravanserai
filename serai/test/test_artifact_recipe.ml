@@ -39,10 +39,10 @@ let () =
     List.iter (fun name -> write (Filename.concat scripts name) ("script:" ^ name)) names;
     let base_sha256 = sha256 "trusted base bytes" in
     let packages = ["erlang-runtime29"; "elixir-devel"; "sqlite3"] in
-    let stage label ?(base_sha256=base_sha256) ?(packages=packages)
+    let stage label ?(base_sha256=base_sha256) ?lib32_sha256 ?(packages=packages)
         ?(release_name="sprint_trainer") () =
       Artifact_recipe.stage ~lib_dir:scripts ~out:(Filename.concat fixture label)
-        ~base_sha256 ~packages ~release_name in
+        ~base_sha256 ~lib32_sha256 ~packages ~release_name in
     let first = valid (stage "first" ()) in
     let cold_bytes = {|infra-phoenix-recipe-v1
 64:0ec9db25d2cfc75724ffeb78cea59e29c00fe7653e7c0974122d50a47e41b2b7
@@ -76,6 +76,13 @@ let () =
          read (Filename.concat (Filename.concat fixture "first") name) = "script:" ^ name) names);
     check "base archive checksum changes recipe"
       (valid (stage "changed-base" ~base_sha256:(sha256 "different base") ()) <> first);
+    let lib32 = valid (stage "lib32" ~lib32_sha256:(sha256 "lib32 bytes") ()) in
+    check "a declared lib32 archive checksum is bound into the recipe"
+      (lib32 <> first
+       && valid (stage "lib32-again" ~lib32_sha256:(sha256 "lib32 bytes") ()) = lib32
+       && valid (stage "lib32-other" ~lib32_sha256:(sha256 "other lib32") ()) <> lib32);
+    check "malformed lib32 checksum is refused"
+      (rejected (stage "bad-lib32" ~lib32_sha256:"unknown" ()));
     check "package declaration changes recipe"
       (valid (stage "changed-packages" ~packages:["erlang-runtime29"; "gmake"] ()) <> first);
     check "package order changes recipe"
@@ -94,9 +101,9 @@ let () =
     write (Filename.concat scripts "artifact_build_ocaml.sh") "OCaml worker";
     let ocaml label ?(compiler="ocaml-base-compiler.5.5.1")
         ?(repository_commit=String.make 40 'a') ?(repository_sha256=sha256 "repository")
-        ?web_bundle () =
+        ?web_bundle ?lib32_sha256 () =
       Artifact_recipe.stage_ocaml ~lib_dir:scripts ~out:(Filename.concat fixture label)
-        ~base_sha256 ~release_name:"meals" ~packages:["ocaml-opam"; "sqlite3"]
+        ~base_sha256 ~lib32_sha256 ~release_name:"meals" ~packages:["ocaml-opam"; "sqlite3"]
         ~compiler ~repository_commit ~repository_sha256 ~web_bundle in
     let ocaml_first = valid (ocaml "ocaml-first" ()) in
     (* Stored artifacts are reused by this digest: a recipe without a bundle
@@ -108,6 +115,11 @@ let () =
       (web <> ocaml_first
        && valid (ocaml "ocaml-web-again" ~web_bundle:"web/build-bundle.sh" ()) = web
        && valid (ocaml "ocaml-web-other" ~web_bundle:"web/other.sh" ()) <> web);
+    let ocaml_lib32 = valid (ocaml "ocaml-lib32" ~lib32_sha256:(sha256 "lib32 bytes") ()) in
+    check "a declared lib32 archive checksum is bound into the OCaml recipe"
+      (ocaml_lib32 <> ocaml_first
+       && valid (ocaml "ocaml-lib32-other" ~lib32_sha256:(sha256 "other lib32") ()) <> ocaml_lib32
+       && rejected (ocaml "ocaml-bad-lib32" ~lib32_sha256:"unknown" ()));
     check "OCaml recipe is deterministic and separate from Phoenix"
       (valid (ocaml "ocaml-second" ()) = ocaml_first && ocaml_first.sha256 <> first.sha256);
     check "OCaml recipe binds the declared compiler version"

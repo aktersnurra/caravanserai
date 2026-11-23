@@ -36,10 +36,18 @@ let () =
  let built = parse (replace "(ssh east-box)" ("(ssh east-box) " ^ base) config) in
  check "compute host declares builder IP and base archive"
    (match (Topology.host built "east").build with
-    | Some { ip; base_url; base_sha256 } ->
+    | Some { ip; base_url; base_sha256; lib32 } ->
         ip = "10.8.0.11" && base_url = "https://download.freebsd.org/base.txz"
-        && base_sha256 = String.make 64 'a'
+        && base_sha256 = String.make 64 'a' && lib32 = None
     | None -> false);
+ let with_lib32 = "(build (ip 10.8.0.11) (base (url https://download.freebsd.org/base.txz) (sha256 " ^ String.make 64 'a'
+   ^ ")) (lib32 (url https://download.freebsd.org/lib32.txz) (sha256 " ^ String.make 64 'b' ^ ")))" in
+ let built = parse (replace "(ssh east-box)" ("(ssh east-box) " ^ with_lib32) config) in
+ check "a builder may declare the lib32 archive beside its base"
+   (match (Topology.host built "east").build with
+    | Some { lib32 = Some { url; sha256 }; _ } ->
+        url = "https://download.freebsd.org/lib32.txz" && sha256 = String.make 64 'b'
+    | _ -> false);
  let refuses name text = check name (try ignore (parse text); false with Failure _ -> true) in
  List.iter (fun (name,a,b) -> refuses name (replace a b config)) [
   "unknown host", "(hello east)", "(hello missing)";
@@ -69,6 +77,8 @@ let () =
   "an unknown network field", "(gateway 10.8.0.1)", "(gateway 10.8.0.1) (bridge 10.8.0.2)";
   "plain http base", "(ssh east-box)", "(ssh east-box) (build (ip 10.8.0.11) (base (url http://x/base.txz) (sha256 " ^ String.make 64 'a' ^ ")))";
   "short base digest", "(ssh east-box)", "(ssh east-box) (build (ip 10.8.0.11) (base (url https://x/base.txz) (sha256 abc)))";
+  "plain http lib32", "(ssh east-box)", "(ssh east-box) (build (ip 10.8.0.11) (base (url https://x/base.txz) (sha256 " ^ String.make 64 'a' ^ ")) (lib32 (url http://x/lib32.txz) (sha256 " ^ String.make 64 'b' ^ ")))";
+  "short lib32 digest", "(ssh east-box)", "(ssh east-box) (build (ip 10.8.0.11) (base (url https://x/base.txz) (sha256 " ^ String.make 64 'a' ^ ")) (lib32 (url https://x/lib32.txz) (sha256 abc)))";
  ];
  check "a host declares its network"
    (match (Topology.host t "west").network with

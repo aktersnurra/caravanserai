@@ -30,6 +30,9 @@ printf '#!/bin/sh\n' >"$TMP/base/rescue/sh"
 printf 'loader fixture\n' >"$TMP/base/libexec/ld-elf.so.1"
 chmod 755 "$TMP/base/bin/sh" "$TMP/base/rescue/sh" "$TMP/base/libexec/ld-elf.so.1"
 tar -cf "$TMP/base.tar" -C "$TMP/base" .
+mkdir -p "$TMP/lib32/usr/lib32"
+printf '32-bit libc fixture\n' >"$TMP/lib32/usr/lib32/libc.so.7"
+tar -cf "$TMP/lib32.tar" -C "$TMP/lib32" .
 printf 'committed source\n' >"$TMP/source/main.txt"
 chmod 600 "$TMP/source/main.txt"
 cat >"$TMP/bin/sha256" <<'EOF'
@@ -92,6 +95,12 @@ if [ "$1" = -c ]; then
         echo 'disposable jail did not receive approved test-only DNS' >&2; exit 1
     fi
     [ "$("$STAT_BIN" -f %Lp "$JAILS_DIR/$name/etc/resolv.conf")" = 644 ] || exit 1
+    if [ "${EXPECT_LIB32:-0}" = 1 ] && [ ! -f "$JAILS_DIR/$name/usr/lib32/libc.so.7" ]; then
+        echo 'disposable jail did not receive the lib32 archive' >&2; exit 1
+    fi
+    if [ "${EXPECT_LIB32:-0}" != 1 ] && [ -e "$JAILS_DIR/$name/usr/lib32" ]; then
+        echo 'disposable jail received an undeclared lib32 archive' >&2; exit 1
+    fi
 fi
 if [ "$1" = -c ]; then
     [ "${FAIL_CREATE:-0}" != 1 ] || exit 1
@@ -294,6 +303,22 @@ test "$(grep -c '^build jail: root rescue/sh mode=' "$TMP/result")" -eq 2
 if [ "$(grep -c '^jexec infra-build-drill-test /rescue/sh -c[[:space:]]*$' "$TMP/commands")" -ne 2 ]; then
     echo 'missing pre/post-package shell probes' >&2; exit 1
 fi
+# A declared lib32 archive is verified and extracted over the base.
+lib32_sha="$(sha256sum "$TMP/lib32.tar" | awk '{print $1}')"
+if ! EXPECT_LIB32=1 SERAI_LIB32_ARCHIVE="$TMP/lib32.tar" SERAI_LIB32_SHA256="$lib32_sha" \
+    run infra-build-drill-test 10.40.0.200 "$base_sha" "$TMP/lib32-built" >"$TMP/result" 2>&1; then
+    echo 'FAIL - declared lib32 archive was not extracted into the build jail' >&2; tail -5 "$TMP/result" >&2; exit 1
+fi
+test -f "$TMP/lib32-built/release.tar"
+SERAI_LIB32_ARCHIVE="$TMP/lib32.tar" refuse_before_jail infra-build-drill-test 10.40.0.200 "$base_sha" "$TMP/lib32-no-digest" lib32-without-digest
+SERAI_LIB32_SHA256="$lib32_sha" refuse_before_jail infra-build-drill-test 10.40.0.200 "$base_sha" "$TMP/lib32-no-archive" lib32-without-archive
+SERAI_LIB32_ARCHIVE="$TMP/lib32.tar" SERAI_LIB32_SHA256="$base_sha" \
+    refuse_before_jail infra-build-drill-test 10.40.0.200 "$base_sha" "$TMP/lib32-mismatch" lib32-checksum
+SERAI_LIB32_ARCHIVE="$TMP/lib32.tar" SERAI_LIB32_SHA256=not-a-digest \
+    refuse_before_jail infra-build-drill-test 10.40.0.200 "$base_sha" "$TMP/lib32-bad-digest" lib32-digest
+ln -s "$TMP/lib32.tar" "$TMP/lib32-link.tar"
+SERAI_LIB32_ARCHIVE="$TMP/lib32-link.tar" SERAI_LIB32_SHA256="$lib32_sha" \
+    refuse_before_jail infra-build-drill-test 10.40.0.200 "$base_sha" "$TMP/lib32-link" lib32-link
 # The host's jail subnet is the declaration's: serai checks the address is on
 # it, the script that it is one host address.
 if ! run infra-build-drill-test 10.20.0.200 "$base_sha" "$TMP/other-subnet" >"$TMP/result" 2>&1; then

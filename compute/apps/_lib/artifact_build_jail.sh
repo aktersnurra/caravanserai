@@ -182,6 +182,14 @@ done
 case "$base_sha256" in *[!0-9a-f]* ) refuse ;; esac
 [ "${#base_sha256}" -eq 64 ] || refuse
 [ -f "$base_archive" ] && [ ! -L "$base_archive" ] || refuse
+# Optional: FreeBSD's lib32.txz, extracted over the base, with its digest.
+lib32_archive=${SERAI_LIB32_ARCHIVE:-}
+lib32_sha256=${SERAI_LIB32_SHA256:-}
+if [ -n "$lib32_archive$lib32_sha256" ]; then
+    case "$lib32_sha256" in ''|*[!0-9a-f]*) refuse ;; esac
+    [ "${#lib32_sha256}" -eq 64 ] || refuse
+    [ -f "$lib32_archive" ] && [ ! -L "$lib32_archive" ] || refuse
+fi
 if [ "$kind" = phoenix ] || [ "$kind" = ocaml ]; then
     [ "$kind" != phoenix ] || [ -n "$erlang_version" ] || refuse
     case "$inventory_sha256" in *[!0-9a-f]* ) refuse ;; esac
@@ -217,6 +225,9 @@ case "$output_uid" in ''|*[!0-9]*) refuse ;; esac
 chown_bin=${CHOWN_BIN:-chown}
 sha256_bin=${SHA256_BIN:-sha256}
 [ "$("$sha256_bin" -q "$base_archive")" = "$base_sha256" ] || refuse
+if [ -n "$lib32_archive" ]; then
+    [ "$("$sha256_bin" -q "$lib32_archive")" = "$lib32_sha256" ] || refuse
+fi
 if [ "$kind" = phoenix ] || [ "$kind" = ocaml ]; then
     [ "$("$sha256_bin" -q "$inventory")" = "$inventory_sha256" ] || refuse
 fi
@@ -323,6 +334,9 @@ timing_skipped image-verify-clone-mount 'cold build extracts a base'
 timing_skipped receipt-material-checks 'cold build has no prepared receipt'
 chmod 700 "$jroot"
 timed base-extraction tar -xpf "$base_archive" -C "$jroot"
+if [ -n "$lib32_archive" ]; then
+    timed lib32-extraction tar -xpf "$lib32_archive" -C "$jroot"
+fi
 chmod 700 "$jroot"
 mkdir -p "$jroot/etc" "$jroot/dev" "$jroot/work/source"
 # The compute host's loopback resolver is not reachable from this disposable jail.

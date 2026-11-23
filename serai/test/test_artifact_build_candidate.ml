@@ -50,17 +50,17 @@ let () =
       guests = []; ops_control_path = "/tmp/ops-ssh-%C"; ssh_multiplex = false;
       source_checkout_override = None;
     } in
-    let run ?(base_archive=base) ?(base_sha256=sha256 "synthetic base archive\n")
+    let run ?(base_archive=base) ?(base_sha256=sha256 "synthetic base archive\n") ?lib32
         ?(revision=revision) ?(ip="10.40.0.200") name out =
       let mock = Proc.Mock.create () in
       let result = try
         Ok (Proc.Mock.run mock (fun () -> Dispatcher.artifact_build_candidate env name
-          ~revision ~ip ~base_archive ~base_sha256 ~out))
+          ~revision ~ip ~base_archive ~base_sha256 ?lib32 ~out))
       with Failure message -> Error message in
       result, Proc.Mock.calls mock in
-    let refused name ?base_archive ?base_sha256 ?revision ?ip label =
+    let refused name ?base_archive ?base_sha256 ?lib32 ?revision ?ip label =
       let out = Filename.concat fixture label in
-      let result, calls = run ?base_archive ?base_sha256 ?revision ?ip name out in
+      let result, calls = run ?base_archive ?base_sha256 ?lib32 ?revision ?ip name out in
       check (label ^ " refused without remote calls")
         (Result.is_error result && calls = [] && not (Sys.file_exists out)) in
     refused "unknown" "unknown workload";
@@ -69,6 +69,12 @@ let () =
     refused "drill" ~base_sha256:"not-a-digest" "bad base digest";
     refused "drill" ~base_sha256:(String.make 64 'a') "mismatched base digest";
     refused "drill" ~base_archive:(Filename.concat fixture "missing-base") "missing base archive";
+    let lib32 = Filename.concat fixture "lib32.txz" in
+    write lib32 "synthetic lib32 archive\n";
+    refused "drill" ~lib32:(lib32, "not-a-digest") "bad lib32 digest";
+    refused "drill" ~lib32:(lib32, String.make 64 'a') "mismatched lib32 digest";
+    refused "drill" ~lib32:(Filename.concat fixture "missing-lib32", sha256 "synthetic lib32 archive\n")
+      "missing lib32 archive";
     let tracked_link = Filename.concat checkout "private-link" in
     Unix.symlink ".env" tracked_link;
     jj ["-R"; checkout; "describe"; "-m"; "tracked symlink fixture"];
@@ -93,7 +99,7 @@ let () =
       let rec find i = i + String.length needle <= String.length value
         && (String.sub value i (String.length needle) = needle || find (i + 1)) in
       find 0 in
-    let mock = Proc.Mock.create ~exit_codes:(fun (call : Proc.request) ->
+    let candidate_outputs (call : Proc.request) =
       match call.prog, List.rev call.args with
       | "rsync", destination :: remote :: _ when contains remote "/output/release.tar" ->
           write destination archive_bytes; 0
@@ -103,7 +109,8 @@ let () =
           write destination "FreeBSD:14:amd64\n"; 0
       | "rsync", destination :: remote :: _ when contains remote "/output/dependencies" ->
           write destination ("compiler\t1.0_1,1\t" ^ sha256 "compiler archive" ^ "\n"); 0
-      | _ -> 0) () in
+      | _ -> 0 in
+    let mock = Proc.Mock.create ~exit_codes:candidate_outputs () in
     let result = try Ok (Proc.Mock.run mock (fun () ->
       Dispatcher.artifact_build_candidate env "drill" ~revision ~ip:"10.40.0.200"
         ~base_archive:base ~base_sha256:(sha256 "synthetic base archive\n") ~out:candidate_out))
@@ -186,6 +193,34 @@ let () =
            && contains command candidate.source_inventory_sha256
            && contains command "erlang-runtime29"
            && contains command "elixir-devel") calls);
+    check "without a lib32 archive none is transferred or named"
+      (not (List.exists (fun (call : Proc.request) ->
+         List.exists (fun arg -> contains arg "lib32") call.args) calls));
+    let lib32_mock = Proc.Mock.create ~exit_codes:candidate_outputs () in
+    let lib32_out = Filename.concat fixture "lib32-candidate" in
+    let lib32_sha256 = sha256 "synthetic lib32 archive\n" in
+    let lib32_result = try Ok (Proc.Mock.run lib32_mock (fun () ->
+      Dispatcher.artifact_build_candidate env "drill" ~revision ~ip:"10.40.0.200"
+        ~base_archive:base ~base_sha256:(sha256 "synthetic base archive\n")
+        ~lib32:(lib32, lib32_sha256) ~out:lib32_out))
+      with Failure message -> Error message in
+    let lib32_calls = Proc.Mock.calls lib32_mock in
+    check "a lib32 archive is bound into the candidate's recipe"
+      (match result, lib32_result with
+       | Ok without, Ok with_lib32 -> without.recipe_sha256 <> with_lib32.recipe_sha256
+       | _ -> false);
+    check "a lib32 archive is transferred beside the base"
+      (List.exists (fun (call : Proc.request) ->
+         match call.prog, List.rev call.args with
+         | "rsync", destination :: source :: _ -> source = lib32 && contains destination "/lib32.txz"
+         | _ -> false) lib32_calls);
+    check "the adapter is given the lib32 archive and its digest"
+      (List.exists (fun (call : Proc.request) ->
+         let command = String.concat " " call.args in
+         call.prog = "ssh" && contains command "artifact_build_jail.sh"
+         && contains command "SERAI_LIB32_ARCHIVE="
+         && contains command "/lib32.txz"
+         && contains command "SERAI_LIB32_SHA256=" && contains command lib32_sha256) lib32_calls);
     let board_sexp = Filename.concat fixture "board.sexp" in
     write board_sexp (Printf.sprintf
       "((name board)(ip 10.40.0.3)(hostname board.example.org)(tailnet_ports ((http 4001)))(operator_ports ())(strategy freebsd_native_elixir)(hooks (bootstrap deploy check))(extra_steps ())(strategy_config ((packages (erlang-runtime29 elixir-devel sqlite3 gmake git node24 npm-node24))(repo_path %s)(release_name board)(check_path /))))\n" checkout);

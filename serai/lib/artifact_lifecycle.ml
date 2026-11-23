@@ -136,6 +136,16 @@ let require_base_archive ~context ~base_archive ~base_sha256 =
   if artifact_file_sha256 base_archive <> base_sha256 then
     Run_state.fail ~cause:"input_mismatch" (context ^ ": base archive SHA-256 mismatch")
 
+(* The lib32 archive extracted over the base: checked like the base. *)
+let require_lib32_archive ~context (archive, sha256) =
+  if not (is_sha256 sha256) then Run_state.fail ~cause:"invalid_argument" (context ^ ": invalid lib32 SHA-256");
+  (match Unix.lstat archive with
+   | { Unix.st_kind = Unix.S_REG; _ } -> ()
+   | _ -> Run_state.fail ~cause:"invalid_argument" (context ^ ": lib32 archive must be regular")
+   | exception Unix.Unix_error _ -> Run_state.fail ~cause:"input_unavailable" (context ^ ": lib32 archive not found"));
+  if artifact_file_sha256 archive <> sha256 then
+    Run_state.fail ~cause:"input_mismatch" (context ^ ": lib32 archive SHA-256 mismatch")
+
 (* The lock token names the build jail and its stage directory. *)
 let require_build_token env ~refusal =
   if env.lock_token = "" || String.length env.lock_token > 32
@@ -190,12 +200,12 @@ let artifact_build_web_bundle ~source ~script ~local =
     | _ -> Run_state.fail ~cause:"build_failed" ("web bundle: not a regular file: " ^ name)) names;
   out
 
-let artifact_source_recipe ?opam_snapshots env ~local ~base_sha256 ~release_name ~packages ~compiler ~opam_repository ~web_bundle =
+let artifact_source_recipe ?opam_snapshots env ~local ~base_sha256 ~lib32_sha256 ~release_name ~packages ~compiler ~opam_repository ~web_bundle =
   Progress.phase "recipe";
   let out = Filename.concat local "recipe" in
   let staged, repository = match compiler, opam_repository with
     | None, None when Option.is_none web_bundle -> Artifact_recipe.stage ~lib_dir:(Layout.lib_dir env.layout) ~out
-        ~base_sha256 ~release_name ~packages, None
+        ~base_sha256 ~lib32_sha256 ~release_name ~packages, None
     | Some compiler, Some (checkout, revision) ->
         let staged = match opam_snapshots with
           | Some cache -> Source_snapshot.stage_cached ~jj_bin:env.jj_bin ~checkout ~revision ~cache
@@ -207,13 +217,13 @@ let artifact_source_recipe ?opam_snapshots env ~local ~base_sha256 ~release_name
         let receipt = Filename.concat local "repository-inventory" in
         let sha256 = write_inventory ~root:path ~commit ~receipt in
         require_opam_repository path;
-        Artifact_recipe.stage_ocaml ~lib_dir:(Layout.lib_dir env.layout) ~out ~base_sha256 ~release_name ~packages
+        Artifact_recipe.stage_ocaml ~lib_dir:(Layout.lib_dir env.layout) ~out ~base_sha256 ~lib32_sha256 ~release_name ~packages
           ~compiler ~repository_commit:commit ~repository_sha256:sha256 ~web_bundle, Some (path, receipt, sha256)
     | _ -> Run_state.fail ~cause:"invalid_declaration" "artifact build: inconsistent source recipe inputs" in
   let recipe = ok_or_fail ~cause:"source_unavailable" (staged) in
   recipe, repository
 
-let artifact_build_candidate ?checkout ?opam_repository ?opam_snapshots env app_name ~revision ~ip ~base_archive ~base_sha256 ~out =
+let artifact_build_candidate ?checkout ?opam_repository ?opam_snapshots ?lib32 env app_name ~revision ~ip ~base_archive ~base_sha256 ~out =
   let app = find_app env app_name in
   let env = app_env env app_name in
   let repo_path, release_name, packages, compiler = artifact_source_configuration env app_name opam_repository in
@@ -222,6 +232,8 @@ let artifact_build_candidate ?checkout ?opam_repository ?opam_snapshots env app_
   let declared = Network_endpoint.to_list env.endpoints |> List.map (fun endpoint -> endpoint.Network_endpoint.ip) in
   ok_or_fail ~cause:"invalid_argument" (Jail_test.validate_ip ~host:(jail_host env app_name) ~declared ip);
   require_base_archive ~context:"artifact build" ~base_archive ~base_sha256;
+  Option.iter (require_lib32_archive ~context:"artifact build") lib32;
+  let lib32_sha256 = Option.map snd lib32 in
   if out = "" || out = "." || out = ".." then Run_state.fail ~cause:"invalid_argument" "artifact build: invalid output";
   (match Unix.lstat out with
    | _ -> Run_state.fail ~cause:"already_exists" "artifact build: output already exists"
@@ -243,8 +255,8 @@ let artifact_build_candidate ?checkout ?opam_repository ?opam_snapshots env app_
       source_commit, write_inventory ~root:source ~commit:source_commit ~receipt:inventory_path, inventory_path) in
     let web_bundle = artifact_web_bundle env app_name in
     let recipe_dir = Filename.concat local "recipe" in
-    let recipe, repository = artifact_source_recipe ?opam_snapshots env ~local ~base_sha256 ~release_name
-      ~packages ~compiler ~opam_repository ~web_bundle in
+    let recipe, repository = artifact_source_recipe ?opam_snapshots env ~local ~base_sha256 ~lib32_sha256
+      ~release_name ~packages ~compiler ~opam_repository ~web_bundle in
     let web = Option.map (fun script ->
       Progress.phase "web-bundle";
       Progress.with_duration ~phase:"web-bundle" ~parent:None (fun () ->
@@ -291,6 +303,7 @@ let artifact_build_candidate ?checkout ?opam_repository ?opam_snapshots env app_
             rsync "outbound-transfer" (source ^ "/") (remote "source/");
             rsync "outbound-transfer" inventory_path (remote "inventory");
             rsync "outbound-transfer" base_archive (remote "base.txz");
+            Option.iter (fun (archive, _) -> rsync "outbound-transfer" archive (remote "lib32.txz")) lib32;
             let script name = Filename.concat recipe_dir name in
             List.iter (fun (name, _) -> rsync "outbound-transfer" (script name) (remote name)) recipe.scripts;
             Option.iter (fun (path, receipt, _) ->
@@ -311,7 +324,12 @@ let artifact_build_candidate ?checkout ?opam_repository ?opam_snapshots env app_
                     (Shell.quote digest) ]) recipe.scripts in
             let command = "doas sh -c " ^ Shell.quote
               (String.concat "\n" ([ "set -eu" ] @ script_checks @
-                [ "SERAI_LOCK_HELD=1 SERAI_PROGRESS_JSONL=" ^ (if Progress.is_enabled () then "1 " else "0 ") ^ (match compiler, repository with
+                [ "SERAI_LOCK_HELD=1 SERAI_PROGRESS_JSONL=" ^ (if Progress.is_enabled () then "1 " else "0 ")
+                  ^ (match lib32 with
+                    | None -> ""
+                    | Some (_, sha256) -> "SERAI_LIB32_ARCHIVE=" ^ Shell.quote (stage ^ "/lib32.txz")
+                        ^ " SERAI_LIB32_SHA256=" ^ Shell.quote sha256 ^ " ")
+                  ^ (match compiler, repository with
                     | Some compiler, Some (_, _, digest) ->
                         String.concat " " ["SERAI_ARTIFACT_KIND=ocaml";
                           "SERAI_OCAML_COMPILER=" ^ Shell.quote compiler;
@@ -357,14 +375,14 @@ let artifact_build_candidate ?checkout ?opam_repository ?opam_snapshots env app_
         Unix.rename output_temp out;
         { source_commit; source_inventory_sha256; target_abi; recipe_sha256; archive_sha256; manifest }))
 
-let artifact_build_store ?reuse ?checkout ?opam_repository ?opam_snapshots env app_name ~revision ~ip ~base_archive ~base_sha256 ~store =
+let artifact_build_store ?reuse ?checkout ?opam_repository ?opam_snapshots ?lib32 env app_name ~revision ~ip ~base_archive ~base_sha256 ~store =
   ok_or_fail ~cause:"store_failed" (Artifact_store.validate_root store);
   let local = Filename.temp_dir "serai-artifact-publish" "" in
   Fun.protect ~finally:(fun () -> remove_tree local) (fun () ->
     match reuse with
     | None ->
         let out = Filename.concat local "candidate" in
-        let candidate = artifact_build_candidate ?checkout ?opam_repository ?opam_snapshots env app_name ~revision ~ip
+        let candidate = artifact_build_candidate ?checkout ?opam_repository ?opam_snapshots ?lib32 env app_name ~revision ~ip
           ~base_archive ~base_sha256 ~out in
         Progress.phase "publish";
         Progress.with_duration ~phase:"publication" ~parent:None (fun () ->
@@ -379,9 +397,11 @@ let artifact_build_store ?reuse ?checkout ?opam_repository ?opam_snapshots env a
           artifact_source_configuration env app_name opam_repository in
         let repo_path = Option.value checkout ~default:repo_path in
         require_base_archive ~context:"artifact reuse" ~base_archive ~base_sha256;
+        Option.iter (require_lib32_archive ~context:"artifact reuse") lib32;
         let source_commit = ok_or_fail ~cause:"source_unavailable" (Source_snapshot.stage ~jj_bin:env.jj_bin
           ~checkout:repo_path ~revision ~out:(Filename.concat local "source")) in
-        let recipe, _ = artifact_source_recipe ?opam_snapshots env ~local ~base_sha256 ~release_name
+        let recipe, _ = artifact_source_recipe ?opam_snapshots env ~local ~base_sha256
+          ~lib32_sha256:(Option.map snd lib32) ~release_name
           ~packages ~compiler ~opam_repository ~web_bundle:(artifact_web_bundle env app_name) in
         let same_source = match manifest.input with
           | Artifact_manifest.Source_commit commit -> commit = source_commit

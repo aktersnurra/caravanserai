@@ -69,6 +69,15 @@ let render_jail_setup ?(extra_dirs = []) ?(layout = Code_dir) ?(stop_before_setu
       {|  tar -xpf /tmp/base.txz -C "$JROOT"|};
       {|  rm /tmp/base.txz|};
       "fi";
+      (* 32-bit compatibility libraries, which packages built with gcc
+         require (libc.so.7:32); checked apart from the base so a jail made
+         before this gets them on its next run. *)
+      {|if [ ! -f "${JROOT}/usr/lib32/libc.so.7" ]; then|};
+      {|  fetch -o /tmp/lib32.txz \|};
+      {|    "https://download.freebsd.org/releases/amd64/${FREEBSD_VERSION}/lib32.txz"|};
+      {|  tar -xpf /tmp/lib32.txz -C "$JROOT"|};
+      {|  rm /tmp/lib32.txz|};
+      "fi";
       {|chflags noschg "${JROOT}/etc/resolv.conf" 2>/dev/null || true|};
       {|echo "nameserver 1.1.1.1" >"${JROOT}/etc/resolv.conf"|};
       {|chflags schg "${JROOT}/etc/resolv.conf"|};

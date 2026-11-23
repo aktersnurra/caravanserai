@@ -1,5 +1,6 @@
 type os = Freebsd | Linux
-type build = { ip : string; base_url : string; base_sha256 : string }
+type archive = { url : string; sha256 : string }
+type build = { ip : string; base_url : string; base_sha256 : string; lib32 : archive option }
 type network = { subnet : Ipv4.subnet; gateway : string; guest_bridge : string option }
 type host = { id : string; os : os; ssh : string; via : string option; build : build option;
               network : network option }
@@ -83,19 +84,24 @@ let network_of_sexp sexp =
 
 (* The builder jail joins the host's jail network; its address is checked
    against declared workloads when a build runs. *)
-let build_of_sexp sexp =
-  let rows = fields ["ip"; "base"] sexp in
-  let ip = required rows "ip" |> atom in
-  let base = fields ["url"; "sha256"] (required rows "base") in
-  let base_url = required base "url" |> atom and base_sha256 = required base "sha256" |> atom in
-  if not (String.starts_with ~prefix:"https://" base_url)
+let archive_of_sexp label sexp =
+  let rows = fields ["url"; "sha256"] sexp in
+  let url = required rows "url" |> atom and sha256 = required rows "sha256" |> atom in
+  if not (String.starts_with ~prefix:"https://" url)
      || not (String.for_all (function
-          | 'a'..'z' | 'A'..'Z' | '0'..'9' | ':' | '/' | '.' | '_' | '-' -> true | _ -> false) base_url)
-  then fail ("base url must be a plain https URL: " ^ base_url);
-  if String.length base_sha256 <> 64
-     || not (String.for_all (function '0'..'9' | 'a'..'f' -> true | _ -> false) base_sha256)
-  then fail "base sha256 must be 64 lowercase hex digits";
-  { ip; base_url; base_sha256 }
+          | 'a'..'z' | 'A'..'Z' | '0'..'9' | ':' | '/' | '.' | '_' | '-' -> true | _ -> false) url)
+  then fail (label ^ " url must be a plain https URL: " ^ url);
+  if String.length sha256 <> 64
+     || not (String.for_all (function '0'..'9' | 'a'..'f' -> true | _ -> false) sha256)
+  then fail (label ^ " sha256 must be 64 lowercase hex digits");
+  { url; sha256 }
+
+let build_of_sexp sexp =
+  let rows = fields ["ip"; "base"; "lib32"] sexp in
+  let ip = required rows "ip" |> atom in
+  let base = archive_of_sexp "base" (required rows "base") in
+  let lib32 = Option.map (archive_of_sexp "lib32") (List.assoc_opt "lib32" rows) in
+  { ip; base_url = base.url; base_sha256 = base.sha256; lib32 }
 
 let of_sexp sexp =
   let rows = fields ["hosts"; "jails"; "guests"; "edge"; "proxy"] sexp in

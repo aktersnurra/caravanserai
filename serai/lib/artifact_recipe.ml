@@ -89,9 +89,10 @@ let stage_executable ~lib_dir ~out ~base_sha256 ~release_name ~packages ~input =
         (fun scripts -> [ base_sha256; release_name ] @ counted packages @ origins @ script_fields scripts)
   | _ -> Error "artifact recipe: invalid executable inputs"
 
-let stage_ocaml ~lib_dir ~out ~base_sha256 ~release_name ~packages ~compiler
+let stage_ocaml ~lib_dir ~out ~base_sha256 ~lib32_sha256 ~release_name ~packages ~compiler
     ~repository_commit ~repository_sha256 ~web_bundle =
-  if not (valid_sha256 base_sha256 && valid_sha256 repository_sha256
+  if not (valid_sha256 base_sha256 && Option.for_all valid_sha256 lib32_sha256
+          && valid_sha256 repository_sha256
           && valid_commit repository_commit && valid_release release_name
           && valid_package compiler && String.starts_with ~prefix:"ocaml-base-compiler." compiler)
      || packages = [] || not (List.for_all valid_package packages)
@@ -104,7 +105,8 @@ let stage_ocaml ~lib_dir ~out ~base_sha256 ~release_name ~packages ~compiler
       (fun scripts ->
         [ base_sha256; release_name; compiler; repository_commit; repository_sha256 ] @ counted packages
         @ script_fields scripts
-        @ (match web_bundle with Some script -> [ "web_bundle"; script ] | None -> []))
+        @ (match web_bundle with Some script -> [ "web_bundle"; script ] | None -> [])
+        @ (match lib32_sha256 with Some digest -> [ "lib32"; digest ] | None -> []))
 
 let stage_guest ~lib_dir ~out ~project ~target ~release_name ~compiler ~repository_commit
     ~repository_sha256 =
@@ -119,8 +121,9 @@ let stage_guest ~lib_dir ~out ~project ~target ~release_name ~compiler ~reposito
       (fun scripts ->
         [ project; target; release_name; compiler; repository_commit; repository_sha256 ] @ script_fields scripts)
 
-let stage ~lib_dir ~out ~base_sha256 ~release_name ~packages =
+let stage ~lib_dir ~out ~base_sha256 ~lib32_sha256 ~release_name ~packages =
   if not (valid_sha256 base_sha256) then Error "artifact recipe: invalid base SHA-256"
+  else if not (Option.for_all valid_sha256 lib32_sha256) then Error "artifact recipe: invalid lib32 SHA-256"
   else if not (valid_release release_name) then Error "artifact recipe: invalid release name"
   else if packages = [] || not (List.for_all valid_package packages) then
     Error "artifact recipe: invalid package declaration"
@@ -129,4 +132,5 @@ let stage ~lib_dir ~out ~base_sha256 ~release_name ~packages =
       ~failure:"artifact recipe: cannot stage builder scripts"
       (fun staged ->
         [ base_sha256; release_name ] @ counted packages
-        @ [ string_of_int (List.length staged) ] @ script_fields staged)
+        @ [ string_of_int (List.length staged) ] @ script_fields staged
+        @ (match lib32_sha256 with Some digest -> [ "lib32"; digest ] | None -> []))

@@ -71,7 +71,11 @@ apply requires it.
 Everything else comes from the declarations. The app's `strategy_config`
 names its git remote (`(source (git <url>))`) and, for OCaml, a pinned
 opam repository; the compute host in `serai.sexp` names the builder
-jail address and the FreeBSD base archive with its SHA-256. `serai up`:
+jail address and the FreeBSD base archive with its SHA-256, and optionally
+`(lib32 (url ...) (sha256 ...))`, the release's 32-bit compatibility
+libraries, which packages built with gcc (e.g. `vips`) need: without it
+`pkg` stops at `Missing shlib libc.so.7:32`. Both digests are in the
+release's `MANIFEST`. `serai up`:
 
 1. reads the compute host: does the app's jail exist at its address, is the address
    held by any other jail (declared or not, running or in `/etc/jail.conf`),
@@ -81,8 +85,10 @@ jail address and the FreeBSD base archive with its SHA-256. `serai up`:
    and the run stops for the operator to write the env;
 2. fetches the app's mirror (`~/.cache/serai/sources/<app>`) and resolves the
    revision on the remote; unpushed commits are refused;
-3. downloads the base archive once (`~/.cache/serai/base/`) and checks its
-   digest on every use; an OCaml app's pinned opam repository is exported
+3. downloads the base archive, and the lib32 archive when declared, once
+   (`~/.cache/serai/base/`) and checks its digest on every use; the build
+   jail extracts lib32 over the base, and its digest is part of the recipe,
+   so an artifact built without it is not reused; an OCaml app's pinned opam repository is exported
    once per commit (`~/.cache/serai/opam-snapshots/<commit>`) and hashed on
    every use;
 4. reuses a stored artifact (`~/.local/share/serai/store`) with the same
@@ -90,6 +96,11 @@ jail address and the FreeBSD base archive with its SHA-256. `serai up`:
 5. prints the plan and asks once (`--yes` skips the question);
 6. installs and activates the release, runs `serai edge`, and checks the
    public URL (`https://<hostname><check_path>`).
+
+An app's own jail is not built from the pinned archives: its generated
+script fetches `base.txz` and `lib32.txz` for the compute host's FreeBSD
+release from download.freebsd.org, each when the jail lacks it, so
+rerunning the script (`serai bootstrap <app>`) adds lib32 to an older jail.
 
 `--plan` stops after printing the plan, without asking: it changes no host
 (the jail probe and the source fetch only read). `--plan --json` returns it

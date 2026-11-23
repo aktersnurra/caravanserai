@@ -252,8 +252,9 @@ let up_plan_json (plan : Dispatcher.up_plan) =
       | Jail_needs_env message -> Object [ "action", String "refused"; "message", String message ]);
     "release", (match plan.release with
       | Dispatcher.Reuse identity -> Object [ "action", String "reuse"; "identity", String identity ]
-      | Build { ip; base_sha256 } ->
-          Object [ "action", String "build"; "builder_ip", String ip; "base_sha256", String base_sha256 ]);
+      | Build { ip; base_sha256; lib32_sha256 } ->
+          Object [ "action", String "build"; "builder_ip", String ip; "base_sha256", String base_sha256;
+                   "lib32_sha256", (match lib32_sha256 with Some sha256 -> String sha256 | None -> Null) ]);
     "public_url", String plan.public_url; "plan_id", String (Plan_id.to_string (Dispatcher.up_plan_id plan));
     "host_inspected", Bool true; "applied", Bool false ])
 

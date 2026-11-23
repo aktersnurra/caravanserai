@@ -1,7 +1,9 @@
 (** Versioned Phoenix build recipe. The digest commits to the exact staged
-    adapter script bytes, trusted base archive SHA-256, release name, and
-    declared package arguments in order. It does not attest remote execution
-    or resolved package archive checksums. *)
+    adapter script bytes, trusted base archive SHA-256 (and lib32 archive
+    SHA-256 when one is declared), release name, and declared package
+    arguments in order. It does not attest remote execution or resolved
+    package archive checksums. Without a lib32 archive the recipe bytes are
+    those of before lib32, so stored artifacts stay reusable. *)
 
 type staged = { sha256 : string; scripts : (string * string) list }
 
@@ -15,7 +17,7 @@ val stage_executable : lib_dir:string -> out:string -> base_sha256:string ->
     OCaml worker, base, release and package inputs, and the declared web
     bundle script when there is one. Without one the recipe bytes are those
     of before web bundles, so stored artifacts stay reusable. *)
-val stage_ocaml : lib_dir:string -> out:string -> base_sha256:string ->
+val stage_ocaml : lib_dir:string -> out:string -> base_sha256:string -> lib32_sha256:string option ->
   release_name:string -> packages:string list -> compiler:string ->
   repository_commit:string -> repository_sha256:string -> web_bundle:string option ->
   (staged, string) result
@@ -30,5 +32,5 @@ val stage_guest : lib_dir:string -> out:string -> project:string -> target:strin
 (** Copy the five builder scripts into a fresh private [out] directory and
     return their per-file SHA-256s plus the complete recipe SHA-256. The caller
     transfers scripts from [out], never from the mutable originals. *)
-val stage : lib_dir:string -> out:string -> base_sha256:string ->
+val stage : lib_dir:string -> out:string -> base_sha256:string -> lib32_sha256:string option ->
   release_name:string -> packages:string list -> (staged, string) result

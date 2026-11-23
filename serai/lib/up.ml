@@ -9,7 +9,7 @@ open Test_jail
 type up_target = Live | Rehearse of string | Update
 
 type up_jail = Jail_ready | Jail_create | Jail_needs_env of string
-type up_release = Reuse of string | Build of { ip : string; base_sha256 : string }
+type up_release = Reuse of string | Build of { ip : string; base_sha256 : string; lib32_sha256 : string option }
 
 type up_plan = {
   app : string;
@@ -43,7 +43,10 @@ let step_name = function
 let up_plan_id_of ~app ~host ~source ~commit ~local ~release ~jail ~rehearsal ~public_url =
   Plan_id.make ~operation:"up"
     ([ app; host; source; commit; string_of_bool local ]
-     @ (match release with Reuse identity -> [ "reuse"; identity ] | Build { ip; base_sha256 } -> [ "build"; ip; base_sha256 ])
+     @ (match release with
+        | Reuse identity -> [ "reuse"; identity ]
+        | Build { ip; base_sha256; lib32_sha256 } ->
+            [ "build"; ip; base_sha256 ] @ Option.fold ~none:[] ~some:(fun sha256 -> [ "lib32"; sha256 ]) lib32_sha256)
      @ (match jail with Jail_ready -> [ "ready" ] | Jail_create -> [ "create" ] | Jail_needs_env m -> [ "needs_env"; m ])
      @ (match rehearsal with None -> [ "live" ] | Some (jail, ip) -> [ "rehearsal"; jail; ip ])
      @ [ public_url ])
@@ -64,7 +67,9 @@ let print_up_plan ?(target = Live) plan =
    | Jail_needs_env message -> Printf.printf "    jail     refused until its env is in place: %s\n" message);
   (match plan.release with
    | Reuse identity -> Printf.printf "    release  reuse %s\n" identity
-   | Build { ip; base_sha256 } -> Printf.printf "    release  build in jail %s from base %s\n" ip (short base_sha256));
+   | Build { ip; base_sha256; lib32_sha256 } ->
+       Printf.printf "    release  build in jail %s from base %s%s\n" ip (short base_sha256)
+         (Option.fold ~none:"" ~some:(fun sha256 -> " and lib32 " ^ short sha256) lib32_sha256));
   (match plan.rehearsal with
    | None when target = Update ->
        Printf.printf "    then     install and restart %s, check %s (no edge)\n%!" plan.app plan.public_url
@@ -137,6 +142,11 @@ let prepare_up ?local_source ?(target = Live) ~plan_only env app_name ~revision 
     inputs.opam_repository in
   let base_sha256 = inputs.build.base_sha256 in
   let base_archive = ok_or_fail ~cause:"input_unavailable" (Base_archive.ensure ~curl_bin:env.curl_bin ~cache ~url:inputs.build.base_url ~sha256:base_sha256) in
+  let lib32 = Option.map (fun (archive : Topology.archive) ->
+      ok_or_fail ~cause:"input_unavailable"
+        (Base_archive.ensure ~curl_bin:env.curl_bin ~cache ~url:archive.url ~sha256:archive.sha256), archive.sha256)
+      inputs.build.lib32 in
+  let lib32_sha256 = Option.map snd lib32 in
   Progress.phase "recipe";
   (* The pinned opam tree is exported once per commit, not on every run. *)
   let opam_snapshots = Filename.concat cache "opam-snapshots" in
@@ -144,7 +154,7 @@ let prepare_up ?local_source ?(target = Live) ~plan_only env app_name ~revision 
   let recipe_sha256 =
     let local = Filename.temp_dir "serai-up-recipe" "" in
     Fun.protect ~finally:(fun () -> remove_tree local) (fun () ->
-      (fst (artifact_source_recipe ~opam_snapshots env ~local ~base_sha256 ~release_name ~packages ~compiler
+      (fst (artifact_source_recipe ~opam_snapshots env ~local ~base_sha256 ~lib32_sha256 ~release_name ~packages ~compiler
               ~opam_repository ~web_bundle:(artifact_web_bundle env app_name))).sha256) in
   let existing = ok_or_fail ~cause:"store_failed" (Artifact_store.find ~root:store ~f:(fun (m : Artifact_manifest.t) ->
       m.name = app_name && m.input = Artifact_manifest.Source_commit commit
@@ -155,7 +165,7 @@ let prepare_up ?local_source ?(target = Live) ~plan_only env app_name ~revision 
     commit; local = local_source <> None;
     release = (match existing with
       | Some identity -> Reuse identity
-      | None -> Build { ip = inputs.build.ip; base_sha256 });
+      | None -> Build { ip = inputs.build.ip; base_sha256; lib32_sha256 });
     jail; rehearsal; public_url = inputs.public_url;
   } in
   (* Each step's outcome is data, so up and up --json report the same run.
@@ -186,7 +196,7 @@ let prepare_up ?local_source ?(target = Live) ~plan_only env app_name ~revision 
       let* identity = match existing with
         | Some identity -> set Build Skipped; Ok identity
         | None -> run Build (fun () ->
-            artifact_build_store ~checkout ?opam_repository ~opam_snapshots env app_name ~revision:commit
+            artifact_build_store ~checkout ?opam_repository ~opam_snapshots ?lib32 env app_name ~revision:commit
               ~ip:inputs.build.ip ~base_archive ~base_sha256 ~store) in
       match rehearsal with
       | Some (_, ip) ->

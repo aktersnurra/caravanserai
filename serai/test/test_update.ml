@@ -74,7 +74,7 @@ let () =
       | Strategy_config.Freebsd_native_elixir s -> s.packages, s.release_name
       | _ -> assert false in
     let recipe = Result.get_ok (Artifact_recipe.stage ~lib_dir:(Layout.lib_dir example)
-      ~out:(Filename.concat fixture "recipe") ~base_sha256:(sha256 base_bytes) ~release_name ~packages) in
+      ~out:(Filename.concat fixture "recipe") ~base_sha256:(sha256 base_bytes) ~lib32_sha256:None ~release_name ~packages) in
     let archive = Filename.concat fixture "release.tar" in
     write archive "release bytes";
     let stored commit =

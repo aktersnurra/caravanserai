@@ -1,8 +1,12 @@
 (** Validated placement and transport, not an operation scheduler. *)
 type os = Freebsd | Linux
+(** A FreeBSD distribution archive pinned by its MANIFEST digest. *)
+type archive = private { url : string; sha256 : string }
+
 (** Where a FreeBSD host builds artifacts: a disposable jail address and the
-    pinned base archive extracted into it. *)
-type build = private { ip : string; base_url : string; base_sha256 : string }
+    pinned base archive extracted into it, then the 32-bit compatibility
+    libraries ([lib32.txz]) when declared, which packages built with gcc need. *)
+type build = private { ip : string; base_url : string; base_sha256 : string; lib32 : archive option }
 
 (** A FreeBSD host's workload network: the subnet its jails and guests
     share, the host's own address on it, and the guest bridge's address

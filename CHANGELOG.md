@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-11-23: 32-bit compatibility libraries in jails
+
+- A build host's `(build ...)` in `serai.sexp` takes an optional
+  `(lib32 (url ...) (sha256 ...))`: FreeBSD's `lib32.txz`, pinned like the
+  base, verified, extracted over it in the build jail and bound into the
+  recipe. Packages built with gcc (`vips` pulls in `gcc14`) need it, or
+  `pkg` refuses with `Missing shlib libc.so.7:32`. Without it recipes are
+  unchanged, so stored artifacts stay reusable.
+- Generated jail scripts fetch `lib32.txz` for the host's release beside
+  `base.txz`, whenever the jail has no `/usr/lib32/libc.so.7`, so rerunning
+  one adds it to an existing jail.
+- `up --plan --json` reports `release.lib32_sha256`, and the plan id covers it.
+
 ## 2026-11-16: Operator access to edge-host ports
 
 - `edge.sexp` takes an optional `operator_edge_ports`, e.g.
