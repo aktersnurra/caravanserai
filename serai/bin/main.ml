@@ -877,7 +877,7 @@ let generic_json (inv : Cli_spec.invocation) =
       | 0 -> Progress.Succeeded | 2 -> Progress.Changes_pending | 130 -> Progress.Interrupted | _ -> Progress.Failed);
     exit code in
   let refuse message = finish (Agent_cli.respond ~operation (fun () -> raise (Agent_cli.Bad_request message))) in
-  let changes = inv.command.effect = Cli_spec.Changes_hosts in
+  let changes = inv.command.impact = Cli_spec.Changes_hosts in
   (match changes, inv.plan, inv.yes, inv.expect_plan with
    | false, _, _, _ | true, true, false, None | true, false, true, Some _ -> ()
    | true, _, _, _ ->

@@ -1,5 +1,5 @@
 type flag = { flag : string; value : string option; required : bool }
-type effect = Offline | Reads_hosts | Changes_files | Changes_hosts
+type impact = Offline | Reads_hosts | Changes_files | Changes_hosts
 type approval = No_approval | Own_plan | Bound | Bound_by_request
 
 type command = {
@@ -7,7 +7,7 @@ type command = {
   arguments : (string * bool) list;
   flags : flag list;
   summary : string;
-  effect : effect;
+  impact : impact;
   approval : approval;
 }
 
@@ -28,8 +28,8 @@ let valued ?(required = false) flag value = { flag; value = Some value; required
 let switch flag = { flag; value = None; required = false }
 let need = valued ~required:true
 
-let command ?(arguments = []) ?(flags = []) ?(approval = No_approval) path effect summary =
-  { path = String.split_on_char ' ' path; arguments; flags; summary; effect; approval }
+let command ?(arguments = []) ?(flags = []) ?(approval = No_approval) path impact summary =
+  { path = String.split_on_char ' ' path; arguments; flags; summary; impact; approval }
 
 let app = [ "app", true ] and guest = [ "guest", true ] and workload = [ "app|guest", true ]
 let store_entry = [ need "--identity" "identity"; need "--store" "dir" ]
@@ -163,7 +163,7 @@ let usage () =
     \  With --json, a command that changes a host applies only an approved plan:\n\
     \  --plan to get its plan_id, then --yes --expect-plan <id>.\n"
 
-let effect_name = function
+let impact_name = function
   | Offline -> "offline" | Reads_hosts -> "reads_hosts"
   | Changes_files -> "changes_local_files" | Changes_hosts -> "changes_hosts"
 
@@ -174,7 +174,7 @@ let to_json () =
     "commands", Array (List.map (fun c ->
       Object [
         "command", String (name c); "synopsis", String (synopsis c); "summary", String c.summary;
-        "effect", String (effect_name c.effect);
+        "effect", String (impact_name c.impact);
         "plan", Bool (c.approval <> No_approval);
         "arguments", Array (List.map (fun (argument, required) ->
           Object [ "name", String argument; "required", Bool required ]) c.arguments);

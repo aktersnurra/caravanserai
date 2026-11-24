@@ -3,7 +3,7 @@
 
 type flag = { flag : string; value : string option  (** its placeholder; [None] for a switch *); required : bool }
 
-type effect =
+type impact =
   | Offline  (** the declaration only: no host, no lock *)
   | Reads_hosts
   | Changes_files  (** local files only *)
@@ -24,7 +24,7 @@ type command = {
   arguments : (string * bool) list;  (** name, required; in order *)
   flags : flag list;
   summary : string;
-  effect : effect;
+  impact : impact;
   approval : approval;
 }
 
